@@ -13,7 +13,7 @@ x-admin: &admin
     OBSERVE_SECRET: ${OBSERVE_SECRET:-}
     ALERT_URL: ${ALERT_URL:-}
     ALERT_SECRET: ${ALERT_SECRET:-}
-    DEPLOY_MASTER_URL: ${DEPLOY_MASTER_URL:-}      # 다음 task(배포 이력 화면)
+    DEPLOY_MASTER_URL: ${DEPLOY_MASTER_URL:-}      # 배포 이력 · 상태 화면(필수)
     DEPLOY_SECRET: ${DEPLOY_SECRET:-}
     BACKEND_URL: ${BACKEND_URL:-}
     LOG_REDIS_URL: ${LOG_REDIS_URL:-}

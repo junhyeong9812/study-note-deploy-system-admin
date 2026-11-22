@@ -13,7 +13,17 @@
 export const MASKED_ADDRESS = "(주소)";
 export const UPSTREAM_REASON_MAXIMUM_LENGTH = 120;
 
+/** http(s) 주소의 scheme + [사용자정보@] + host(이름 · IPv4 · 대괄호 IPv6) + [:port] — 경로 · 쿼리는 남긴다. */
+const SCHEME_ADDRESS_PATTERN = /https?:\/\/(?:[^\s/?#@]*@)?(?:\[[0-9A-Fa-f:.]*\]|[^\s/?#:@\[\]]+)(?::\d*)?/gi;
+/** scheme 없는 맨 IPv4(앞뒤가 숫자 · 점이 아닌 자리) + [:port]. */
+const BARE_IPV4_PATTERN = /(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?(?![\d.])/g;
+const LINE_BREAK_PATTERN = /\r\n|\n|\r/g;
+
 export function maskUpstreamReason(reason: string): string {
-  void reason;
-  throw new Error("not implemented");
+  const masked = reason
+    .replace(SCHEME_ADDRESS_PATTERN, MASKED_ADDRESS)
+    .replace(BARE_IPV4_PATTERN, MASKED_ADDRESS)
+    .replace(LINE_BREAK_PATTERN, " ");
+  const codePoints = Array.from(masked);
+  return codePoints.length > UPSTREAM_REASON_MAXIMUM_LENGTH ? codePoints.slice(0, UPSTREAM_REASON_MAXIMUM_LENGTH).join("") : masked;
 }

@@ -53,3 +53,27 @@ export const UPSTREAM_FAILURE_MESSAGES: Readonly<Record<UpstreamFailureReason, s
 
 /** Next 의 searchParams 와 같은 꼴 — 같은 이름이 여러 번 오면 배열(어드민 입력 검증은 배열을 거절한다). */
 export type SearchParamsInput = Readonly<Record<string, string | string[] | undefined>>;
+
+/** 실패 결과를 만든다 — message 는 언제나 고정 표의 글자(다른 서버의 글자를 받지 않는다). 없는 칸(status · field)은 넣지 않는다. */
+export function upstreamFailure(reason: UpstreamFailureReason, details: { status?: number; field?: string } = {}): UpstreamFailure {
+  const failure: UpstreamFailure = { ok: false, reason, message: UPSTREAM_FAILURE_MESSAGES[reason] };
+  if (details.status !== undefined) failure.status = details.status;
+  if (details.field !== undefined) failure.field = details.field;
+  return failure;
+}
+
+/** 2xx 가 아닌 응답의 상태 → 실패 이유(401 · 422 · 503 · 504 는 각자의 이유, 그 밖은 bad_status — 3xx 포함). */
+export function failureForHttpStatus(status: number): UpstreamFailure {
+  switch (status) {
+    case 401: return upstreamFailure("unauthorized", { status });
+    case 422: return upstreamFailure("invalid_request", { status });
+    case 503: return upstreamFailure("unavailable", { status });
+    case 504: return upstreamFailure("server_timeout", { status });
+    default: return upstreamFailure("bad_status", { status });
+  }
+}
+
+/** 입력 검증의 거절(호출하지 않는다). */
+export function invalidInput(field: string): UpstreamFailure {
+  return upstreamFailure("invalid_input", { field });
+}

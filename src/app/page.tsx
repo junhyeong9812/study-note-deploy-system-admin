@@ -1,39 +1,36 @@
-/** 홈 — 로그인 뒤 첫 화면. 네 화면의 메뉴 자리와 로그아웃만(화면은 다음 task). */
+/** 홈 — 로그인 뒤 첫 화면. 공통 틀(내비게이션 · 로그아웃 · 임시 제한 표시) + 네 화면의 메뉴(아직 없는 화면은 "준비 중"). */
+import { AdminShell } from "@/features/admin-shell/ui/AdminShell";
+import { ADMIN_SCREENS } from "@/features/admin-shell/ui/admin-screens";
 import { requireSession } from "@/features/auth/server/require-session";
 import { isTemporaryRestrictionActive } from "@/features/auth/server/temporary-restriction-status";
-import { TemporaryRestrictionNotice } from "@/features/auth/ui/TemporaryRestrictionNotice";
-import { LogoutButton } from "@/features/auth/ui/LogoutButton";
 import styles from "@/app/page.module.css";
 
 export const dynamic = "force-dynamic";
 
-const MENU_ITEMS = [
-  { title: "배포 이력", description: "서비스별 배포 결과 · 커밋 · 실패 단계 · 걸린 시간" },
-  { title: "로그 조회", description: "기간 · 서비스 · 레벨 · 요청 ID · 검색어로 앱 로그 찾기" },
-  { title: "상태 한눈에", description: "각 서버의 헬스와 감시 결과" },
-  { title: "로그인 시도 기록", description: "어드민 로그인 성공 · 실패 · 잠금 기록" },
-];
-
 export default async function HomePage() {
   await requireSession();
   return (
-    <>
-      <header className={styles.header}>
-        <span className={styles.brand}>study-note 어드민</span>
-        <LogoutButton />
-      </header>
+    <AdminShell current={null} temporaryRestriction={isTemporaryRestrictionActive()}>
       <main className={styles.main}>
-        {isTemporaryRestrictionActive() && <div className={styles.notice}><TemporaryRestrictionNotice /></div>}
         <ul className={styles.menu}>
-          {MENU_ITEMS.map((item) => (
-            <li key={item.title} className={styles.menuItem}>
-              <span className={styles.menuTitle}>{item.title}</span>
-              <span className={styles.menuDescription}>{item.description}</span>
-              <span className={styles.pending}>준비 중</span>
+          {ADMIN_SCREENS.map((screen) => (
+            <li key={screen.key}>
+              {screen.path === null ? (
+                <div className={styles.menuItem}>
+                  <span className={styles.menuTitle}>{screen.title}</span>
+                  <span className={styles.menuDescription}>{screen.description}</span>
+                  <span className={styles.pending}>준비 중</span>
+                </div>
+              ) : (
+                <a className={`${styles.menuItem} ${styles.menuLink}`} href={screen.path}>
+                  <span className={styles.menuTitle}>{screen.title}</span>
+                  <span className={styles.menuDescription}>{screen.description}</span>
+                </a>
+              )}
             </li>
           ))}
         </ul>
       </main>
-    </>
+    </AdminShell>
   );
 }

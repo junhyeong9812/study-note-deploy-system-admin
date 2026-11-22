@@ -3,6 +3,7 @@
  * 필수 설정이 없거나 형식이 틀리면 서버가 뜨지 않는다(종료 코드 78 — startup-check). middleware 도 이 모듈을 읽으므로 argon2 를 임포트하지 않는다. */
 import "server-only";
 import { hasRequiredHashCost } from "@/features/auth/lib/credentials";
+import { isHttpBaseUrl } from "@/shared/lib/upstream-fetch";
 
 export interface ServerConfig {
   adminUser: string;
@@ -13,7 +14,7 @@ export interface ServerConfig {
   observeSecret: string;
   alertUrl: string;
   alertSecret: string;
-  // 다음 task(화면 넷)용 자리 — 지금은 읽기만 한다
+  // 화면 넷이 부르는 서버(배포 이력 · 상태 한눈에) — 필수(missingScreenConfigKeys)
   deployMasterUrl: string;
   deploySecret: string;
   backendUrl: string;
@@ -55,9 +56,7 @@ export function isValidAdminOrigin(value: string): boolean {
 
 /** OBSERVE_URL 의 형식 — 해석되는 http(s) 주소(끝의 `/` 허용). */
 export function isValidObserveUrl(value: string): boolean {
-  if (!URL.canParse(value)) return false;
-  const parsed = new URL(value);
-  return (parsed.protocol === "http:" || parsed.protocol === "https:") && parsed.hostname.length > 0;
+  return isHttpBaseUrl(value);
 }
 
 /** 로그인에 반드시 있어야 하는 설정 중 비었거나 형식이 틀린 키의 이름(해시는 비용 머리까지 — 라이브러리 해석은
@@ -79,18 +78,18 @@ export function missingLoginConfigKeys(config: ServerConfig): string[] {
  * 어긋난 키의 이름을 이 순서로 돌려준다. 로그인 판정(missingLoginConfigKeys)에는 넣지 않는다 — 시작 검사(startup-check)와 헬스가 둘을 합쳐 본다.
  * (화면 진입 함수의 "그 칸만 설정 없음"은 실행 중 방어로 남는다 — 정상 구동에서는 닿지 않는다.) */
 export function missingScreenConfigKeys(config: ServerConfig): string[] {
-  void config;
-  throw new Error("not implemented");
+  const missing: string[] = [];
+  if (!isHttpBaseUrl(config.deployMasterUrl)) missing.push("DEPLOY_MASTER_URL");
+  if (config.deploySecret.length === 0) missing.push("DEPLOY_SECRET");
+  if (!isHttpBaseUrl(config.backendUrl)) missing.push("BACKEND_URL");
+  if (!isHttpBaseUrl(config.alertUrl)) missing.push("ALERT_URL");
+  if (config.alertSecret.length === 0) missing.push("ALERT_SECRET");
+  return missing;
 }
 
-/** 없어도 로그인은 되지만 기능이 줄어드는 설정(알림 · 다음 task 의 호출 대상 · 로그 스트림). */
+/** 없어도 뜨는 설정 — 남은 것은 로그 스트림(LOG_REDIS_URL — 비면 stdout 만)뿐이다(판정 11-22 15번). */
 export function missingOptionalConfigKeys(config: ServerConfig): string[] {
-  const optional: [string, string][] = [
-    ["ALERT_URL", config.alertUrl], ["ALERT_SECRET", config.alertSecret],
-    ["DEPLOY_MASTER_URL", config.deployMasterUrl], ["DEPLOY_SECRET", config.deploySecret],
-    ["BACKEND_URL", config.backendUrl], ["LOG_REDIS_URL", config.logRedisUrl],
-  ];
-  return optional.filter(([, value]) => value.length === 0).map(([name]) => name);
+  return config.logRedisUrl.length === 0 ? ["LOG_REDIS_URL"] : [];
 }
 
 /** middleware·requireSession 이 쓰는 세션 서명 키 — 짧거나 비면 빈 문자열(어떤 쿠키도 세션이 아니다). */

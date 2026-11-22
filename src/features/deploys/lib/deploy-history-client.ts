@@ -8,7 +8,8 @@
  * 응답의 한 항목이라도 꼴이 다르면 전체를 unparseable 로(원문을 넘기지 않는다). */
 import type { FetchLike, TimeoutSignalFactory } from "@/features/auth/lib/types";
 import type { DeployHistoryQuery } from "@/features/deploys/lib/deploy-history-query";
-import type { UpstreamResult } from "@/shared/lib/upstream-result";
+import { envelopeData, getUpstream, isNonNegativeInteger, isRecord, upstreamUrl } from "@/shared/lib/upstream-fetch";
+import { failureForHttpStatus, upstreamFailure, type UpstreamResult } from "@/shared/lib/upstream-result";
 
 /** master 의 배포 상태(store.go:13-19). 이 밖의 값은 unparseable. */
 export const DEPLOY_STATES = ["accepted", "ci_running", "cd_running", "succeeded", "failed"] as const;
@@ -44,7 +45,44 @@ export interface DeployHistoryClient {
   listDeployments(query: DeployHistoryQuery): Promise<UpstreamResult<DeploymentSummary[]>>;
 }
 
+/** 빠졌거나(omitempty) 빈 글자면 null, 글자가 아니면 undefined(해석 불가). */
+function optionalText(value: unknown): string | null | undefined {
+  if (value === undefined || value === null || value === "") return null;
+  return typeof value === "string" ? value : undefined;
+}
+
+/** master 의 한 항목 → 화면 한 줄. 꼴이 다르면 null. */
+function parseDeployment(row: unknown): DeploymentSummary | null {
+  if (!isRecord(row)) return null;
+  const { request_id: requestId, service, commit_sha: commitSha, state, accepted_at: acceptedAt, ci_ms: integrationMilliseconds, cd_ms: deliveryMilliseconds } = row;
+  if (typeof requestId !== "string" || typeof service !== "string" || typeof commitSha !== "string" || typeof acceptedAt !== "string") return null;
+  if (typeof state !== "string" || !(DEPLOY_STATES as readonly string[]).includes(state)) return null;
+  if (!isNonNegativeInteger(integrationMilliseconds) || !isNonNegativeInteger(deliveryMilliseconds)) return null;
+  const failedStage = optionalText(row.failed_stage);
+  const finishedAt = optionalText(row.finished_at);
+  if (failedStage === undefined || finishedAt === undefined) return null;
+  return {
+    requestId, state: state as DeployState, service, commitSha, failedStage, acceptedAt, finishedAt,
+    integrationMilliseconds, deliveryMilliseconds,
+  };
+}
+
 export function createDeployHistoryClient(options: DeployHistoryClientOptions): DeployHistoryClient {
-  void options;
-  throw new Error("not implemented");
+  return {
+    async listDeployments(query) {
+      const url = upstreamUrl(options.baseUrl, "/deploys", [["service", query.service], ["limit", String(query.limit)]]);
+      const response = await getUpstream(url, { fetch: options.fetch, timeoutSignal: options.timeoutSignal, headers: { "X-Deploy-Secret": options.secret } });
+      if (!response.ok) return response;
+      if (response.status < 200 || response.status >= 300) return failureForHttpStatus(response.status);
+      const rows = envelopeData(response)?.deployments;
+      if (!Array.isArray(rows)) return upstreamFailure("unparseable");
+      const deployments: DeploymentSummary[] = [];
+      for (const row of rows) {
+        const deployment = parseDeployment(row);
+        if (deployment === null) return upstreamFailure("unparseable");   // 한 항목이라도 다르면 전체
+        deployments.push(deployment);
+      }
+      return { ok: true, value: deployments };
+    },
+  };
 }

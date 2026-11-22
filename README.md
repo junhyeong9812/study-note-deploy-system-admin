@@ -10,6 +10,9 @@
 - `src/features/auth/server/require-session.ts` — 두 번째 겹. 보호 화면은 `requireSession()`(없으면 `/login`), 데이터 경로는 `requireApiSession()`(없으면 401)을 **직접** 호출한다. 새 화면·경로·다른 서버를 부르는 서버 쪽 함수도 반드시 호출한다.
 - `src/features/auth/lib/` — 세션(HMAC-SHA256, 12시간, 연장 없음) · 자격(argon2id, ID 가 틀려도 더미 해시로 같은 검증) · Origin(설정값과 글자까지 같음) · 속도 제한(IP 마다 60초 10회, 자리별 메모리) · 관측 서버 판정 · 임시 제한(관측 서버 장애 시 3회 → 15분) · 대기열(상한 500, 복귀 뒤 `replayed:true`) · 잠금 알림.
 - `src/features/auth/server/login-service.ts` — 속도 제한 · 임시 제한 · 대기열을 프로세스 안에 하나만 둔다(`globalThis`).
+- 화면 넷의 데이터 계층 `src/features/{deploys,logs,status,login-attempts}/` — `lib/`(순수: 입력 검증 · 다른 서버 클라이언트 · 응답에서 화면에 필요한 칸만 고르기, 설정·Next 를 읽지 않는다) + `server/`(진입 함수 — `requireSession()`/`requireApiSession()` 을 **직접** 부른 뒤에만 설정을 읽고 다른 서버를 부른다) + `ui/`(서버 컴포넌트 — 받은 값만 그린다. server · `*-client` · 설정을 값으로 임포트하지 않는다). `src/app` 의 화면 · `GET /api/{deploys,logs,status,login-attempts}` 는 진입 함수만 부른다(소스 검사 `src/app/screen-data-imports.test.ts`).
+  - 다른 서버 호출: 전부 GET · `redirect: "manual"` · 본문까지 5초 기한. 실패는 고정된 짧은 사유(`src/shared/lib/upstream-result.ts`)와 상태 코드만 — 오류 본문 원문 · 주소 · 예외 문구는 넘기지 않는다. 정상 응답 안의 사유 글자(감시 대상의 DOWN 사유 · backend 의존성 detail · 관측 서버 헬스의 failure)는 주소를 `(주소)` 로 가리고 120자로 자른다(`maskUpstreamReason`). 입력이 틀리면 데이터 경로는 422 `invalid_input`(다른 서버를 부르지 않는다), 다른 서버가 실패해도 200 에 그 칸의 실패로 보인다. 상태 화면의 다섯 호출은 병렬.
+  - 화면: 배포 이력(`/deploys`)만 있다 — 로그 조회 · 상태 한눈에 · 로그인 시도 기록은 데이터 경로만 있고 화면은 다음 단계(내비게이션에 "준비 중"). 공통 틀 `src/features/admin-shell/ui/AdminShell.tsx`(내비게이션 · 로그아웃 · "임시 제한 중").
 - `src/shared/config/server-config.ts` — 환경 변수를 읽는 유일한 곳(`server-only`).
 - `src/shared/lib/logger.ts` — `requestId:admin:message` 한 줄, stdout + Redis 스트림 `logs`(실패 무해). IP · 입력 ID · 비밀번호 · User-Agent 는 넘기지 않는다.
 
@@ -52,11 +55,11 @@
 
 `.env.example` 에 키 이름과 설명.
 
-- **필수**(하나라도 없거나 형식이 틀리면 **서버가 뜨지 않는다 — 종료 코드 78**): `ADMIN_USER` · `ADMIN_PASSWORD_HASH`(argon2id, 비용 `m=19456,t=2,p=1`, 검증 라이브러리가 실제로 읽을 수 있어야 함 — 시작 때 argon2 검증 1회로 확인, 약 50~70ms, 결과는 기억) · `SESSION_SECRET`(32자 이상) · `ADMIN_ORIGIN`(https 이고 출처 꼴 그대로 — `new URL(값).origin === 값`, 끝의 `/`·경로·scheme 없음은 틀림) · `OBSERVE_URL`(해석되는 http(s) 주소, 끝의 `/` 허용) · `OBSERVE_SECRET`. 서버가 뜰 때(`instrumentation.register()`) 검사해 빠진 키 **이름**만 1줄(`startup:admin:설정 없음 — 서버를 끝낸다 keys=…`) 남기고 종료 코드 78 로 끝낸다(값은 찍지 않는다). 빌드(`next build`)는 설정 없이 된다 — 검사는 서버가 실제로 뜰 때만.
+- **필수**(하나라도 없거나 형식이 틀리면 **서버가 뜨지 않는다 — 종료 코드 78**): `ADMIN_USER` · `ADMIN_PASSWORD_HASH`(argon2id, 비용 `m=19456,t=2,p=1`, 검증 라이브러리가 실제로 읽을 수 있어야 함 — 시작 때 argon2 검증 1회로 확인, 약 50~70ms, 결과는 기억) · `SESSION_SECRET`(32자 이상) · `ADMIN_ORIGIN`(https 이고 출처 꼴 그대로 — `new URL(값).origin === 값`, 끝의 `/`·경로·scheme 없음은 틀림) · `OBSERVE_URL`(해석되는 http(s) 주소, 끝의 `/` 허용) · `OBSERVE_SECRET` · 화면 넷 · 잠금 알림이 부르는 서버의 `DEPLOY_MASTER_URL` · `BACKEND_URL` · `ALERT_URL`(셋 다 해석되는 http(s) 주소, 끝의 `/` 허용) · `DEPLOY_SECRET` · `ALERT_SECRET`(비지 않은 값). 서버가 뜰 때(`instrumentation.register()`) 검사해 빠진 키 **이름**만 1줄(`startup:admin:설정 없음 — 서버를 끝낸다 keys=…`) 남기고 종료 코드 78 로 끝낸다(값은 찍지 않는다). 빌드(`next build`)는 설정 없이 된다 — 검사는 서버가 실제로 뜰 때만.
   - 실측: 요청을 하나도 받기 전에 끝난다(컨테이너 안에서 시작 직후부터 헬스를 두드려도 응답 0건). `restart: unless-stopped` 아래에서는 재시작이 되풀이된다(12초에 5회).
   - 배포에서의 뜻: 새 자리가 뜨지 않으므로 compose healthcheck 는 healthy 가 되지 않고, ci-cd agent 의 자리 헬스 확인(`127.0.0.1:18001`/`18002`)이 실패해 그 배포는 `cd_health` 실패로 끝난다 — nginx 는 전환되지 않고 이전 자리가 계속 서비스한다.
   - 헬스(`GET /api/health`)도 필수 설정이 유효할 때만 200, 아니면 503(본문에 키 이름·값 없음) — 시작 검사가 건너뛰어져도 자리 헬스 확인에서 걸린다.
-- **선택**: `ALERT_URL` · `ALERT_SECRET`(비면 잠금 알림이 실패하고 앱 로그 1줄) · `LOG_REDIS_URL`(비면 stdout 만) · `DEPLOY_MASTER_URL` · `DEPLOY_SECRET` · `BACKEND_URL`(다음 task 화면 넷용). 비어 있으면 시작 로그에 이름만 1줄.
+- **선택**: `LOG_REDIS_URL`(비면 stdout 만) 하나뿐이다. 비어 있으면 시작 로그에 이름만 1줄.
 
 ## 보안 경계 요약
 
@@ -71,6 +74,6 @@
 - 속도 제한 표(IP 상한 10,000): 창 안의 IP 는 지우지 않는다. 표가 활성 항목으로 가득 차면 새 IP 는 429(관측 서버에 기록하지 않고 건수만 앱 로그), 창이 지난 항목은 정리한다.
 - 대기열의 주기 재전송: 대기열이 비어 있지 않은 동안 30초마다 스스로 재전송한다(관측 서버가 돌아오면 다음 로그인을 기다리지 않는다). 재전송은 한 번에 하나만 돌고(로그인 뒤 실행과 겹치지 않는다), 도는 중에 들어온 항목도 같은 실행 또는 다음 시도에서 보낸다. 관측 호출의 5초 기한을 따르고, 타이머는 프로세스 종료를 막지 않는다(`unref`). 비면 멈춘다.
 - 집계 로그: 관측 서버에 보내지 않는 거절(창 안의 반복 Origin 거절 · 형식 오류 · 속도 제한, 그리고 표 포화 `saturated`)은 요청마다 로그를 남기지 않고 이유별 60초에 1줄(`login:unrecorded_rejections reason=<이유> count=<n>`)로 남긴다. 창이 끝날 때와 종료(SIGTERM) 때 남은 건수를 내보낸다. 0 건이면 줄이 없다.
-- "임시 제한 중" 표시: 마지막 관측 호출이 실패했거나 대기열에 항목이 있는 동안 로그인 화면과 홈에 표시한다.
+- "임시 제한 중" 표시: 마지막 관측 호출이 실패했거나 대기열에 항목이 있는 동안 로그인 화면과 로그인 뒤의 모든 화면(공통 틀)에 표시한다.
 - 시도 기록: 자격 검증에 이른 요청은 `/auth/attempts`, 그 전에 거절한 요청은 `/auth/attempts/rejected`(`reason` = `rate_limited` · `origin_rejected` · `malformed`). 거절 기록은 IP 마다 고정 60초 창에 이유별 첫 1건만 보내고(꾸준히 두드려도 1건) 나머지는 건수만 앱 로그에 남긴다. 403·400·429 응답은 기록 전송을 기다리지 않는다 — 전송은 뒤에서 끝까지 하고 실패하면 대기열에 넣는다. 관측 서버 장애 중의 기록은 대기열에 두었다가 복귀 뒤 `replayed:true` + 임시 제한이 실제로 내린 `outcome` 으로 보낸다. 재전송 응답이 잠금 시작이면 그때 알림을 보낸다. 재전송에 관측 서버가 **422**(본문 자체가 틀림)를 준 항목만 버리고 `discarded=<건수> status=422` 를 앱 로그에 남긴다 — 401·429·5xx·연결 실패·시간 초과는 남겨 다음에 다시 보낸다. 관측 서버가 허용한 성공은 임시 제한의 메모리 횟수도 0 으로 만든다. 알림은 로그인 응답을 최대 2초만 기다린다.
 - 종료 로그: 대기열에 넣을 때마다 `queued=<건수>`, SIGTERM 을 받으면 `login:shutdown queued=<대기 건수> dropped=<누적 유실 건수>` 1줄. 종료 자체는 Next 서버의 SIGTERM 처리(연결 정리 뒤 종료)가 한다. 강제 종료(SIGKILL) 때는 마지막 `queued=` 줄이 근사값이다.

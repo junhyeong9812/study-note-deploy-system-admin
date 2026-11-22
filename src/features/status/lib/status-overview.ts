@@ -14,7 +14,11 @@
  * - master `GET /health`(ci-cd cmd/server/main.go:19-21, 인증 없음): `{success:true,data:{mode}}`.
  * 헬스 둘(alert · observe)은 503 이어도 본문이 계약 꼴이면 실패가 아니라 그 상태 낱말(healthy:false)로 넘긴다. */
 import type { FetchLike, TimeoutSignalFactory } from "@/features/auth/lib/types";
-import type { UpstreamResult } from "@/shared/lib/upstream-result";
+import { maskUpstreamReason } from "@/shared/lib/upstream-reason";
+import {
+  envelopeData, getUpstream, isHttpBaseUrl, isNonNegativeInteger, isRecord, upstreamUrl, type UpstreamGetOptions, type UpstreamResponse,
+} from "@/shared/lib/upstream-fetch";
+import { failureForHttpStatus, upstreamFailure, type UpstreamResult } from "@/shared/lib/upstream-result";
 
 export const STATUS_CHECK_NAMES = ["alertMonitors", "alertHealth", "observeHealth", "backendDependencies", "deployMasterHealth"] as const;
 export type StatusCheckName = (typeof STATUS_CHECK_NAMES)[number];
@@ -80,7 +84,100 @@ export interface StatusOverviewOptions {
 }
 
 /** 다섯 호출을 동시에 시작하고 전부 끝나면(각자 5초 안) 돌려준다 — 전체 소요는 가장 느린 한 호출에 묶인다. 거부(reject)하지 않는다. */
+/** 사유 글자 → 가린 값. 빈 글자는 null. */
+function maskedOrNull(text: string): string | null {
+  return text.length === 0 ? null : maskUpstreamReason(text);
+}
+
+function isSuccessStatus(status: number): boolean {
+  return status >= 200 && status < 300;
+}
+
+/** 2xx 만 받는 칸 — 2xx 면 parse(해석 불가면 unparseable), 아니면 상태 코드의 실패. */
+function successOnly<Value>(response: UpstreamResponse, parse: (response: UpstreamResponse) => Value | null): UpstreamResult<Value> {
+  if (!isSuccessStatus(response.status)) return failureForHttpStatus(response.status);
+  const value = parse(response);
+  return value === null ? upstreamFailure("unparseable") : { ok: true, value };
+}
+
+/** 헬스 두 칸(alert · observe) — 200 과 503 은 본문의 상태 낱말로 판정한다. 503 인데 계약 꼴이 아니면 unavailable. */
+function healthCell(response: UpstreamResponse, statuses: readonly string[], readFailure: boolean): UpstreamResult<ServiceHealthView> {
+  if (!isSuccessStatus(response.status) && response.status !== 503) return failureForHttpStatus(response.status);
+  const body = response.parsed && isRecord(response.json) ? response.json : null;
+  const status = body?.status;
+  let failure: string | null | undefined = null;
+  if (readFailure && body !== null && body.failure !== undefined) failure = typeof body.failure === "string" ? maskedOrNull(body.failure) : undefined;
+  if (body === null || typeof status !== "string" || !statuses.includes(status) || failure === undefined) {
+    return response.status === 503 ? failureForHttpStatus(503) : upstreamFailure("unparseable");
+  }
+  return { ok: true, value: { status, healthy: status === "ok", failure } };
+}
+
+function parseMonitors(response: UpstreamResponse): AlertMonitorsView | null {
+  const data = envelopeData(response);
+  if (data === undefined || !Array.isArray(data.monitors)) return null;
+  const { last_round_at: lastRoundAt, undelivered } = data;
+  if (typeof lastRoundAt !== "string" || !isNonNegativeInteger(undelivered)) return null;
+  const monitors: AlertMonitorView[] = [];
+  for (const row of data.monitors) {
+    if (!isRecord(row)) return null;
+    const { name, status, down_since: downSince, reason } = row;
+    if (typeof name !== "string" || typeof downSince !== "string" || typeof reason !== "string") return null;
+    if (typeof status !== "string" || !(MONITOR_STATUSES as readonly string[]).includes(status)) return null;
+    monitors.push({ name, status: status as AlertMonitorView["status"], downSince: downSince === "" ? null : downSince, reason: maskUpstreamReason(reason) });
+  }
+  return { monitors, lastRoundAt: lastRoundAt === "" ? null : lastRoundAt, undelivered };
+}
+
+const DEPENDENCY_STATUSES = ["UP", "DOWN"] as const;
+
+function isDependencyStatus(value: unknown): value is "UP" | "DOWN" {
+  return typeof value === "string" && (DEPENDENCY_STATUSES as readonly string[]).includes(value);
+}
+
+function parseDependencies(response: UpstreamResponse): BackendDependenciesView | null {
+  if (!response.parsed || !isRecord(response.json)) return null;
+  const { status, components } = response.json;
+  if (!isDependencyStatus(status) || !isRecord(components)) return null;
+  const parsed: BackendDependencyView[] = [];
+  for (const [name, component] of Object.entries(components)) {
+    if (!isRecord(component) || !isDependencyStatus(component.status)) return null;
+    const detail = component.detail;
+    if (detail !== undefined && detail !== null && typeof detail !== "string") return null;
+    parsed.push({ name, status: component.status, detail: typeof detail === "string" ? maskedOrNull(detail) : null });
+  }
+  return { status, components: parsed };
+}
+
+function parseMasterHealth(response: UpstreamResponse): ServiceHealthView | null {
+  return envelopeData(response) === undefined ? null : { status: "ok", healthy: true, failure: null };
+}
+
 export function collectStatusOverview(options: StatusOverviewOptions): Promise<StatusOverview> {
-  void options;
-  throw new Error("not implemented");
+  const call = async <Value>(baseUrl: string, path: string, headers: Record<string, string> | null,
+                             interpret: (response: UpstreamResponse) => UpstreamResult<Value>): Promise<UpstreamResult<Value>> => {
+    if (!isHttpBaseUrl(baseUrl) || headers === null) return upstreamFailure("not_configured");
+    try {
+      const getOptions: UpstreamGetOptions = { fetch: options.fetch, timeoutSignal: options.timeoutSignal, headers };
+      const response = await getUpstream(upstreamUrl(baseUrl, path), getOptions);
+      return response.ok ? interpret(response) : response;
+    } catch {
+      return upstreamFailure("unparseable");   // 해석 중의 뜻밖의 예외 — 그 칸만 실패(거부하지 않는다)
+    }
+  };
+  const alertSecretHeaders = options.alertSecret.length > 0 ? { "X-Alert-Secret": options.alertSecret } : null;
+  // 다섯 호출을 한꺼번에 시작한다(각자 5초)
+  const alertMonitors = call(options.alertUrl, "/monitors", alertSecretHeaders, (response) => successOnly(response, parseMonitors));
+  const alertHealth = call(options.alertUrl, "/health", {}, (response) => healthCell(response, ALERT_HEALTH_STATUSES, false));
+  const observeHealth = call(options.observeUrl, "/health", {}, (response) => healthCell(response, OBSERVE_HEALTH_STATUSES, true));
+  const backendDependencies = call(options.backendUrl, "/api/health/dependencies", {}, (response) => successOnly(response, parseDependencies));
+  const deployMasterHealth = call(options.deployMasterUrl, "/health", {}, (response) => successOnly(response, parseMasterHealth));
+  return Promise.all([alertMonitors, alertHealth, observeHealth, backendDependencies, deployMasterHealth])
+    .then(([alertMonitorsResult, alertHealthResult, observeHealthResult, backendDependenciesResult, deployMasterHealthResult]) => ({
+      alertMonitors: alertMonitorsResult,
+      alertHealth: alertHealthResult,
+      observeHealth: observeHealthResult,
+      backendDependencies: backendDependenciesResult,
+      deployMasterHealth: deployMasterHealthResult,
+    }));
 }

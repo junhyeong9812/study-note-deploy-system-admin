@@ -6,6 +6,9 @@
   --bg: #ffffff; --fg: #1a1a1a; --muted: #6b7280; --line: #e5e7eb;
   --accent: #2563eb; --accent-bg: #eff6ff; --code-bg: #f6f8fa;
   --danger: #b91c1c; --warning-bg: #fef3c7; --warning-fg: #92400e;
+  /* 상태 배지(어드민 — 배포 결과) */
+  --success-fg: #166534; --success-bg: #dcfce7; --danger-bg: #fee2e2; --progress-fg: #1e40af; --progress-bg: #dbeafe;
+  --content-width: 1200px;
   /* 여백 */
   --space-1: 0.25rem; --space-2: 0.5rem; --space-3: 0.75rem;
   --space-4: 1rem; --space-6: 1.5rem; --space-8: 2rem;
@@ -26,6 +29,7 @@
     --bg: #111418; --fg: #e5e7eb; --muted: #9ca3af; --line: #2d333b;
     --accent: #60a5fa; --accent-bg: #1a2536; --code-bg: #1c2128;
     --danger: #f87171; --warning-bg: #3a2f12; --warning-fg: #fcd34d;
+    --success-fg: #86efac; --success-bg: #14301f; --danger-bg: #3b1717; --progress-fg: #93c5fd; --progress-bg: #172a46;
   }
 }
 /* 다크 팔레트 ② 수동 다크 — ①과 값 동기화 필수 */
@@ -34,6 +38,7 @@
   --bg: #111418; --fg: #e5e7eb; --muted: #9ca3af; --line: #2d333b;
   --accent: #60a5fa; --accent-bg: #1a2536; --code-bg: #1c2128;
   --danger: #f87171; --warning-bg: #3a2f12; --warning-fg: #fcd34d;
+  --success-fg: #86efac; --success-bg: #14301f; --danger-bg: #3b1717; --progress-fg: #93c5fd; --progress-bg: #172a46;
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body { background: var(--bg); color: var(--fg);
