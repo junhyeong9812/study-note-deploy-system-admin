@@ -1,4 +1,5 @@
-/** 세부 3 — 설정이 없으면 뜨지 않는다 · 헬스는 설정이 유효할 때만 200. process.exit 를 대체해 종료 코드를 본다. */
+/** 세부 3 — 설정이 없으면 뜨지 않는다 · 헬스는 설정이 유효할 때만 200. process.exit 를 대체해 종료 코드를 본다.
+ * 판정 11-22(15번): 화면 넷 · 알림의 설정(DEPLOY_MASTER_URL · DEPLOY_SECRET · BACKEND_URL · ALERT_URL · ALERT_SECRET)도 필수 — 남은 선택 설정은 LOG_REDIS_URL 뿐. */
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
@@ -16,12 +17,19 @@ class ExitSignal extends Error {
 const FAKE_OBSERVE_SECRET = "fake-observe-secret-marker-91";
 const FAKE_ALERT_SECRET = "fake-alert-secret-marker-92";
 const FAKE_OBSERVE_URL = "http://observe.example.test:17000";
+const FAKE_DEPLOY_SECRET = "fake-deploy-secret-marker-93";
+const FAKE_DEPLOY_MASTER_URL = "http://deploy-master.example.test:15000";
+const FAKE_BACKEND_URL = "http://backend.example.test:8080";
+const FAKE_ALERT_URL = "http://alert.example.test:16000";
 let sameCostHash = "";
 let expensiveHash = "";
 const consoleLines: string[] = [];
 let exitCalls: (number | string | null | undefined)[] = [];
 
-const REQUIRED_KEYS = ["ADMIN_USER", "ADMIN_PASSWORD_HASH", "SESSION_SECRET", "ADMIN_ORIGIN", "OBSERVE_URL", "OBSERVE_SECRET"];
+const REQUIRED_KEYS = [
+  "ADMIN_USER", "ADMIN_PASSWORD_HASH", "SESSION_SECRET", "ADMIN_ORIGIN", "OBSERVE_URL", "OBSERVE_SECRET",
+  "DEPLOY_MASTER_URL", "DEPLOY_SECRET", "BACKEND_URL", "ALERT_URL", "ALERT_SECRET",
+];
 
 beforeAll(async () => {
   sameCostHash = await hash(FAKE_PASSWORD, { algorithm: 2 });
@@ -38,8 +46,12 @@ beforeEach(() => {
   vi.stubEnv("ADMIN_ORIGIN", FAKE_ORIGIN);
   vi.stubEnv("OBSERVE_URL", FAKE_OBSERVE_URL);
   vi.stubEnv("OBSERVE_SECRET", FAKE_OBSERVE_SECRET);
-  vi.stubEnv("ALERT_URL", "http://alert.example.test:16000");
+  vi.stubEnv("ALERT_URL", FAKE_ALERT_URL);
   vi.stubEnv("ALERT_SECRET", FAKE_ALERT_SECRET);
+  vi.stubEnv("DEPLOY_MASTER_URL", FAKE_DEPLOY_MASTER_URL);
+  vi.stubEnv("DEPLOY_SECRET", FAKE_DEPLOY_SECRET);
+  vi.stubEnv("BACKEND_URL", FAKE_BACKEND_URL);
+  vi.stubEnv("LOG_REDIS_URL", "");
   vi.stubEnv("NEXT_RUNTIME", "nodejs");
   vi.stubEnv("NEXT_PHASE", "phase-production-server");
   vi.spyOn(process, "exit").mockImplementation(((code?: number | string | null) => {
@@ -65,7 +77,8 @@ async function runRegister(): Promise<void> {
 }
 
 function allFakeValues(): string[] {
-  return [FAKE_ADMIN_ID, sameCostHash, expensiveHash, FAKE_SIGNING_KEY, FAKE_OBSERVE_SECRET, FAKE_ALERT_SECRET, FAKE_OBSERVE_URL];
+  return [FAKE_ADMIN_ID, sameCostHash, expensiveHash, FAKE_SIGNING_KEY, FAKE_OBSERVE_SECRET, FAKE_ALERT_SECRET, FAKE_OBSERVE_URL,
+    FAKE_DEPLOY_SECRET, FAKE_DEPLOY_MASTER_URL, FAKE_BACKEND_URL, FAKE_ALERT_URL];
 }
 
 const brokenSettings: [string, string, () => string][] = [
@@ -78,6 +91,13 @@ const brokenSettings: [string, string, () => string][] = [
   ["ADMIN_ORIGIN 빔", "ADMIN_ORIGIN", () => ""],
   ["OBSERVE_URL 빔", "OBSERVE_URL", () => ""],
   ["OBSERVE_SECRET 빔", "OBSERVE_SECRET", () => ""],
+  // 판정 11-22(15번) — 화면용 · 알림 설정도 필수
+  ["DEPLOY_MASTER_URL 빔", "DEPLOY_MASTER_URL", () => ""],
+  ["DEPLOY_SECRET 빔", "DEPLOY_SECRET", () => ""],
+  ["BACKEND_URL 빔", "BACKEND_URL", () => ""],
+  ["ALERT_URL 빔", "ALERT_URL", () => ""],
+  ["ALERT_SECRET 빔", "ALERT_SECRET", () => ""],
+  ["DEPLOY_SECRET 공백만", "DEPLOY_SECRET", () => "   "],
 ];
 
 describe("시작 검사 — instrumentation.register()", () => {
@@ -111,10 +131,21 @@ describe("시작 검사 — instrumentation.register()", () => {
     expect(lines[0]).toContain("OBSERVE_SECRET");
   });
 
-  it.each(["ALERT_URL", "ALERT_SECRET"])("선택 설정 %s 가 비어도 끝내지 않는다", async (name) => {
-    vi.stubEnv(name, "");
+  it("남은 선택 설정 LOG_REDIS_URL 이 비어도 끝내지 않는다(판정 15번 — ALERT_* 는 이제 필수: 위 brokenSettings)", async () => {
+    vi.stubEnv("LOG_REDIS_URL", "");
     await runRegister();
     expect(exitCalls).toEqual([]);
+  });
+
+  it("화면용 키와 로그인 키가 함께 빠지면 1줄에 이름을 모두 담는다", async () => {
+    vi.stubEnv("ADMIN_USER", "");
+    vi.stubEnv("DEPLOY_SECRET", "");
+    vi.stubEnv("ALERT_URL", "");
+    await runRegister();
+    expect(exitCalls).toHaveLength(1);
+    const lines = consoleLines.filter((line) => line.includes("DEPLOY_SECRET"));
+    expect(lines).toHaveLength(1);
+    for (const name of ["ADMIN_USER", "DEPLOY_SECRET", "ALERT_URL"]) expect(lines[0]).toContain(name);
   });
 
   it("빌드 단계(NEXT_PHASE=phase-production-build)에는 검사하지 않는다", async () => {
@@ -162,9 +193,8 @@ describe("헬스 — 설정이 유효할 때만 200", () => {
     for (const value of allFakeValues()) expect(text).not.toContain(value);
   });
 
-  it("선택 설정(ALERT_*)이 비어도 200", async () => {
-    vi.stubEnv("ALERT_URL", "");
-    vi.stubEnv("ALERT_SECRET", "");
+  it("남은 선택 설정(LOG_REDIS_URL)만 비면 200(판정 15번 — ALERT_* 가 비면 503: 위 brokenSettings)", async () => {
+    vi.stubEnv("LOG_REDIS_URL", "");
     expect((await healthGet()).status).toBe(200);
   });
 });
@@ -182,6 +212,11 @@ describe("세부 4 — 설정의 형식도 검사한다(형식이 틀리면 빈 
     ["OBSERVE_URL 해석 불가", "OBSERVE_URL", () => "http://"],
     ["OBSERVE_URL ftp", "OBSERVE_URL", () => "ftp://observe.example.test"],
     ["OBSERVE_URL 낱말", "OBSERVE_URL", () => "observe"],
+    ["DEPLOY_MASTER_URL scheme 없음", "DEPLOY_MASTER_URL", () => "deploy-master-host:15000"],
+    ["DEPLOY_MASTER_URL ftp", "DEPLOY_MASTER_URL", () => "ftp://deploy-master.example.test"],
+    ["BACKEND_URL 해석 불가", "BACKEND_URL", () => "http://"],
+    ["BACKEND_URL 낱말", "BACKEND_URL", () => "backend"],
+    ["ALERT_URL scheme 없음", "ALERT_URL", () => "alert-host:16000"],
     ["해시 비용 머리 + 쓰레기", "ADMIN_PASSWORD_HASH", () => "$argon2id$v=19$m=19456,t=2,p=1$garbage"],
     ["해시 비용 머리 + 빈 조각", "ADMIN_PASSWORD_HASH", () => "$argon2id$v=19$m=19456,t=2,p=1$$"],
     ["해시 digest 깨짐", "ADMIN_PASSWORD_HASH", () => `${sameCostHash.slice(0, sameCostHash.lastIndexOf("$") + 1)}!!!not-base64!!!`],
@@ -216,6 +251,9 @@ describe("세부 4 — 설정의 형식도 검사한다(형식이 틀리면 빈 
     ["OBSERVE_URL http + 포트", "OBSERVE_URL", () => "http://observe.example.test:17000"],
     ["OBSERVE_URL https", "OBSERVE_URL", () => "https://observe.example.test"],
     ["OBSERVE_URL 끝의 /", "OBSERVE_URL", () => "http://observe.example.test:17000/"],
+    ["DEPLOY_MASTER_URL 끝의 /", "DEPLOY_MASTER_URL", () => "http://deploy-master.example.test:15000/"],
+    ["BACKEND_URL https", "BACKEND_URL", () => "https://backend.example.test"],
+    ["ALERT_URL http + 포트", "ALERT_URL", () => "http://alert.example.test:16000"],
     ["해시 salt 8바이트", "ADMIN_PASSWORD_HASH", () => hash(FAKE_PASSWORD, { algorithm: 2, salt: new Uint8Array(8).fill(7) })],
     ["해시 salt 32바이트", "ADMIN_PASSWORD_HASH", () => hash(FAKE_PASSWORD, { algorithm: 2, salt: new Uint8Array(32).fill(9) })],
     ["해시 출력 64바이트", "ADMIN_PASSWORD_HASH", () => hash(FAKE_PASSWORD, { algorithm: 2, outputLen: 64 })],

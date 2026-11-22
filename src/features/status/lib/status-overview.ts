@@ -1,5 +1,6 @@
 /** 상태 한눈에 — 다섯 호출을 **병렬**로, 각각 5초(명세 ② 세부). 하나가 멈추거나 오류 · 깨진 본문을 줘도 그 칸만 실패로 두고 나머지는 그린다.
- * 각 칸은 상태 낱말 · 숫자만 넘긴다 — 다른 서버의 사유 글자(alert monitors 의 reason, backend 의 detail, observe 헬스의 failure 등)·주소·헤더는 넘기지 않는다.
+ * 각 칸은 상태 낱말 · 숫자와 **가린 사유**만 넘긴다 — 정상 응답 안의 사유 글자(alert monitors 의 reason, backend 의 detail, observe 헬스의 failure)는
+ * 전부 maskUpstreamReason(src/shared/lib/upstream-reason.ts)을 거친 값이다(판정 11-22 7번). 오류 응답 본문 · 호출 주소 · 헤더는 넘기지 않는다.
  * 비밀값은 그 값이 필요한 호출(alert `/monitors` 의 X-Alert-Secret)에만 싣는다 — 헬스 호출에는 싣지 않는다. 전부 GET, redirect:"manual".
  *
  * 각 서버의 계약(실파일):
@@ -22,10 +23,12 @@ export const ALERT_HEALTH_STATUSES = ["ok", "starting", "standby", "stalled"] as
 export const OBSERVE_HEALTH_STATUSES = ["ok", "unreachable", "failing", "starting", "stalled"] as const;
 export const MONITOR_STATUSES = ["UP", "DOWN", "UNKNOWN"] as const;
 
-/** 헬스 한 칸 — 상태 낱말과 정상 여부(status === "ok")만. master 는 봉투가 success:true 이면 "ok". */
+/** 헬스 한 칸 — 상태 낱말과 정상 여부(status === "ok"). master 는 봉투가 success:true 이면 "ok". */
 export interface ServiceHealthView {
   status: string;
   healthy: boolean;
+  /** observe 헬스의 failure 를 가린 값("" · 없음 = null). alert · master 는 언제나 null. */
+  failure: string | null;
 }
 
 export interface AlertMonitorView {
@@ -33,6 +36,8 @@ export interface AlertMonitorView {
   status: (typeof MONITOR_STATUSES)[number];
   /** "" 이면 null */
   downSince: string | null;
+  /** 마지막 확인의 사유를 가린 값(maskUpstreamReason). 사유가 없으면 "" */
+  reason: string;
 }
 
 export interface AlertMonitorsView {
@@ -44,6 +49,8 @@ export interface AlertMonitorsView {
 export interface BackendDependencyView {
   name: string;
   status: "UP" | "DOWN";
+  /** detail 을 가린 값(maskUpstreamReason). detail 이 없으면 null */
+  detail: string | null;
 }
 
 export interface BackendDependenciesView {

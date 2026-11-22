@@ -313,6 +313,7 @@ describe("다른 서버가 이상하게 답해도 비밀값 · 주소 · 원문�
   }
 });
 
+/** 판정 11-22(15번): 이 키들은 필수라 비면 서버가 뜨지 않는다(startup-check.test) — 아래는 실행 중 방어(정상 구동에서는 닿지 않는다). */
 describe("설정이 빈 칸만 '설정 없음'(호출하지 않는다)", () => {
   it.each(["DEPLOY_MASTER_URL", "DEPLOY_SECRET"])("%s 없음 → 배포 이력 not_configured, master 를 부르지 않는다", async (key) => {
     validSession();

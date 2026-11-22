@@ -2,7 +2,8 @@
  * 응답 봉투 `{success:true,data:{deployments:[Deployment]}}`(ci-cd internal/master/master.go:351, internal/shared/envelope.go:11).
  * Deployment JSON 칸(internal/master/store.go:22-33): request_id · service · commit_sha · state · failed_stage(omitempty) · detail(omitempty)
  * · accepted_at · finished_at(omitempty) · ci_ms · cd_ms.
- * 화면에 넘기는 칸 = 상태 · 서비스 · 커밋 · 실패 단계 · 접수/종료 시각 · 걸린 시간(ci_ms · cd_ms)뿐 — request_id · detail · 원본 봉투는 넘기지 않는다.
+ * 화면에 넘기는 칸 = 요청 ID(목록 key · 앞부분 표시 — 판정 11-22 4번) · 상태 · 서비스 · 커밋 · 실패 단계 · 접수/종료 시각 · 걸린 시간(ci_ms · cd_ms)뿐
+ * — detail(빌드 출력 끝부분) · 원본 봉투는 넘기지 않는다.
  * 비밀값을 실은 요청은 리다이렉트를 따라가지 않는다(redirect:"manual" — 3xx 는 bad_status).
  * 응답의 한 항목이라도 꼴이 다르면 전체를 unparseable 로(원문을 넘기지 않는다). */
 import type { FetchLike, TimeoutSignalFactory } from "@/features/auth/lib/types";
@@ -15,6 +16,8 @@ export type DeployState = (typeof DEPLOY_STATES)[number];
 
 /** 화면 한 줄. */
 export interface DeploymentSummary {
+  /** request_id(비밀값 아님) */
+  requestId: string;
   state: DeployState;
   service: string;
   commitSha: string;

@@ -17,7 +17,7 @@ const MASTER_LIMIT = 200;   // ci-cd internal/master/master.go:342
 
 function deploymentRow(overrides: Record<string, unknown> = {}) {
   return {
-    request_id: "request-id-should-not-pass-1", service: "backend", commit_sha: "0123456789abcdef0123456789abcdef01234567",
+    request_id: "request-id-1", service: "backend", commit_sha: "0123456789abcdef0123456789abcdef01234567",
     state: "failed", failed_stage: "ci_test", detail: `${UPSTREAM_RAW_MARKER} build output tail`,
     accepted_at: "2026-11-22T01:00:00Z", finished_at: "2026-11-22T01:05:00Z", ci_ms: 120000, cd_ms: 0,
     ...overrides,
@@ -120,16 +120,15 @@ describe("createDeployHistoryClient — 요청", () => {
 });
 
 describe("createDeployHistoryClient — 응답에서 화면에 필요한 칸만", () => {
-  it("상태 · 서비스 · 커밋 · 실패 단계 · 접수/종료 시각 · 걸린 시간만 — request_id · detail · 봉투는 넘기지 않는다", async () => {
+  it("요청 ID · 상태 · 서비스 · 커밋 · 실패 단계 · 접수/종료 시각 · 걸린 시간만 — detail · 봉투는 넘기지 않는다", async () => {
     const fetch = createRoutedFetch(() => jsonBody(envelope([deploymentRow()])));
     const client = createDeployHistoryClient({ baseUrl: FAKE_DEPLOY_MASTER_URL, secret: FAKE_DEPLOY_SECRET, fetch });
     const deployments = okValue(await client.listDeployments({ service: null, limit: 50 }));
     expect(deployments).toStrictEqual([{
-      state: "failed", service: "backend", commitSha: "0123456789abcdef0123456789abcdef01234567", failedStage: "ci_test",
+      requestId: "request-id-1", state: "failed", service: "backend", commitSha: "0123456789abcdef0123456789abcdef01234567", failedStage: "ci_test",
       acceptedAt: "2026-11-22T01:00:00Z", finishedAt: "2026-11-22T01:05:00Z", integrationMilliseconds: 120000, deliveryMilliseconds: 0,
     }]);
     const serialized = JSON.stringify(deployments);
-    expect(serialized).not.toContain("request-id-should-not-pass-1");
     expect(serialized).not.toContain(UPSTREAM_RAW_MARKER);
     expect(serialized).not.toContain("success");
   });
@@ -171,6 +170,8 @@ describe("createDeployHistoryClient — 계약과 다른 꼴은 해석 불가(�
     ["data 없음", () => jsonBody({ success: true })],
     ["deployments 가 배열이 아님", () => jsonBody({ success: true, data: { deployments: UPSTREAM_RAW_MARKER } })],
     ["항목이 null", () => jsonBody(envelope([null]))],
+    ["request_id 빠짐", () => { const row = deploymentRow(); delete (row as Record<string, unknown>).request_id; return jsonBody(envelope([row])); }],
+    ["request_id 가 숫자", () => jsonBody(envelope([deploymentRow({ request_id: 7 })]))],
     ["commit_sha 빠짐", () => { const row = deploymentRow(); delete (row as Record<string, unknown>).commit_sha; return jsonBody(envelope([row])); }],
     ["accepted_at 빠짐", () => { const row = deploymentRow(); delete (row as Record<string, unknown>).accepted_at; return jsonBody(envelope([row])); }],
     ["ci_ms 가 글자", () => jsonBody(envelope([deploymentRow({ ci_ms: "120000" })]))],

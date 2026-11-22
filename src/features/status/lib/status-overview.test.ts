@@ -1,11 +1,13 @@
 /** 상태 한눈에 — 명세 ② 화면 "alert GET /monitors·GET /health, observe GET /health, backend GET /api/health/dependencies, master GET /health" ·
  * "한 곳이 죽어도 나머지는 보인다: 서버 하나가 응답하지 않으면(제한 시간 5초) 그 칸만 '닿지 않음'으로 표시하고 나머지는 그린다.
- * 다른 서버의 오류 본문을 그대로 화면에 뿌리지 않는다(상태 코드와 짧은 사유만)" · 세부 "상태 화면의 호출은 병렬, 각각 5초" · 읽기 전용. */
+ * 다른 서버의 오류 본문을 그대로 화면에 뿌리지 않는다(상태 코드와 짧은 사유만)" · 세부 "상태 화면의 호출은 병렬, 각각 5초" · 읽기 전용 ·
+ * 판정 11-22(7번) "감시 대상의 reason · 의존성의 detail 은 가린 형태(maskUpstreamReason)로 넘긴다". */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   STATUS_CHECK_NAMES, collectStatusOverview, type StatusCheckName, type StatusOverview, type StatusOverviewOptions,
 } from "@/features/status/lib/status-overview";
 import type { FetchLike } from "@/features/auth/lib/types";
+import { MASKED_ADDRESS } from "@/shared/lib/upstream-reason";
 import type { UpstreamResult } from "@/shared/lib/upstream-result";
 import {
   FAKE_ALERT_SECRET, FAKE_ALERT_URL, FAKE_BACKEND_URL, FAKE_DEPLOY_MASTER_URL, FAKE_OBSERVE_URL, SECRET_HEADER_NAMES,
@@ -24,21 +26,21 @@ function cellOf(url: URL): StatusCheckName | "unknown" {
   return "unknown";
 }
 
-/** 각 서버의 정상 응답(실제 계약 꼴 — 사유 글자에 표식을 넣어 넘기지 않는지 본다). */
+/** 각 서버의 정상 응답(실제 계약 꼴 — 사유 글자에 주소 · IP · 포트 · 줄바꿈을 넣어 가려 넘기는지 본다). */
 const HEALTHY_RESPONSES: Record<StatusCheckName, () => Response> = {
   alertMonitors: () => jsonBody({ success: true, data: {
     monitors: [
       { name: "front", status: "UP", down_since: "", reason: "" },
-      { name: "backend-deps", status: "DOWN", down_since: "2026-11-22T09:00:00Z", reason: `정상이 아닌 구성 요소: embedding ${UPSTREAM_RAW_MARKER} ${FAKE_BACKEND_URL}` },
-      { name: "observe", status: "UNKNOWN", down_since: "", reason: `Connection refused ${FAKE_OBSERVE_URL}` },
+      { name: "backend-deps", status: "DOWN", down_since: "2026-11-22T09:00:00Z", reason: `정상이 아닌 구성 요소: embedding\n${FAKE_BACKEND_URL}/api/health/dependencies` },
+      { name: "observe", status: "UNKNOWN", down_since: "", reason: `Connection refused ${FAKE_OBSERVE_URL} via 192.0.2.10:17000` },
     ],
     last_round_at: "2026-11-22T10:00:00Z", undelivered: 2,
   } }),
   alertHealth: () => jsonBody({ status: "ok", last_round_at: "2026-11-22T10:00:00Z", active: true }),
-  observeHealth: () => jsonBody({ status: "ok", last_loop_at: "2026-11-22T10:00:00Z", failure: "", unacknowledged: 0, lag: 0 }),
+  observeHealth: () => jsonBody({ status: "ok", last_loop_at: "2026-11-22T10:00:00Z", failure: "", unacknowledged: 0, lag: 0, last_retention_failure: UPSTREAM_RAW_MARKER }),
   backendDependencies: () => jsonBody({ status: "DOWN", components: {
     elasticsearch: { status: "UP" },
-    embedding: { status: "DOWN", detail: `Connection refused: ${UPSTREAM_RAW_MARKER} ${FAKE_BACKEND_URL}` },
+    embedding: { status: "DOWN", detail: `Connection refused: ${FAKE_BACKEND_URL.replace("http", "HTTP")}/health` },
     redis: { status: "UP" },
   } }),
   deployMasterHealth: () => jsonBody({ success: true, data: { mode: "master" } }),
@@ -47,18 +49,19 @@ const HEALTHY_RESPONSES: Record<StatusCheckName, () => Response> = {
 const EXPECTED_HEALTHY_VALUES: { [Name in StatusCheckName]: unknown } = {
   alertMonitors: {
     monitors: [
-      { name: "front", status: "UP", downSince: null },
-      { name: "backend-deps", status: "DOWN", downSince: "2026-11-22T09:00:00Z" },
-      { name: "observe", status: "UNKNOWN", downSince: null },
+      { name: "front", status: "UP", downSince: null, reason: "" },
+      { name: "backend-deps", status: "DOWN", downSince: "2026-11-22T09:00:00Z", reason: `정상이 아닌 구성 요소: embedding ${MASKED_ADDRESS}/api/health/dependencies` },
+      { name: "observe", status: "UNKNOWN", downSince: null, reason: `Connection refused ${MASKED_ADDRESS} via ${MASKED_ADDRESS}` },
     ],
     lastRoundAt: "2026-11-22T10:00:00Z", undelivered: 2,
   },
-  alertHealth: { status: "ok", healthy: true },
-  observeHealth: { status: "ok", healthy: true },
+  alertHealth: { status: "ok", healthy: true, failure: null },
+  observeHealth: { status: "ok", healthy: true, failure: null },
   backendDependencies: { status: "DOWN", components: [
-    { name: "elasticsearch", status: "UP" }, { name: "embedding", status: "DOWN" }, { name: "redis", status: "UP" },
+    { name: "elasticsearch", status: "UP", detail: null }, { name: "embedding", status: "DOWN", detail: `Connection refused: ${MASKED_ADDRESS}/health` },
+    { name: "redis", status: "UP", detail: null },
   ] },
-  deployMasterHealth: { status: "ok", healthy: true },
+  deployMasterHealth: { status: "ok", healthy: true, failure: null },
 };
 
 type CellBehavior = (init: RequestInit) => Promise<Response> | Response;
@@ -87,7 +90,7 @@ function expectHealthyExcept(overview: StatusOverview, failedCells: StatusCheckN
 }
 
 describe("collectStatusOverview — 다섯 칸 정상", () => {
-  it("각 칸은 상태 낱말 · 숫자만 — 감시 사유(reason) · 의존성 detail 은 넘기지 않는다", async () => {
+  it("각 칸은 상태 낱말 · 숫자 + 가린 사유 — reason · detail 의 주소 · IP · 포트는 (주소), 줄바꿈은 공백, 그 밖의 칸은 넘기지 않는다", async () => {
     const overview = await collectStatusOverview(options(routedFetch()));
     expect(Object.keys(overview).sort()).toEqual([...STATUS_CHECK_NAMES].sort());
     expectHealthyExcept(overview, []);
@@ -128,26 +131,46 @@ describe("collectStatusOverview — 다섯 칸 정상", () => {
 });
 
 describe("collectStatusOverview — 헬스의 503 은 실패가 아니라 상태 낱말", () => {
-  it("observe 503 + {status:failing, failure:…} → failing · healthy:false(failure 글자는 넘기지 않는다)", async () => {
+  it("observe 503 + {status:failing, failure:예외 종류 이름} → failing · healthy:false · failure 는 가린 값(주소가 아니면 그대로)", async () => {
     const overview = await collectStatusOverview(options(routedFetch({
-      observeHealth: () => jsonBody({ status: "failing", failure: `database SQLException ${UPSTREAM_RAW_MARKER}` }, 503),
+      observeHealth: () => jsonBody({ status: "failing", failure: "database SQLException", last_retention_failure: UPSTREAM_RAW_MARKER }, 503),
     })));
-    expect(okValue(overview.observeHealth)).toStrictEqual({ status: "failing", healthy: false });
+    expect(okValue(overview.observeHealth)).toStrictEqual({ status: "failing", healthy: false, failure: "database SQLException" });
     expectNoForbiddenText(overview);
+  });
+
+  it("observe failure 에 주소가 섞여도 가려서 넘긴다", async () => {
+    const overview = await collectStatusOverview(options(routedFetch({
+      observeHealth: () => jsonBody({ status: "unreachable", failure: `redis RedisConnectionFailureException ${FAKE_OBSERVE_URL}\n198.51.100.20:6379` }, 503),
+    })));
+    expect(okValue(overview.observeHealth)).toStrictEqual({
+      status: "unreachable", healthy: false, failure: `redis RedisConnectionFailureException ${MASKED_ADDRESS} ${MASKED_ADDRESS}`,
+    });
+    expectNoForbiddenText(overview);
+    expect(JSON.stringify(overview)).not.toContain("198.51.100.20");
+  });
+
+  it("감시 사유 · 의존성 detail 이 길면 120자로, 빈 사유는 빈 글자", async () => {
+    const overview = await collectStatusOverview(options(routedFetch({
+      alertMonitors: () => jsonBody({ success: true, data: { monitors: [{ name: "llm", status: "DOWN", down_since: "2026-11-22T09:00:00Z", reason: "가".repeat(500) }], last_round_at: "", undelivered: 0 } }),
+      backendDependencies: () => jsonBody({ status: "DOWN", components: { embedding: { status: "DOWN", detail: "나".repeat(500) } } }),
+    })));
+    expect(okValue(overview.alertMonitors).monitors[0].reason).toBe("가".repeat(120));
+    expect(okValue(overview.backendDependencies).components[0].detail).toBe("나".repeat(120));
   });
 
   it.each(["unreachable", "starting", "stalled"])("observe 503 %s → healthy:false", async (status) => {
     const overview = await collectStatusOverview(options(routedFetch({ observeHealth: () => jsonBody({ status }, 503) })));
-    expect(okValue(overview.observeHealth)).toStrictEqual({ status, healthy: false });
+    expect(okValue(overview.observeHealth)).toStrictEqual({ status, healthy: false, failure: null });
   });
 
   it("alert 503 stalled → healthy:false · 200 standby · starting → healthy:false", async () => {
     let overview = await collectStatusOverview(options(routedFetch({ alertHealth: () => jsonBody({ status: "stalled", last_round_at: "", active: true }, 503) })));
-    expect(okValue(overview.alertHealth)).toStrictEqual({ status: "stalled", healthy: false });
+    expect(okValue(overview.alertHealth)).toStrictEqual({ status: "stalled", healthy: false, failure: null });
     overview = await collectStatusOverview(options(routedFetch({ alertHealth: () => jsonBody({ status: "standby", last_round_at: "", active: false }) })));
-    expect(okValue(overview.alertHealth)).toStrictEqual({ status: "standby", healthy: false });
+    expect(okValue(overview.alertHealth)).toStrictEqual({ status: "standby", healthy: false, failure: null });
     overview = await collectStatusOverview(options(routedFetch({ alertHealth: () => jsonBody({ status: "starting", last_round_at: "", active: true }) })));
-    expect(okValue(overview.alertHealth)).toStrictEqual({ status: "starting", healthy: false });
+    expect(okValue(overview.alertHealth)).toStrictEqual({ status: "starting", healthy: false, failure: null });
   });
 
   it("503 인데 본문이 계약 꼴이 아니면 unavailable(503)", async () => {
@@ -252,6 +275,13 @@ describe("collectStatusOverview — 한 칸의 오류는 그 칸만(나머지 �
     }
   }
 
+  it("alert /monitors 의 reason 이 글자가 아니면 unparseable", async () => {
+    const overview = await collectStatusOverview(options(routedFetch({
+      alertMonitors: () => jsonBody({ success: true, data: { monitors: [{ name: "x", status: "UP", down_since: "", reason: 3 }], last_round_at: "", undelivered: 0 } }),
+    })));
+    expectFailure(overview.alertMonitors, "unparseable");
+  });
+
   it("alert /monitors 의 항목 꼴이 다르면(status 열거 밖) unparseable", async () => {
     const overview = await collectStatusOverview(options(routedFetch({
       alertMonitors: () => jsonBody({ success: true, data: { monitors: [{ name: "x", status: "SIDEWAYS", down_since: "", reason: "" }], last_round_at: "", undelivered: 0 } }),
@@ -267,6 +297,7 @@ describe("collectStatusOverview — 한 칸의 오류는 그 칸만(나머지 �
   });
 });
 
+/** 판정 11-22(15번): 필수 설정이라 정상 구동에서는 닿지 않는다 — 실행 중 방어. */
 describe("collectStatusOverview — 설정이 빈 칸만 '설정 없음'(호출하지 않는다)", () => {
   const cases: [string, Partial<StatusOverviewOptions>, StatusCheckName[]][] = [
     ["ALERT_URL 없음", { alertUrl: "" }, ["alertMonitors", "alertHealth"]],

@@ -74,6 +74,15 @@ export function missingLoginConfigKeys(config: ServerConfig): string[] {
   return missing;
 }
 
+/** 판정 11-22(15번) — 화면 넷 · 잠금 알림이 부르는 서버의 설정도 필수다("설정이 비어 있으면 구동을 못 하게").
+ * DEPLOY_MASTER_URL · BACKEND_URL · ALERT_URL 은 해석되는 http(s) 주소(끝의 `/` 허용 — isValidObserveUrl 과 같은 규칙), DEPLOY_SECRET · ALERT_SECRET 은 비지 않은 값.
+ * 어긋난 키의 이름을 이 순서로 돌려준다. 로그인 판정(missingLoginConfigKeys)에는 넣지 않는다 — 시작 검사(startup-check)와 헬스가 둘을 합쳐 본다.
+ * (화면 진입 함수의 "그 칸만 설정 없음"은 실행 중 방어로 남는다 — 정상 구동에서는 닿지 않는다.) */
+export function missingScreenConfigKeys(config: ServerConfig): string[] {
+  void config;
+  throw new Error("not implemented");
+}
+
 /** 없어도 로그인은 되지만 기능이 줄어드는 설정(알림 · 다음 task 의 호출 대상 · 로그 스트림). */
 export function missingOptionalConfigKeys(config: ServerConfig): string[] {
   const optional: [string, string][] = [
