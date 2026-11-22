@@ -106,3 +106,38 @@ describe("readLoginBody — 시간 기한(읽으면서)", () => {
     expect(await readLoginBody(textRequest(body), { delay: neverEnds })).toEqual({ id: FAKE_ADMIN_ID, password: FAKE_PASSWORD });
   });
 });
+
+describe("세부 4 — 본문 3초는 전체 기한(읽기 사이 간격이 아니다)", () => {
+  /** 2초마다 작은 조각을 보내는 본문 — 각 간격은 3초 미만이지만 10초에 걸쳐 끝난다. */
+  function steadilySlowStream() {
+    const pieces = ["{\"id\":\"", "fake", "-admin", "\",\"password\":\"", "fake\"}"];
+    let index = 0;
+    return new ReadableStream<Uint8Array>({
+      pull(controller) {
+        return new Promise<void>((resolve) => {
+          setTimeout(() => {
+            if (index >= pieces.length) controller.close();
+            else controller.enqueue(new TextEncoder().encode(pieces[index++]));
+            resolve();
+          }, 2_000);
+        });
+      },
+    }, { highWaterMark: 0 });
+  }
+
+  it("2초 간격으로 흘러오는 본문을 전체 3초에서 끊는다(가짜 타이머)", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      let settled = false;
+      let result: unknown = "pending";
+      void readLoginBody(streamRequest(steadilySlowStream())).then((value) => { settled = true; result = value; });
+      await vi.advanceTimersByTimeAsync(2_999);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(settled).toBe(true);
+      expect(result).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

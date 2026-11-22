@@ -123,3 +123,23 @@ describe("세부 3(정정) — 로그인 이동 주소는 요청 Host · nextUrl
     expect(response.headers.get("location")).toBe("https://admin-other.example.test/login");
   });
 });
+
+describe("세부 4 — ADMIN_ORIGIN 을 해석하지 못해도 요청 주소로 대신하지 않는다", () => {
+  /** 계약: 형식이 틀린 ADMIN_ORIGIN 이면 화면 요청은 이동시키지 않고 503(no-store, Location 없음). 데이터 경로는 그대로 401. */
+  it.each(["admin.example.test", "not a url", "https://admin.example.test/", "http://admin.example.test", ""])(
+    "ADMIN_ORIGIN %j · 화면 → 503, Location 없음(요청 호스트로 보내지 않는다)", async (configuredOrigin) => {
+      vi.stubEnv("ADMIN_ORIGIN", configuredOrigin);
+      const response = await middleware(request("/", undefined, "https://evil.example.test"));
+      expect(response.headers.get("x-middleware-next")).toBeNull();
+      expect(response.status).toBe(503);
+      expect(response.headers.get("location")).toBeNull();
+      expect(response.headers.get("Cache-Control") ?? "").toContain("no-store");
+      expect(await response.text()).not.toContain("evil.example.test");
+    });
+
+  it("형식이 틀린 ADMIN_ORIGIN 이어도 데이터 경로는 401", async () => {
+    vi.stubEnv("ADMIN_ORIGIN", "admin.example.test");
+    const response = await middleware(request("/api/deploys", undefined, "https://evil.example.test"));
+    expect(response.status).toBe(401);
+  });
+});

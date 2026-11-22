@@ -137,3 +137,33 @@ export function routesFromAppDirectory(): AppRoute[] {
 
 /** 세션 없이 열리는 실제 경로(명세 ② 인증 경계: 로그인 화면 · 로그인 요청 · 헬스). */
 export const PUBLIC_ROUTE_PATHS: ReadonlySet<string> = new Set(["/login", "/api/auth/login", "/api/health"]);
+
+/** 세부 4 — 직접 돌리는 스케줄러 Fake(실제 대기 없음). */
+export interface FakeScheduler {
+  scheduler: (callback: () => void, milliseconds: number) => { cancel(): void; keepsProcessAlive(): boolean };
+  scheduledDelays: number[];
+  pendingCount: () => number;
+  /** 지금 걸려 있는 작업을 한 번씩 실행한다(실행 중 새로 걸린 작업은 다음 호출 몫). 실행한 개수. */
+  runPending: () => number;
+}
+
+export function createFakeScheduler(): FakeScheduler {
+  let tasks: { callback: () => void; cancelled: boolean }[] = [];
+  const scheduledDelays: number[] = [];
+  return {
+    scheduler: (callback, milliseconds) => {
+      const task = { callback, cancelled: false };
+      tasks.push(task);
+      scheduledDelays.push(milliseconds);
+      return { cancel: () => { task.cancelled = true; }, keepsProcessAlive: () => false };
+    },
+    scheduledDelays,
+    pendingCount: () => tasks.filter((task) => !task.cancelled).length,
+    runPending: () => {
+      const due = tasks.filter((task) => !task.cancelled);
+      tasks = [];
+      for (const task of due) task.callback();
+      return due.length;
+    },
+  };
+}

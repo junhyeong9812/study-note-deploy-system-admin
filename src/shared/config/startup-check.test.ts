@@ -168,3 +168,63 @@ describe("헬스 — 설정이 유효할 때만 200", () => {
     expect((await healthGet()).status).toBe(200);
   });
 });
+
+describe("세부 4 — 설정의 형식도 검사한다(형식이 틀리면 빈 값과 같이 종료 · 헬스 503)", () => {
+  const malformedSettings: [string, string, () => string][] = [
+    ["ADMIN_ORIGIN 끝의 /", "ADMIN_ORIGIN", () => `${FAKE_ORIGIN}/`],
+    ["ADMIN_ORIGIN 경로 붙음", "ADMIN_ORIGIN", () => `${FAKE_ORIGIN}/login`],
+    ["ADMIN_ORIGIN scheme 없음", "ADMIN_ORIGIN", () => FAKE_ORIGIN.replace("https://", "")],
+    ["ADMIN_ORIGIN http", "ADMIN_ORIGIN", () => FAKE_ORIGIN.replace("https://", "http://")],
+    ["ADMIN_ORIGIN 대문자 호스트", "ADMIN_ORIGIN", () => FAKE_ORIGIN.replace("admin.", "ADMIN.")],
+    ["ADMIN_ORIGIN 가운데 공백", "ADMIN_ORIGIN", () => FAKE_ORIGIN.replace("admin.", "admin .")],
+    ["ADMIN_ORIGIN 쿼리", "ADMIN_ORIGIN", () => `${FAKE_ORIGIN}?x=1`],
+    ["OBSERVE_URL scheme 없음", "OBSERVE_URL", () => "observe-host:17000"],
+    ["OBSERVE_URL 해석 불가", "OBSERVE_URL", () => "http://"],
+    ["OBSERVE_URL ftp", "OBSERVE_URL", () => "ftp://observe.example.test"],
+    ["OBSERVE_URL 낱말", "OBSERVE_URL", () => "observe"],
+    ["해시 비용 머리 + 쓰레기", "ADMIN_PASSWORD_HASH", () => "$argon2id$v=19$m=19456,t=2,p=1$garbage"],
+    ["해시 비용 머리 + 빈 조각", "ADMIN_PASSWORD_HASH", () => "$argon2id$v=19$m=19456,t=2,p=1$$"],
+    ["해시 digest 깨짐", "ADMIN_PASSWORD_HASH", () => `${sameCostHash.slice(0, sameCostHash.lastIndexOf("$") + 1)}!!!not-base64!!!`],
+  ];
+
+  it.each(malformedSettings)("%s → 0 이 아닌 코드로 종료, 로그 1줄에 키 이름만", async (_label, name, makeValue) => {
+    const value = makeValue();
+    vi.stubEnv(name, value);
+    await runRegister();
+    expect(exitCalls).toHaveLength(1);
+    expect(exitCalls[0]).not.toBe(0);
+    expect(consoleLines.filter((line) => line.includes(name))).toHaveLength(1);
+    for (const line of consoleLines) {
+      expect(line).not.toContain(value);
+      for (const fakeValue of allFakeValues()) expect(line).not.toContain(fakeValue);
+    }
+  });
+
+  it.each(malformedSettings)("%s → 헬스 503, 본문에 키 이름 · 값 없음", async (_label, name, makeValue) => {
+    const value = makeValue();
+    vi.stubEnv(name, value);
+    const response = await healthGet();
+    expect(response.status).toBe(503);
+    const text = await response.text();
+    expect(text).not.toContain(name);
+    expect(text).not.toContain(value);
+  });
+
+  const validSettings: [string, string, () => Promise<string> | string][] = [
+    ["ADMIN_ORIGIN 출처 꼴", "ADMIN_ORIGIN", () => "https://admin.example.test"],
+    ["ADMIN_ORIGIN 포트가 붙은 https", "ADMIN_ORIGIN", () => "https://admin.example.test:8443"],
+    ["OBSERVE_URL http + 포트", "OBSERVE_URL", () => "http://observe.example.test:17000"],
+    ["OBSERVE_URL https", "OBSERVE_URL", () => "https://observe.example.test"],
+    ["OBSERVE_URL 끝의 /", "OBSERVE_URL", () => "http://observe.example.test:17000/"],
+    ["해시 salt 8바이트", "ADMIN_PASSWORD_HASH", () => hash(FAKE_PASSWORD, { algorithm: 2, salt: new Uint8Array(8).fill(7) })],
+    ["해시 salt 32바이트", "ADMIN_PASSWORD_HASH", () => hash(FAKE_PASSWORD, { algorithm: 2, salt: new Uint8Array(32).fill(9) })],
+    ["해시 출력 64바이트", "ADMIN_PASSWORD_HASH", () => hash(FAKE_PASSWORD, { algorithm: 2, outputLen: 64 })],
+  ];
+
+  it.each(validSettings)("%s → 종료하지 않고 헬스 200", async (_label, name, makeValue) => {
+    vi.stubEnv(name, await makeValue());
+    await runRegister();
+    expect(exitCalls).toEqual([]);
+    expect((await healthGet()).status).toBe(200);
+  });
+});

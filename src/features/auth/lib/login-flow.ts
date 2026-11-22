@@ -9,6 +9,7 @@
  * 본문(readCredentials)은 Origin 검사 · 속도 제한 뒤에만 읽는다. 속도 제한 표가 가득 차면 새 IP 는 429(기록 없음).
  * 관측 서버 호출이 성공하면 대기열을 비운다 — 시도 기록은 replayed:true + outcome, 응답이 잠금 시작이면 알림.
  * 대기열에 넣을 때마다 `queued=<현재 건수>`, 넘쳐 버리면 `dropped=<누적 건수>` 를 앱 로그에 남긴다. */
+import type { Scheduler } from "@/features/auth/lib/replay-scheduler";
 import type { AlertClient } from "@/features/auth/lib/alert-client";
 import type { AttemptQueue, QueuedRecord } from "@/features/auth/lib/attempt-queue";
 import { verifyCredentials, type AccountConfig } from "@/features/auth/lib/credentials";
@@ -62,6 +63,8 @@ export interface LoginFlowDependencies {
   logger: AppLogger;
   /** 알림 대기 상한용 — milliseconds 뒤에 끝나는 약속. 기본은 setTimeout. 테스트는 직접 끝내는 Fake 를 준다. */
   delay?: (milliseconds: number) => Promise<void>;
+  /** 세부 4: 대기열 주기 재전송의 타이머(기본 unrefScheduler). 대기열이 비어 있지 않은 동안만 REPLAY_INTERVAL_MILLISECONDS 마다. */
+  scheduler?: Scheduler;
 }
 
 /** 세부 2: 잠금 알림은 로그인 응답을 이만큼만 기다린다. 넘으면 응답을 먼저 돌려주고 앱 로그 1줄. */
@@ -87,6 +90,11 @@ export interface LoginFlow {
   waitForReplay(): Promise<void>;
   /** 세부 3: 응답을 기다리게 하지 않은 거절 기록 전송(과 그 실패의 대기열 넣기)이 끝날 때까지 기다린다. */
   waitForBackgroundRecords(): Promise<void>;
+  /** 세부 4: 관측 서버에 닿지 않는 동안 true — 마지막 관측 호출이 실패했거나 대기열에 항목이 있는 동안. */
+  temporaryRestrictionActive(): boolean;
+  /** 세부 4: 아직 로그로 내보내지 않은 "기록하지 않은 거절" 건수를 이유별 1줄로 내보낸다(창 끝 · 종료 때).
+   * 줄 형식(계약): 이유 낱말(origin_rejected · malformed · rate_limited · saturated)과 `count=<n>` 을 담는다. 0 건이면 줄 없음. */
+  flushUnrecordedCounts(): void;
 }
 
 export function createLoginFlow(dependencies: LoginFlowDependencies): LoginFlow {

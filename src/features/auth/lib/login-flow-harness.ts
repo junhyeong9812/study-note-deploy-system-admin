@@ -6,7 +6,7 @@ import { createRateLimiter } from "@/features/auth/lib/rate-limit";
 import { createTemporaryLockout } from "@/features/auth/lib/temporary-lockout";
 import {
   FAKE_ADMIN_ID, FAKE_IP, FAKE_ORIGIN, FAKE_PASSWORD, FAKE_PASSWORD_HASH, FAKE_SIGNING_KEY, FAKE_USER_AGENT,
-  createFakeAlertClient, createFakeClock, createFakeObserveClient, createRecordingLogger,
+  createFakeAlertClient, createFakeClock, createFakeScheduler, createFakeObserveClient, createRecordingLogger,
 } from "@/features/auth/lib/test-fakes";
 import type { PasswordVerifier } from "@/features/auth/lib/types";
 
@@ -16,6 +16,7 @@ export const TIMEOUT = { ok: false as const, reason: "timeout" as const };
 export function buildHarness(options: { queueCapacity?: number; account?: { adminId: string; passwordHash: string };
                        delay?: (milliseconds: number) => Promise<void>; maxTrackedIps?: number } = {}) {
   const clock = createFakeClock();
+  const replayScheduler = createFakeScheduler();   // 세부 4: 주기 재전송 — 테스트가 runPending 으로 돌린다
   const recording = createRecordingLogger();
   const observe = createFakeObserveClient();
   const alert = createFakeAlertClient();
@@ -38,8 +39,9 @@ export function buildHarness(options: { queueCapacity?: number; account?: { admi
     rateLimiter, temporaryLockout, attemptQueue: queue,
     observeClient: observe, alertClient: alert, logger: recording.logger,
     delay: options.delay ?? (() => new Promise<void>(() => undefined)),   // 기본: 끝나지 않는 대기 — 알림이 빨리 끝나면 기다리지 않아야 한다
+    scheduler: replayScheduler.scheduler,
   });
-  return { clock, recording, observe, alert, queue, temporaryLockout, verifyPassword, flow };
+  return { clock, recording, observe, alert, queue, temporaryLockout, verifyPassword, flow, replayScheduler };
 }
 
 export function input(overrides: Partial<LoginInput> = {}): LoginInput {

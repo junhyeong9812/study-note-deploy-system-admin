@@ -98,3 +98,20 @@ describe("instrumentation register — SIGTERM 에 물린다", () => {
     expect(lines[0]).toMatch(/\bqueued=1\b/);
   });
 });
+
+describe("세부 4 — 종료 때 아직 내보내지 않은 거절 건수도 내보낸다", () => {
+  it("Origin 거절 3번(기록 1 · 미기록 2) 뒤 종료 → origin_rejected count=2 줄, IP 없음", async () => {
+    for (let index = 0; index < 3; index += 1) {
+      await loginPost(new Request(new URL("/api/auth/login", FAKE_ORIGIN), {
+        method: "POST",
+        headers: { origin: "https://evil.example.test", "content-type": "application/json", "x-real-ip": FAKE_IP, "user-agent": FAKE_USER_AGENT },
+        body: JSON.stringify({ id: FAKE_ADMIN_ID, password: FAKE_PASSWORD }),
+      }));
+    }
+    consoleLines.length = 0;
+    logQueueOnShutdown();
+    const countLines = consoleLines.filter((line) => line.includes("origin_rejected") && /\bcount=2\b/.test(line));
+    expect(countLines).toHaveLength(1);
+    for (const line of consoleLines) expect(line).not.toContain(FAKE_IP);
+  });
+});

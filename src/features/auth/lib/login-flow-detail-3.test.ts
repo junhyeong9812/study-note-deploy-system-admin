@@ -116,7 +116,10 @@ describe("세부 3 — 속도 제한 표가 가득 찼을 때(닫힌 쪽)", () =
     await harness.flow.waitForBackgroundRecords();
     expect(harness.observe.rejected).toHaveLength(0);
     expect(harness.verifyPassword).toHaveBeenCalledTimes(12);
-    expect(harness.recording.calls.length).toBeGreaterThan(logLinesBefore);
+    // 세부 4: 포화 거절의 건수는 요청마다가 아니라 집계해 내보낸다(flushUnrecordedCounts — 창 끝 · 종료 때)
+    expect(harness.recording.calls.length - logLinesBefore).toBeLessThanOrEqual(1);
+    harness.flow.flushUnrecordedCounts();
+    expect(harness.recording.calls.some((call) => call.message.includes("saturated") && /\bcount=1\b/.test(call.message))).toBe(true);
     harness.clock.advance(7_000);                                        // t = 10s
     expect(await harness.flow.login(input({ ip: "198.51.100.10" }))).toEqual({ kind: "rate_limited" });
   });
