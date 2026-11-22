@@ -20,5 +20,6 @@ export interface GitHubRepository {
 
 /** 표에 있는 서비스면 그 저장소, 아니면 null(대소문자 · 공백 · 프로토타입 이름(`constructor` 등)도 null). */
 export function githubRepositoryFor(service: string): GitHubRepository | null {
-  throw new Error("not implemented");
+  if (!Object.hasOwn(GITHUB_REPOSITORY_NAMES, service)) return null;
+  return { owner: GITHUB_REPOSITORY_OWNER, name: GITHUB_REPOSITORY_NAMES[service as DeployService] };
 }

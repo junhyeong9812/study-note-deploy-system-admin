@@ -10,18 +10,70 @@
  * - 그 밖 → 200 `{success:true,data:DeployDetailView}`(GitHub · master 의 실패는 칸의 결과로). */
 import "server-only";
 import { requireApiSession, requireSession } from "@/features/auth/server/require-session";
-import type { DeployDetailOutcome } from "@/features/deploy-detail/lib/deploy-detail-view";
-import type { SearchParamsInput } from "@/shared/lib/upstream-result";
+import { parseDeployDetailQuery, type DeployDetailQuery } from "@/features/deploy-detail/lib/deploy-detail-query";
+import { buildDeployDetail, type DeployDetailOutcome } from "@/features/deploy-detail/lib/deploy-detail-view";
+import { createCachedGitHubClient } from "@/features/deploy-detail/lib/github-cache";
+import { GITHUB_API_BASE_URL, createGitHubClient, type GitHubClient } from "@/features/deploy-detail/lib/github-client";
+import { createDeployHistoryClient } from "@/features/deploys/lib/deploy-history-client";
+import { readServerConfig } from "@/shared/config/server-config";
+import { log } from "@/shared/lib/logger";
+import { searchParamsInputFromUrl } from "@/shared/lib/query-input";
+import { errorResponse } from "@/shared/lib/responses";
+import { screenDataResponse, upstreamFailureLogLine } from "@/shared/lib/screen-responses";
+import { isHttpBaseUrl } from "@/shared/lib/upstream-fetch";
+import { upstreamFailure, type SearchParamsInput } from "@/shared/lib/upstream-result";
+
+/** 부를 때마다 설정의 토큰과 전역 fetch 로 GitHub 를 부르는 클라이언트(캐시 안쪽). */
+const currentGitHubClient = (): GitHubClient => createGitHubClient({
+  baseUrl: GITHUB_API_BASE_URL, token: readServerConfig().githubToken, fetch: (input, init) => fetch(input, init),
+});
+
+const githubCache = createCachedGitHubClient({
+  compareCommits: (repository, baseSha, headSha) => currentGitHubClient().compareCommits(repository, baseSha, headSha),
+  getCommit: (repository, sha) => currentGitHubClient().getCommit(repository, sha),
+  listPullRequestsForCommit: (repository, sha) => currentGitHubClient().listPullRequestsForCommit(repository, sha),
+}, { clock: () => Date.now() });
+
+function logFailedCells(outcome: DeployDetailOutcome) {
+  if (outcome.kind !== "view") return;
+  const { view } = outcome;
+  for (const [cell, result] of [["deployment", view.deployment], ["pullRequest", view.pullRequest], ["commits", view.commits], ["commit", view.commit]] as const) {
+    if (result === null) continue;
+    const logLine = upstreamFailureLogLine("deploy-detail", cell, result);
+    if (logLine !== null) void log("screen-deploy-detail", logLine, "warning");
+  }
+}
+
+/** 세션 검증과 입력 검증을 마친 뒤에만 부른다. */
+async function buildOutcome(query: DeployDetailQuery): Promise<DeployDetailOutcome> {
+  const config = readServerConfig();
+  let outcome: DeployDetailOutcome;
+  if (!isHttpBaseUrl(config.deployMasterUrl) || config.deploySecret.length === 0) {
+    outcome = { kind: "view", view: { query, deployment: upstreamFailure("not_configured"), range: null, repository: null, pullRequest: null, commits: null, commit: null } };
+  } else {
+    const deployHistory = createDeployHistoryClient({ baseUrl: config.deployMasterUrl, secret: config.deploySecret, fetch: (input, init) => fetch(input, init) });
+    outcome = await buildDeployDetail({ deployHistory, github: githubCache }, query);
+  }
+  logFailedCells(outcome);
+  return outcome;
+}
 
 /** 화면용 — 세션이 없으면 requireSession 이 /login 으로 보낸다(다른 서버를 한 번도 부르지 않는다). */
 export async function loadDeployDetail(searchParams: SearchParamsInput): Promise<DeployDetailOutcome> {
   await requireSession();
-  throw new Error("not implemented");
+  const parsed = parseDeployDetailQuery(searchParams);
+  if (!parsed.ok) return { kind: "invalid_input", field: parsed.field ?? "" };
+  return buildOutcome(parsed.query);
 }
 
 /** 데이터 경로용(Route Handler 의 GET 이 그대로 돌려준다). */
 export async function deployDetailResponse(request: Request): Promise<Response> {
   const session = await requireApiSession();
   if (session instanceof Response) return session;
-  throw new Error("not implemented");
+  const parsed = parseDeployDetailQuery(searchParamsInputFromUrl(new URL(request.url)));
+  if (!parsed.ok) return screenDataResponse(null, parsed);
+  const outcome = await buildOutcome(parsed.query);
+  if (outcome.kind === "not_found") return errorResponse(404, "not_found");
+  if (outcome.kind === "invalid_input") return errorResponse(422, "invalid_input", { field: outcome.field });
+  return screenDataResponse(outcome.view, null);
 }

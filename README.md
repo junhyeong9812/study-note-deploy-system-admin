@@ -12,7 +12,7 @@
 - `src/features/auth/server/login-service.ts` — 속도 제한 · 임시 제한 · 대기열을 프로세스 안에 하나만 둔다(`globalThis`).
 - 화면 넷의 데이터 계층 `src/features/{deploys,logs,status,login-attempts}/` — `lib/`(순수: 입력 검증 · 다른 서버 클라이언트 · 응답에서 화면에 필요한 칸만 고르기, 설정·Next 를 읽지 않는다) + `server/`(진입 함수 — `requireSession()`/`requireApiSession()` 을 **직접** 부른 뒤에만 설정을 읽고 다른 서버를 부른다) + `ui/`(서버 컴포넌트 — 받은 값만 그린다. server · `*-client` · 설정을 값으로 임포트하지 않는다). `src/app` 의 화면 · `GET /api/{deploys,logs,status,login-attempts}` 는 진입 함수만 부른다(소스 검사 `src/app/screen-data-imports.test.ts`).
   - 다른 서버 호출: 전부 GET · `redirect: "manual"` · 본문까지 5초 기한. 실패는 고정된 짧은 사유(`src/shared/lib/upstream-result.ts`)와 상태 코드만 — 오류 본문 원문 · 주소 · 예외 문구는 넘기지 않는다. 정상 응답 안의 사유 글자(감시 대상의 DOWN 사유 · backend 의존성 detail · 관측 서버 헬스의 failure)는 주소를 `(주소)` 로 가리고 120자로 자른다(`maskUpstreamReason`). 입력이 틀리면 데이터 경로는 422 `invalid_input`(다른 서버를 부르지 않는다), 다른 서버가 실패해도 200 에 그 칸의 실패로 보인다. 상태 화면의 다섯 호출은 병렬.
-  - 화면: 배포 이력(`/deploys`)만 있다 — 로그 조회 · 상태 한눈에 · 로그인 시도 기록은 데이터 경로만 있고 화면은 다음 단계(내비게이션에 "준비 중"). 공통 틀 `src/features/admin-shell/ui/AdminShell.tsx`(내비게이션 · 로그아웃 · "임시 제한 중").
+  - 화면: 배포 이력(`/deploys` — 줄을 누르면 오른쪽에 배포 상세: 요약 · 직전 성공 배포→이번 배포의 커밋 목록 · PR · 커밋별 바뀐 파일과 diff. 선택은 주소의 `selected` · `selectedService` · `commit`)만 있다 — 로그 조회 · 상태 한눈에 · 로그인 시도 기록은 데이터 경로만 있고 화면은 다음 단계(내비게이션에 "준비 중"). 공통 틀 `src/features/admin-shell/ui/AdminShell.tsx`(내비게이션 · 로그아웃 · "임시 제한 중").
 - `src/shared/config/server-config.ts` — 환경 변수를 읽는 유일한 곳(`server-only`).
 - `src/shared/lib/logger.ts` — `requestId:admin:message` 한 줄, stdout + Redis 스트림 `logs`(실패 무해). IP · 입력 ID · 비밀번호 · User-Agent 는 넘기지 않는다.
 
@@ -59,7 +59,7 @@
   - 실측: 요청을 하나도 받기 전에 끝난다(컨테이너 안에서 시작 직후부터 헬스를 두드려도 응답 0건). `restart: unless-stopped` 아래에서는 재시작이 되풀이된다(12초에 5회).
   - 배포에서의 뜻: 새 자리가 뜨지 않으므로 compose healthcheck 는 healthy 가 되지 않고, ci-cd agent 의 자리 헬스 확인(`127.0.0.1:18001`/`18002`)이 실패해 그 배포는 `cd_health` 실패로 끝난다 — nginx 는 전환되지 않고 이전 자리가 계속 서비스한다.
   - 헬스(`GET /api/health`)도 필수 설정이 유효할 때만 200, 아니면 503(본문에 키 이름·값 없음) — 시작 검사가 건너뛰어져도 자리 헬스 확인에서 걸린다.
-- **선택**: `LOG_REDIS_URL`(비면 stdout 만) 하나뿐이다. 비어 있으면 시작 로그에 이름만 1줄.
+- **선택**: `LOG_REDIS_URL`(비면 stdout 만) — 비어 있으면 시작 로그에 이름만 1줄. `GITHUB_TOKEN`(배포 상세가 GitHub REST API 로 커밋 · 비교 · PR 을 읽을 때 싣는 토큰) — 비면 토큰 없이 부른다(GitHub 익명 한도 IP 당 시간당 60회, 토큰이 있으면 5000회 — 한도를 넘으면 상세의 GitHub 구역만 "GitHub: 한도 초과"). 권한은 **공개 저장소 읽기 전용**만 준다(fine-grained token 의 "Public repositories (read-only)", 그 밖의 권한 없음). 값은 서버 쪽에만 있고 로그 · 응답 · 오류 문구에 나오지 않는다.
 
 ## 보안 경계 요약
 

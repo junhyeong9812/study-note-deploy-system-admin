@@ -20,10 +20,25 @@ export interface DeployRange {
 
 /** 같은 커밋인가 — 대소문자 무관 완전 일치(앞부분 일치는 다름). */
 export function isSameCommit(left: string, right: string): boolean {
-  throw new Error("not implemented");
+  return left.toLowerCase() === right.toLowerCase();
 }
 
 /** 선택한 요청 ID 가 목록에 없으면 null. */
 export function findDeployRange(deployments: readonly DeploymentSummary[], selectedRequestId: string): { selected: DeploymentSummary; range: DeployRange } | null {
-  throw new Error("not implemented");
+  const selectedIndex = deployments.findIndex((deployment) => deployment.requestId === selectedRequestId);
+  if (selectedIndex < 0) return null;
+  const selected = deployments[selectedIndex];
+  const base = deployments
+    .slice(selectedIndex + 1)
+    .find((deployment) => deployment.service === selected.service && deployment.state === "succeeded");
+  if (base === undefined) {
+    return { selected, range: { status: "no_previous", baseRequestId: null, baseCommitSha: null, headCommitSha: selected.commitSha } };
+  }
+  return {
+    selected,
+    range: {
+      status: isSameCommit(base.commitSha, selected.commitSha) ? "same_commit" : "range",
+      baseRequestId: base.requestId, baseCommitSha: base.commitSha, headCommitSha: selected.commitSha,
+    },
+  };
 }

@@ -23,3 +23,11 @@
   padding: var(--space-8) var(--space-4); text-align: center; color: var(--muted);
   border: 1px dashed var(--line); border-radius: var(--radius-md);
 }
+/* 상세를 연 분할 화면 — 넓은 화면은 왼쪽 목록 | 오른쪽 상세(목록은 칸을 줄인다), 좁은 화면은 상세가 화면 전체를 덮는다(DeployDetailPanel). */
+.mainSplit { max-width: 1680px; }
+.split { display: flex; flex-direction: column; gap: var(--space-4); }
+.splitList { min-width: 0; display: flex; flex-direction: column; gap: var(--space-4); }
+@media (min-width: 1100px) {
+  .split { display: grid; grid-template-columns: minmax(420px, 2fr) minmax(0, 3fr); align-items: start; }
+  .splitList { position: sticky; top: var(--space-4); max-height: calc(100vh - var(--space-8)); overflow-y: auto; }
+}

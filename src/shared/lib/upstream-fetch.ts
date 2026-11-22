@@ -11,8 +11,10 @@ export interface UpstreamGetOptions {
   headers?: Record<string, string>;
 }
 
-/** 응답을 받았다 — 상태 코드와 본문(JSON 으로 읽히면 json, 아니면 parsed:false). */
-export type UpstreamResponse = { ok: true; status: number; parsed: true; json: unknown } | { ok: true; status: number; parsed: false };
+/** 응답을 받았다 — 상태 코드 · 응답 머리글(한도 · 쪽 나눔 판정용 — 화면에 넘기지 않는다)과 본문(JSON 으로 읽히면 json, 아니면 parsed:false). */
+export type UpstreamResponse =
+  | { ok: true; status: number; headers: Headers; parsed: true; json: unknown }
+  | { ok: true; status: number; headers: Headers; parsed: false };
 
 /** 해석되는 http(s) 주소인가(끝의 `/` 허용) — 설정 검사와 호출 전 방어가 같은 규칙을 쓴다. */
 export function isHttpBaseUrl(value: string): boolean {
@@ -55,9 +57,9 @@ export async function getUpstream(url: string, options: UpstreamGetOptions): Pro
     return upstreamFailure(signal.aborted ? "timeout" : "unreachable");
   }
   try {
-    return { ok: true, status: response.status, parsed: true, json: JSON.parse(text) as unknown };
+    return { ok: true, status: response.status, headers: response.headers, parsed: true, json: JSON.parse(text) as unknown };
   } catch {
-    return { ok: true, status: response.status, parsed: false };
+    return { ok: true, status: response.status, headers: response.headers, parsed: false };
   }
 }
 

@@ -1,8 +1,9 @@
 /** 배포 상세의 입력 검증(순수) — master · GitHub 를 부르기 **전에** 거절한다(명세 §10.2 "SHA 는 16진수 7~40자만, 요청 ID 는 기존 형식만 — 그 밖은 GitHub 를 부르지 않고 422 invalid_input" — 11-22 정정).
  * 입력 이름: service(필수 — 배포 이력의 허용 목록 DEPLOY_SERVICES) · selected(필수 — 요청 ID) · commit(선택 — 고른 커밋의 SHA).
  * 대소문자 다름 · 앞뒤 공백 · 배열(같은 이름 여러 번) · 형식 밖은 invalid_input(field = 그 이름). 빈 commit 은 "고르지 않음"(null). */
-import type { DeployService } from "@/features/deploys/lib/deploy-history-query";
-import type { SearchParamsInput, UpstreamFailure } from "@/shared/lib/upstream-result";
+import { DEPLOY_SERVICES, type DeployService } from "@/features/deploys/lib/deploy-history-query";
+import { singleValue } from "@/shared/lib/query-input";
+import { invalidInput, type SearchParamsInput, type UpstreamFailure } from "@/shared/lib/upstream-result";
 
 /** 커밋 SHA — 16진수(대소문자) 7~40자. */
 export const COMMIT_SHA_PATTERN = /^[0-9a-fA-F]{7,40}$/;
@@ -20,9 +21,15 @@ export interface DeployDetailQuery {
 
 /** 16진수 7~40자인가. */
 export function isCommitSha(value: string): boolean {
-  throw new Error("not implemented");
+  return COMMIT_SHA_PATTERN.test(value);
 }
 
 export function parseDeployDetailQuery(input: SearchParamsInput): { ok: true; query: DeployDetailQuery } | UpstreamFailure {
-  throw new Error("not implemented");
+  const service = singleValue(input, "service");
+  if (service === null || service === "many" || !(DEPLOY_SERVICES as readonly string[]).includes(service)) return invalidInput("service");
+  const selected = singleValue(input, "selected");
+  if (selected === null || selected === "many" || !DEPLOY_REQUEST_ID_PATTERN.test(selected)) return invalidInput("selected");
+  const commit = singleValue(input, "commit");
+  if (commit === "many" || (commit !== null && !isCommitSha(commit))) return invalidInput("commit");
+  return { ok: true, query: { service: service as DeployService, selectedRequestId: selected, commitSha: commit } };
 }

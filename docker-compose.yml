@@ -17,6 +17,7 @@ x-admin: &admin
     DEPLOY_SECRET: ${DEPLOY_SECRET:-}
     BACKEND_URL: ${BACKEND_URL:-}
     LOG_REDIS_URL: ${LOG_REDIS_URL:-}
+    GITHUB_TOKEN: ${GITHUB_TOKEN:-}               # 배포 상세(GitHub 읽기) — 선택
     SERVER_NAME: admin
   healthcheck:
     # localhost 금지 — 컨테이너 안에서 ::1로 풀리는 함정 (규약)

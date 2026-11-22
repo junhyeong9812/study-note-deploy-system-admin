@@ -14,11 +14,13 @@
  *    - 있으면 getCommit(목록의 SHA).
  * GitHub 칸 하나가 실패해도 다른 칸과 deployment 는 그대로 낸다. */
 import type { DeployHistoryClient, DeploymentSummary } from "@/features/deploys/lib/deploy-history-client";
-import type { DeployDetailQuery } from "@/features/deploy-detail/lib/deploy-detail-query";
-import type { DeployRange } from "@/features/deploy-detail/lib/deploy-range";
-import type { GitHubRepository } from "@/features/deploy-detail/lib/github-repository";
-import type { CommitDetail, CommitSummary, ComparisonStatus, GitHubClient, PullRequestSummary } from "@/features/deploy-detail/lib/github-client";
-import type { UpstreamResult } from "@/shared/lib/upstream-result";
+import { isCommitSha, type DeployDetailQuery } from "@/features/deploy-detail/lib/deploy-detail-query";
+import { findDeployRange, isSameCommit, type DeployRange } from "@/features/deploy-detail/lib/deploy-range";
+import { githubRepositoryFor, type GitHubRepository } from "@/features/deploy-detail/lib/github-repository";
+import {
+  choosePullRequest, type CommitDetail, type CommitSummary, type ComparisonStatus, type GitHubClient, type PullRequestSummary,
+} from "@/features/deploy-detail/lib/github-client";
+import { upstreamFailure, type UpstreamResult } from "@/shared/lib/upstream-result";
 
 /** A 를 찾으려고 master 에서 읽는 건수(master 의 상한과 같다 — 그 밖은 "이력 밖" = A 없음). */
 export const DEPLOY_DETAIL_HISTORY_LIMIT = 200;
@@ -61,6 +63,71 @@ export interface DeployDetailDependencies {
   github: GitHubClient;
 }
 
+function summaryOf(detail: CommitDetail): CommitSummary {
+  const { sha, title, message, authorName, authoredAt, htmlUrl } = detail;
+  return { sha, title, message, authorName, authoredAt, htmlUrl };
+}
+
+async function loadPullRequest(github: GitHubClient, repository: GitHubRepository, headSha: string): Promise<UpstreamResult<PullRequestSummary | null>> {
+  const result = await github.listPullRequestsForCommit(repository, headSha);
+  return result.ok ? { ok: true, value: choosePullRequest(result.value) } : result;
+}
+
+/** commits 칸과(no_previous 일 때) 이미 받은 B 커밋 — 고른 커밋이 B 면 다시 부르지 않는다. */
+async function loadCommits(github: GitHubClient, repository: GitHubRepository, range: DeployRange): Promise<{ commits: UpstreamResult<CommitListView>; headDetail: CommitDetail | null }> {
+  if (range.status === "same_commit") {
+    return { commits: { ok: true, value: { comparisonStatus: null, diverged: false, commits: [], totalCommits: 0, hasMoreCommits: false, htmlUrl: null } }, headDetail: null };
+  }
+  if (range.status === "no_previous") {
+    const head = await github.getCommit(repository, range.headCommitSha);
+    if (!head.ok) return { commits: head, headDetail: null };
+    return {
+      commits: { ok: true, value: { comparisonStatus: null, diverged: false, commits: [summaryOf(head.value)], totalCommits: 1, hasMoreCommits: false, htmlUrl: head.value.htmlUrl } },
+      headDetail: head.value,
+    };
+  }
+  const comparison = await github.compareCommits(repository, range.baseCommitSha as string, range.headCommitSha);
+  if (!comparison.ok) return { commits: comparison, headDetail: null };
+  const { status, commits, totalCommits, hasMoreCommits, htmlUrl } = comparison.value;
+  return { commits: { ok: true, value: { comparisonStatus: status, diverged: status === "diverged", commits, totalCommits, hasMoreCommits, htmlUrl } }, headDetail: null };
+}
+
 export async function buildDeployDetail(dependencies: DeployDetailDependencies, query: DeployDetailQuery): Promise<DeployDetailOutcome> {
-  throw new Error("not implemented");
+  const listed = await dependencies.deployHistory.listDeployments({ service: query.service, limit: DEPLOY_DETAIL_HISTORY_LIMIT });
+  if (!listed.ok) {
+    return { kind: "view", view: { query, deployment: listed, range: null, repository: null, pullRequest: null, commits: null, commit: null } };
+  }
+  const found = findDeployRange(listed.value, query.selectedRequestId);
+  if (found === null) return { kind: "not_found" };
+  const { selected, range } = found;
+  const deployment: UpstreamResult<DeploymentSummary> = { ok: true, value: selected };
+  const repository = githubRepositoryFor(selected.service);
+  const shasReadable = isCommitSha(range.headCommitSha) && (range.baseCommitSha === null || isCommitSha(range.baseCommitSha));
+  if (repository === null || !shasReadable) {
+    const unparseable = upstreamFailure("unparseable");
+    return {
+      kind: "view",
+      view: { query, deployment, range, repository, pullRequest: unparseable, commits: unparseable, commit: query.commitSha === null ? null : unparseable },
+    };
+  }
+
+  const [pullRequest, { commits, headDetail }] = await Promise.all([
+    loadPullRequest(dependencies.github, repository, range.headCommitSha),
+    loadCommits(dependencies.github, repository, range),
+  ]);
+
+  let commit: UpstreamResult<CommitDetail> | null = null;
+  if (query.commitSha !== null) {
+    const chosenSha = query.commitSha;
+    if (!commits.ok) {
+      commit = commits;   // 목록을 확인할 수 없으므로 부르지 않는다
+    } else {
+      const listedCommit = commits.value.commits.find((summary) => isSameCommit(summary.sha, chosenSha));
+      if (listedCommit === undefined) return { kind: "invalid_input", field: "commit" };   // 임의 커밋 조회 통로 차단
+      commit = headDetail !== null && headDetail.sha === listedCommit.sha
+        ? { ok: true, value: headDetail }
+        : await dependencies.github.getCommit(repository, listedCommit.sha);
+    }
+  }
+  return { kind: "view", view: { query, deployment, range, repository, pullRequest, commits, commit } };
 }

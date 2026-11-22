@@ -17,8 +17,10 @@
  * html_url 류는 `https://github.com/` 로 시작해야 한다 — 아니면 unparseable(화면의 링크가 다른 곳으로 가지 않게).
  * 꼴이 다르면(칸 빠짐 · 형 다름 · 모르는 status) 전체가 unparseable. SHA 인자가 16진수 7~40자가 아니면 부르지 않고 invalid_input(field "sha"). */
 import type { FetchLike, TimeoutSignalFactory } from "@/features/auth/lib/types";
+import { isCommitSha } from "@/features/deploy-detail/lib/deploy-detail-query";
 import type { GitHubRepository } from "@/features/deploy-detail/lib/github-repository";
-import type { UpstreamResult } from "@/shared/lib/upstream-result";
+import { getUpstream, isNonNegativeInteger, isRecord, upstreamUrl, type UpstreamResponse } from "@/shared/lib/upstream-fetch";
+import { failureForHttpStatus, invalidInput, upstreamFailure, type UpstreamFailure, type UpstreamResult } from "@/shared/lib/upstream-result";
 
 /** 실제 GitHub API 기준 주소 — 서버 쪽 진입이 쓴다(테스트는 클라이언트에 다른 주소를 준다). */
 export const GITHUB_API_BASE_URL = "https://api.github.com";
@@ -115,9 +117,174 @@ export interface GitHubClient {
 
 /** 여럿이면 병합된 것(mergedAt 이 있는 것) 중 GitHub 순서의 첫 번째, 병합된 것이 없으면 첫 번째, 빈 목록이면 null. */
 export function choosePullRequest(pullRequests: readonly PullRequestSummary[]): PullRequestSummary | null {
-  throw new Error("not implemented");
+  return pullRequests.find((pullRequest) => pullRequest.mergedAt !== null) ?? pullRequests[0] ?? null;
+}
+
+/** 해석 중 꼴이 다를 때 던진다 — 응답 하나의 해석을 통째로 unparseable 로 바꾼다(원문은 담지 않는다). */
+class UnexpectedShape extends Error {}
+
+function requireRecord(value: unknown): Record<string, unknown> {
+  if (!isRecord(value)) throw new UnexpectedShape();
+  return value;
+}
+
+function requireText(value: unknown): string {
+  if (typeof value !== "string") throw new UnexpectedShape();
+  return value;
+}
+
+/** 없음 · null 은 null, 글자는 그대로, 그 밖은 꼴이 다름. */
+function optionalText(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  return requireText(value);
+}
+
+function requireCount(value: unknown): number {
+  if (!isNonNegativeInteger(value)) throw new UnexpectedShape();
+  return value;
+}
+
+function requireGitHubWebUrl(value: unknown): string {
+  const text = requireText(value);
+  if (!text.startsWith(GITHUB_WEB_ORIGIN_PREFIX)) throw new UnexpectedShape();
+  return text;
+}
+
+function requireOneOf<Value extends string>(value: unknown, allowed: readonly Value[]): Value {
+  if (typeof value !== "string" || !(allowed as readonly string[]).includes(value)) throw new UnexpectedShape();
+  return value as Value;
+}
+
+function requireArray(value: unknown): unknown[] {
+  if (!Array.isArray(value)) throw new UnexpectedShape();
+  return value;
+}
+
+function parseCommitSummary(value: unknown): CommitSummary {
+  const row = requireRecord(value);
+  const sha = requireText(row.sha);
+  if (!isCommitSha(sha)) throw new UnexpectedShape();
+  const commit = requireRecord(row.commit);
+  const message = requireText(commit.message);
+  let authorName: string | null = null;
+  let authoredAt: string | null = null;
+  if (commit.author !== undefined && commit.author !== null) {
+    const author = requireRecord(commit.author);
+    authorName = optionalText(author.name);
+    authoredAt = optionalText(author.date);
+  }
+  const newlineIndex = message.indexOf("\n");
+  return {
+    sha, title: newlineIndex < 0 ? message : message.slice(0, newlineIndex), message, authorName, authoredAt,
+    htmlUrl: requireGitHubWebUrl(row.html_url),
+  };
+}
+
+function parseComparison(json: unknown): CommitComparison {
+  const body = requireRecord(json);
+  const received = requireArray(body.commits).map(parseCommitSummary);
+  const totalCommits = requireCount(body.total_commits);
+  const commits = received.slice(-COMMIT_LIST_LIMIT);   // B 에 가까운(가장 최근) 쪽을 남긴다
+  return {
+    status: requireOneOf(body.status, COMPARISON_STATUSES),
+    aheadBy: requireCount(body.ahead_by),
+    behindBy: requireCount(body.behind_by),
+    totalCommits,
+    commits,
+    hasMoreCommits: Math.max(totalCommits, received.length) > commits.length,
+    htmlUrl: requireGitHubWebUrl(body.html_url),
+  };
+}
+
+function parsePatch(value: unknown): FilePatch {
+  if (typeof value !== "string") return { kind: "unavailable" };
+  const lines = value.split("\n");
+  if (lines.length <= FILE_PATCH_LINE_LIMIT) return { kind: "text", text: value, truncated: false, totalLines: lines.length };
+  return { kind: "text", text: lines.slice(0, FILE_PATCH_LINE_LIMIT).join("\n"), truncated: true, totalLines: lines.length };
+}
+
+function parseFileChange(value: unknown): CommitFileChange {
+  const row = requireRecord(value);
+  return {
+    filename: requireText(row.filename),
+    previousFilename: optionalText(row.previous_filename),
+    status: requireOneOf(row.status, FILE_CHANGE_STATUSES),
+    additions: requireCount(row.additions),
+    deletions: requireCount(row.deletions),
+    patch: parsePatch(row.patch),
+  };
+}
+
+/** Link 머리글에 rel="next" 가 있는가(다음 쪽이 있다). */
+function hasNextPage(headers: Headers): boolean {
+  return /;\s*rel="?next"?/.test(headers.get("link") ?? "");
+}
+
+function parseCommitDetail(json: unknown, headers: Headers): CommitDetail {
+  const summary = parseCommitSummary(json);
+  const received = requireArray(requireRecord(json).files).map(parseFileChange);
+  const files = received.slice(0, COMMIT_FILE_LIMIT);
+  return { ...summary, files, hasMoreFiles: received.length > files.length || hasNextPage(headers) };
+}
+
+function parsePullRequest(value: unknown): PullRequestSummary {
+  const row = requireRecord(value);
+  if (typeof row.number !== "number" || !Number.isInteger(row.number) || row.number <= 0) throw new UnexpectedShape();
+  return {
+    number: row.number,
+    title: requireText(row.title),
+    body: optionalText(row.body),
+    state: requireOneOf(row.state, ["open", "closed"] as const),
+    mergedAt: optionalText(row.merged_at),
+    htmlUrl: requireGitHubWebUrl(row.html_url),
+  };
+}
+
+/** 2xx 가 아닌 응답 → 실패 이유(머리 주석의 표). */
+function failureForGitHubResponse(response: UpstreamResponse): UpstreamFailure {
+  const { status, headers } = response;
+  if (status === 429) return upstreamFailure("rate_limited", { status });
+  if (status === 403) {
+    const limited = headers.get("x-ratelimit-remaining") === "0" || headers.has("retry-after");
+    return upstreamFailure(limited ? "rate_limited" : "bad_status", { status });
+  }
+  if (status === 404 || status === 422) return upstreamFailure("not_found", { status });
+  return failureForHttpStatus(status);
 }
 
 export function createGitHubClient(options: GitHubClientOptions): GitHubClient {
-  throw new Error("not implemented");
+  const headers: Record<string, string> = { Accept: GITHUB_ACCEPT, "X-GitHub-Api-Version": GITHUB_API_VERSION };
+  if (options.token !== null && options.token.length > 0) headers.Authorization = `Bearer ${options.token}`;
+
+  async function get<Value>(path: string, parameters: [string, string | null][], parse: (json: unknown, headers: Headers) => Value): Promise<UpstreamResult<Value>> {
+    const response = await getUpstream(upstreamUrl(options.baseUrl, path, parameters), { fetch: options.fetch, timeoutSignal: options.timeoutSignal, headers });
+    if (!response.ok) return response;
+    if (response.status < 200 || response.status >= 300) return failureForGitHubResponse(response);
+    if (!response.parsed) return upstreamFailure("unparseable");
+    try {
+      return { ok: true, value: parse(response.json, response.headers) };
+    } catch (error) {
+      if (error instanceof UnexpectedShape) return upstreamFailure("unparseable");
+      throw error;
+    }
+  }
+
+  function repositoryPath(repository: GitHubRepository): string {
+    return `/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}`;
+  }
+
+  return {
+    async compareCommits(repository, baseSha, headSha) {
+      if (!isCommitSha(baseSha) || !isCommitSha(headSha)) return invalidInput("sha");
+      return get(`${repositoryPath(repository)}/compare/${baseSha}...${headSha}`, [], parseComparison);
+    },
+    async getCommit(repository, sha) {
+      if (!isCommitSha(sha)) return invalidInput("sha");
+      return get(`${repositoryPath(repository)}/commits/${sha}`, [["per_page", String(COMMIT_FILE_LIMIT)]], parseCommitDetail);
+    },
+    async listPullRequestsForCommit(repository, sha) {
+      if (!isCommitSha(sha)) return invalidInput("sha");
+      return get(`${repositoryPath(repository)}/commits/${sha}/pulls`, [], (json) => requireArray(json).map(parsePullRequest));
+    },
+  };
 }
