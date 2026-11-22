@@ -1,5 +1,6 @@
 /** 설정 읽기 — 비밀값이 든 환경 변수는 이 모듈만 읽는다. 서버 쪽 전용(클라이언트 묶음에 들어가면 빌드가 실패한다).
- * 값은 로그·응답에 내지 않는다. 비어 있는 키는 "이름만" 알린다. */
+ * 값은 로그·응답에 내지 않는다. 비었거나 형식이 틀린 키는 "이름만" 알린다.
+ * 필수 설정이 없거나 형식이 틀리면 서버가 뜨지 않는다(종료 코드 78 — startup-check). middleware 도 이 모듈을 읽으므로 argon2 를 임포트하지 않는다. */
 import "server-only";
 import { hasRequiredHashCost } from "@/features/auth/lib/credentials";
 
@@ -45,15 +46,30 @@ export function readServerConfig(): ServerConfig {
   };
 }
 
-/** 로그인에 반드시 있어야 하는 설정 중 비었거나 쓸 수 없는 키의 이름. 하나라도 있으면 로그인은 전부 거절한다. */
+/** ADMIN_ORIGIN 의 형식 — https 이고 출처 꼴 그대로(`new URL(값).origin === 값`. 끝의 `/` · 경로 · 쿼리 · scheme 없음 · 대문자 호스트는 틀림). */
+export function isValidAdminOrigin(value: string): boolean {
+  if (!URL.canParse(value)) return false;
+  const parsed = new URL(value);
+  return parsed.protocol === "https:" && parsed.origin === value;
+}
+
+/** OBSERVE_URL 의 형식 — 해석되는 http(s) 주소(끝의 `/` 허용). */
+export function isValidObserveUrl(value: string): boolean {
+  if (!URL.canParse(value)) return false;
+  const parsed = new URL(value);
+  return (parsed.protocol === "http:" || parsed.protocol === "https:") && parsed.hostname.length > 0;
+}
+
+/** 로그인에 반드시 있어야 하는 설정 중 비었거나 형식이 틀린 키의 이름(해시는 비용 머리까지 — 라이브러리 해석은
+ * login-config-check 가 더한다). 하나라도 있으면 서버가 뜨지 않는다(시작 검사) · 헬스 503 · 로그인 거절. */
 export function missingLoginConfigKeys(config: ServerConfig): string[] {
   const missing: string[] = [];
   if (config.adminUser.length === 0) missing.push("ADMIN_USER");
   // 해시 비용(m·t·p)이 더미 해시와 다르면 설정 없음과 같다(세부 2) — 값은 어디에도 찍지 않는다
   if (!hasRequiredHashCost(config.adminPasswordHash)) missing.push("ADMIN_PASSWORD_HASH");
   if (config.sessionSecret.length < SESSION_SECRET_MINIMUM_LENGTH) missing.push("SESSION_SECRET");
-  if (config.adminOrigin.length === 0) missing.push("ADMIN_ORIGIN");
-  if (config.observeUrl.length === 0) missing.push("OBSERVE_URL");
+  if (!isValidAdminOrigin(config.adminOrigin)) missing.push("ADMIN_ORIGIN");
+  if (!isValidObserveUrl(config.observeUrl)) missing.push("OBSERVE_URL");
   if (config.observeSecret.length === 0) missing.push("OBSERVE_SECRET");
   return missing;
 }

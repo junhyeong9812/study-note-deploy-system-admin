@@ -1,6 +1,8 @@
 /** 로그인 화면 — 세션 없이 열린다. 이미 로그인했으면 홈으로. */
 import { redirect } from "next/navigation";
 import { readVerifiedSession } from "@/features/auth/server/require-session";
+import { isTemporaryRestrictionActive } from "@/features/auth/server/temporary-restriction-status";
+import { TemporaryRestrictionNotice } from "@/features/auth/ui/TemporaryRestrictionNotice";
 import { LoginForm } from "@/features/auth/ui/LoginForm";
 import styles from "@/app/login/page.module.css";
 
@@ -12,6 +14,7 @@ export default async function LoginPage() {
     <main className={styles.main}>
       <section className={styles.card}>
         <h1 className={styles.title}>study-note 어드민</h1>
+        {isTemporaryRestrictionActive() && <TemporaryRestrictionNotice />}
         <LoginForm />
       </section>
     </main>

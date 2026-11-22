@@ -1,5 +1,7 @@
 /** 홈 — 로그인 뒤 첫 화면. 네 화면의 메뉴 자리와 로그아웃만(화면은 다음 task). */
 import { requireSession } from "@/features/auth/server/require-session";
+import { isTemporaryRestrictionActive } from "@/features/auth/server/temporary-restriction-status";
+import { TemporaryRestrictionNotice } from "@/features/auth/ui/TemporaryRestrictionNotice";
 import { LogoutButton } from "@/features/auth/ui/LogoutButton";
 import styles from "@/app/page.module.css";
 
@@ -21,6 +23,7 @@ export default async function HomePage() {
         <LogoutButton />
       </header>
       <main className={styles.main}>
+        {isTemporaryRestrictionActive() && <div className={styles.notice}><TemporaryRestrictionNotice /></div>}
         <ul className={styles.menu}>
           {MENU_ITEMS.map((item) => (
             <li key={item.title} className={styles.menuItem}>

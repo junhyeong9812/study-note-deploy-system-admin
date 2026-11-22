@@ -9,13 +9,14 @@ import { createObserveClient } from "@/features/auth/lib/observe-client";
 import { verifyArgon2idPassword } from "@/features/auth/lib/password-hash";
 import { createRateLimiter } from "@/features/auth/lib/rate-limit";
 import { createTemporaryLockout } from "@/features/auth/lib/temporary-lockout";
-import { missingLoginConfigKeys, readServerConfig } from "@/shared/config/server-config";
+import { missingOrUnreadableLoginConfigKeys } from "@/shared/config/login-config-check";
+import { readServerConfig } from "@/shared/config/server-config";
 import { log } from "@/shared/lib/logger";
 
 export interface LoginService {
-  /** 설정이 비어 있으면 null — 로그인은 전부 거절. */
+  /** 필수 설정이 없거나 틀리면 null — 정상 구동에서는 닿지 않는다(그런 설정이면 서버가 뜨지 않는다). 닿으면 로그인 401 거절만. */
   flow: LoginFlow | null;
-  /** 관측 서버 장애 중의 기록 대기열(종료 로그가 건수를 읽는다). 설정이 비면 null. */
+  /** 관측 서버 장애 중의 기록 대기열(종료 로그가 건수를 읽는다). 설정이 틀리면 null. */
   attemptQueue: AttemptQueue | null;
 }
 
@@ -28,7 +29,7 @@ interface GlobalHolder {
 
 function createLoginService(): LoginService {
   const config = readServerConfig();
-  const missing = missingLoginConfigKeys(config);
+  const missing = missingOrUnreadableLoginConfigKeys(config);
   if (missing.length > 0) {
     void log("login-service", `login:disabled 설정 없음 keys=${missing.join(",")}`, "error");
     return { flow: null, attemptQueue: null };

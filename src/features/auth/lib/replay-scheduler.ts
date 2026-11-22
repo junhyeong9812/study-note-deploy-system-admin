@@ -13,5 +13,11 @@ export type Scheduler = (callback: () => void, milliseconds: number) => Schedule
 
 /** 기본 스케줄러 — setTimeout + unref(프로세스 종료를 막지 않는다). */
 export const unrefScheduler: Scheduler = (callback, milliseconds) => {
-  throw new Error("not implemented");
+  const timer = setTimeout(callback, milliseconds);
+  const unrefable = timer as unknown as { unref?: () => void; hasRef?: () => boolean };
+  unrefable.unref?.();
+  return {
+    cancel: () => clearTimeout(timer),
+    keepsProcessAlive: () => (typeof unrefable.hasRef === "function" ? unrefable.hasRef() : false),
+  };
 };

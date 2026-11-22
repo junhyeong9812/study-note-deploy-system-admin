@@ -1,0 +1,7 @@
+.notice {
+  display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-2); align-items: baseline;
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-sm); color: var(--warning-fg); background: var(--warning-bg);
+  border-radius: var(--radius-sm);
+}
+.label { font-weight: 700; }

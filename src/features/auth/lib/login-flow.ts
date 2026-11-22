@@ -8,8 +8,10 @@
  *   — 응답은 기록을 기다리지 않는다(뒤에서 끝까지 보내고 실패하면 대기열, waitForBackgroundRecords).
  * 본문(readCredentials)은 Origin 검사 · 속도 제한 뒤에만 읽는다. 속도 제한 표가 가득 차면 새 IP 는 429(기록 없음).
  * 관측 서버 호출이 성공하면 대기열을 비운다 — 시도 기록은 replayed:true + outcome, 응답이 잠금 시작이면 알림.
- * 대기열에 넣을 때마다 `queued=<현재 건수>`, 넘쳐 버리면 `dropped=<누적 건수>` 를 앱 로그에 남긴다. */
-import type { Scheduler } from "@/features/auth/lib/replay-scheduler";
+ * 대기열에 넣을 때마다 `queued=<현재 건수>`, 넘쳐 버리면 `dropped=<누적 건수>` 를 앱 로그에 남긴다.
+ * 세부 4: 대기열이 비어 있지 않은 동안 REPLAY_INTERVAL_MILLISECONDS 마다 스스로 재전송한다(한 번에 하나만).
+ *   관측 서버에 보내지 않는 거절(창 안의 반복 · 표 포화)은 요청마다가 아니라 이유별 60초에 1줄(`count=<n>`)로 남긴다. */
+import { REPLAY_INTERVAL_MILLISECONDS, unrefScheduler, type Scheduler, type ScheduledTask } from "@/features/auth/lib/replay-scheduler";
 import type { AlertClient } from "@/features/auth/lib/alert-client";
 import type { AttemptQueue, QueuedRecord } from "@/features/auth/lib/attempt-queue";
 import { verifyCredentials, type AccountConfig } from "@/features/auth/lib/credentials";
@@ -72,6 +74,12 @@ export const ALERT_WAIT_MILLISECONDS = 2_000;
 
 /** 거절 기록의 창 — IP 마다 이유별 첫 1건만 관측 서버에 보낸다. */
 const REJECTION_RECORD_WINDOW_MILLISECONDS = 60_000;
+/** 기록하지 않은 거절의 이유 — 관측 서버 계약의 세 이유 + 속도 제한 표 포화. */
+type UnrecordedReason = RejectionReason | "saturated";
+
+/** 기록하지 않은 거절 건수 로그의 창 — 이유별 60초에 1줄. */
+const UNRECORDED_COUNT_WINDOW_MILLISECONDS = 60_000;
+
 /** 거절 기록 창을 기억하는 IP · 이유 쌍의 상한 — 넘으면 새 쌍은 기록하지 않고 건수만 센다. */
 const REJECTION_RECORD_MAX_KEYS = 10_000;
 
@@ -105,10 +113,14 @@ export function createLoginFlow(dependencies: LoginFlowDependencies): LoginFlow 
   const delay = dependencies.delay ?? defaultDelay;
   // 거절 기록의 창 — IP · 이유마다 고정 60초 창(창이 시작된 시각)에 첫 1건(세부 3)
   const rejectionWindowStarts = new Map<string, number>();
-  const unrecordedRejections: Record<RejectionReason, number> = { rate_limited: 0, origin_rejected: 0, malformed: 0 };
-  let tableFullRejections = 0;
+  const scheduler = dependencies.scheduler ?? unrefScheduler;
   let replayInFlight: Promise<void> | null = null;
+  let replayTimer: ScheduledTask | null = null;
+  let countFlushTimer: ScheduledTask | null = null;
+  let lastObserveCallFailed = false;
   const backgroundRecords = new Set<Promise<void>>();
+  // 관측 서버에 보내지 않은 거절의 건수 — 이유별로 창(60초)이 시작된 시각과 그 창의 건수(세부 4)
+  const unrecordedCounts = new Map<UnrecordedReason, { windowStartedAt: number; count: number }>();
 
   /** 이 IP · 이유의 고정 창에서 첫 거절인가. 맵은 창이 시작된 순서 — 앞에서부터 만료 항목을 정리하고, 상한이면 기록하지 않는다. */
   const isFirstRejectionInWindow = (reason: RejectionReason, ip: string): boolean => {
@@ -136,10 +148,67 @@ export function createLoginFlow(dependencies: LoginFlowDependencies): LoginFlow 
     }
   };
 
+  /** 관측 호출의 결과를 기억한다 — 임시 제한 표시(temporaryRestrictionActive)가 쓴다. */
+  const noteObserveCall = (succeeded: boolean) => {
+    lastObserveCallFailed = !succeeded;
+  };
+
+  /** 이유 하나의 집계 줄을 내보내고 지운다(0 건이면 줄 없음). */
+  const emitUnrecordedCount = (reason: UnrecordedReason) => {
+    const entry = unrecordedCounts.get(reason);
+    unrecordedCounts.delete(reason);
+    if (entry === undefined || entry.count === 0) return;
+    log("login-aggregate", `login:unrecorded_rejections reason=${reason} count=${entry.count} window_seconds=${UNRECORDED_COUNT_WINDOW_MILLISECONDS / 1000}`,
+      reason === "saturated" ? "warning" : "info");
+  };
+
+  /** 창(60초)이 끝난 이유들의 건수를 내보낸다. 남은 창이 있으면 그 끝에 다시 확인하도록 예약한다. */
+  const flushExpiredUnrecordedCounts = () => {
+    const now = clock();
+    for (const [reason, entry] of [...unrecordedCounts]) {
+      if (now - entry.windowStartedAt >= UNRECORDED_COUNT_WINDOW_MILLISECONDS) emitUnrecordedCount(reason);
+    }
+    scheduleCountFlush();
+  };
+
+  const scheduleCountFlush = () => {
+    if (countFlushTimer !== null || unrecordedCounts.size === 0) return;
+    const now = clock();
+    const earliestEnd = Math.min(...[...unrecordedCounts.values()].map((entry) => entry.windowStartedAt + UNRECORDED_COUNT_WINDOW_MILLISECONDS));
+    countFlushTimer = scheduler(() => {
+      countFlushTimer = null;
+      flushExpiredUnrecordedCounts();
+    }, Math.max(earliestEnd - now, 0));
+  };
+
+  /** 관측 서버에 보내지 않은 거절 1건을 센다 — 요청마다 로그를 남기지 않는다. */
+  const countUnrecorded = (reason: UnrecordedReason) => {
+    const now = clock();
+    const entry = unrecordedCounts.get(reason);
+    if (entry !== undefined && now - entry.windowStartedAt >= UNRECORDED_COUNT_WINDOW_MILLISECONDS) emitUnrecordedCount(reason);
+    const current = unrecordedCounts.get(reason);
+    if (current === undefined) unrecordedCounts.set(reason, { windowStartedAt: now, count: 1 });
+    else current.count += 1;
+    scheduleCountFlush();
+  };
+
+  /** 대기열이 비어 있지 않으면 주기 재전송을 하나 걸어 둔다(이미 걸려 있으면 그대로). */
+  const scheduleReplay = () => {
+    if (replayTimer !== null || attemptQueue.size() === 0) return;
+    replayTimer = scheduler(() => {
+      replayTimer = null;
+      flushExpiredUnrecordedCounts();
+      if (replayInFlight !== null) return;   // 도는 중이면 그 실행이 끝날 때 다시 건다
+      if (attemptQueue.size() === 0) return; // 비었으면 멈춘다
+      startReplay("replay-timer");
+    }, REPLAY_INTERVAL_MILLISECONDS);
+  };
+
   /** 대기열에 넣고 현재 건수를 남긴다. 넘쳐 버렸으면 누적 유실 건수를 남긴다(조용히 버리지 않는다). */
   const enqueueRecord = (requestId: string, record: QueuedRecord) => {
     if (attemptQueue.enqueue(record)) {
       log(requestId, `login:queue_added kind=${record.kind} queued=${attemptQueue.size()}`);
+      scheduleReplay();
     } else {
       log(requestId, `login:queue_overflow dropped=${attemptQueue.droppedCount()}`, "warning");
     }
@@ -180,9 +249,11 @@ export function createLoginFlow(dependencies: LoginFlowDependencies): LoginFlow 
         const result = await attemptQueue.flush(async (record) => {
           if (record.kind === "rejected") {
             const recorded = await observeClient.recordRejected(record.body);
+            noteObserveCall(recorded.ok);
             return recorded.ok ? true : discardOrKeep(recorded);
           }
           const replayed = await observeClient.recordAttempt({ ...record.body, replayed: true });
+          noteObserveCall(replayed.ok);
           if (!replayed.ok) return discardOrKeep(replayed);
           // 응답을 잃었던 잠금 — 재전송 응답이 잠금 시작이면 알린다(key 에 locked_until 이 있어 겹치지 않는다)
           if (replayed.value.lockStarted && replayed.value.lockedUntil !== null) {
@@ -200,6 +271,7 @@ export function createLoginFlow(dependencies: LoginFlowDependencies): LoginFlow 
         log(requestId, "login:queue_replay failed", "warning");
       } finally {
         replayInFlight = null;
+        scheduleReplay();   // 남은 항목(실패 · 도는 중에 들어온 것)이 있으면 다음 주기에 다시
       }
     })();
   };
@@ -208,8 +280,7 @@ export function createLoginFlow(dependencies: LoginFlowDependencies): LoginFlow 
   const recordRejection = (requestId: string, reason: RejectionReason, firstInWindow: boolean,
                                  base: { attemptId: string; at: string; ip: string; userAgent: string }) => {
     if (!firstInWindow) {
-      unrecordedRejections[reason] += 1;
-      log(requestId, `login:${reason} recorded=false unrecorded_total=${unrecordedRejections[reason]}`);
+      countUnrecorded(reason);
       return;
     }
     const body: RejectedAttemptBody = { attempt_id: base.attemptId, at: base.at, reason, ip: base.ip, user_agent: base.userAgent };
@@ -217,6 +288,7 @@ export function createLoginFlow(dependencies: LoginFlowDependencies): LoginFlow 
     const task = (async () => {
       try {
         const recorded = await observeClient.recordRejected(body);
+        noteObserveCall(recorded.ok);
         if (recorded.ok) {
           log(requestId, `login:${reason} recorded=true`);
           startReplay(requestId);
@@ -225,6 +297,7 @@ export function createLoginFlow(dependencies: LoginFlowDependencies): LoginFlow 
           enqueueRecord(requestId, { kind: "rejected", body });
         }
       } catch {
+        noteObserveCall(false);
         log(requestId, `login:${reason} recorded=false observe=exception`, "warning");
         enqueueRecord(requestId, { kind: "rejected", body });
       }
@@ -240,6 +313,7 @@ export function createLoginFlow(dependencies: LoginFlowDependencies): LoginFlow 
       const at = new Date(clock()).toISOString();
       const userAgent = input.userAgent.slice(0, USER_AGENT_MAX_LENGTH);
       const base = { attemptId, at, ip: input.ip, userAgent };
+      flushExpiredUnrecordedCounts();
 
       if (!isAllowedOrigin(input.origin, configuredOrigin)) {
         recordRejection(requestId, "origin_rejected", isFirstRejectionInWindow("origin_rejected", input.ip), base);
@@ -248,9 +322,8 @@ export function createLoginFlow(dependencies: LoginFlowDependencies): LoginFlow 
 
       const rateDecision = rateLimiter.hit(input.ip);
       if (rateDecision.tableFull === true) {
-        // 표가 활성 항목으로 가득 참 — 닫힌 쪽으로 거절, 관측 서버에는 기록하지 않는다(기록 폭주 방지)
-        tableFullRejections += 1;
-        log(requestId, `login:rate_limited reason=table_full recorded=false table_full_total=${tableFullRejections}`, "warning");
+        // 표가 활성 항목으로 가득 참 — 닫힌 쪽으로 거절, 관측 서버에는 기록하지 않는다(기록 폭주 방지). 건수는 집계 줄로.
+        countUnrecorded("saturated");
         return { kind: "rate_limited" };
       }
       if (!rateDecision.allowed) {
@@ -282,6 +355,7 @@ export function createLoginFlow(dependencies: LoginFlowDependencies): LoginFlow 
       let verdict: AttemptVerdict;
       let temporaryRestriction: boolean;
       const observed = await observeClient.recordAttempt(body);
+      noteObserveCall(observed.ok);
       if (observed.ok) {
         verdict = observed.value;
         temporaryRestriction = false;
@@ -317,6 +391,14 @@ export function createLoginFlow(dependencies: LoginFlowDependencies): LoginFlow 
     },
     async waitForBackgroundRecords() {
       while (backgroundRecords.size > 0) await Promise.all([...backgroundRecords]);
+    },
+    temporaryRestrictionActive() {
+      return lastObserveCallFailed || attemptQueue.size() > 0;
+    },
+    flushUnrecordedCounts() {
+      for (const reason of [...unrecordedCounts.keys()]) emitUnrecordedCount(reason);
+      countFlushTimer?.cancel();
+      countFlushTimer = null;
     },
   };
 }

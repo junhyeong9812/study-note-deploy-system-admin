@@ -8,6 +8,8 @@ import { log } from "@/shared/lib/logger";
 
 /** 지금의 로그인 서비스 대기열 상태를 앱 로그 1줄로 남긴다(SIGTERM 처리기의 본체). 로그인 서비스가 없으면 queued=0 dropped=0. */
 export function logQueueOnShutdown(): void {
+  // 세부 4: 아직 내보내지 않은 "기록하지 않은 거절" 건수도 남긴다
+  existingLoginService()?.flow?.flushUnrecordedCounts();
   const attemptQueue = existingLoginService()?.attemptQueue ?? null;
   const queued = attemptQueue?.size() ?? 0;
   const dropped = attemptQueue?.droppedCount() ?? 0;

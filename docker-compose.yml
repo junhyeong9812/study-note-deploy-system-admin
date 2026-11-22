@@ -1,6 +1,6 @@
 # 무중단 배포: 앱은 두 자리(blue·green)로 뜨고 nginx 가 그중 하나로 보낸다. 평소에는 한 자리만 떠 있다.
 # 전환은 ci-cd agent 가 한다(deploy/active/ 갱신 → nginx reload). 수동 조작은 ci-cd README 참고.
-# 값은 전부 서버의 .env 에서 온다(저장소에 비밀값·IP 를 적지 않는다). 빈 설정이면 앱은 뜨고 로그인은 전부 거절한다.
+# 값은 전부 서버의 .env 에서 온다(저장소에 비밀값·IP 를 적지 않는다). 필수 설정이 없거나 형식이 틀리면 서버가 뜨지 않는다(종료 코드 78, 키 이름만 로그 1줄 — README "환경 변수").
 x-admin: &admin
   build: .
   image: admin-app:${IMAGE_TAG:-local}   # ci-cd: CI 가 커밋 태그로 빌드, CD 가 그 태그로 교체
