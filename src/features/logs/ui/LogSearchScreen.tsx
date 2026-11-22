@@ -7,7 +7,7 @@ import {
   LOG_SEARCH_TEXT_MINIMUM_LENGTH,
 } from "@/features/logs/lib/log-query";
 import { LogTable, formatKoreanLogTime } from "@/features/logs/ui/LogTable";
-import { LOGS_PATH, logsHref, requestFlowHref, type LogFormValues } from "@/features/logs/ui/logs-address";
+import { LOGS_PATH, logsHref, requestFlowHref, serviceFilterHref, type LogFormValues } from "@/features/logs/ui/logs-address";
 import styles from "@/features/logs/ui/LogSearchScreen.module.css";
 
 const MAXIMUM_RANGE_DAYS = Math.round(LOG_QUERY_MAXIMUM_RANGE_MILLISECONDS / (24 * 60 * 60 * 1000));
@@ -147,7 +147,8 @@ export function LogSearchScreen({ view, formValues }: LogSearchScreenProps) {
             <p className={styles.empty}>조건에 맞는 로그가 없습니다.</p>
           ) : (
             <LogTable logs={page.logs} currentRequestId={query.requestId}
-              requestHref={(requestId) => requestFlowHref(requestId, page, limit)} />
+              requestHref={(requestId) => requestFlowHref(requestId, page, limit)}
+              currentService={query.service} serviceHref={(service) => serviceFilterHref(service, query, page)} />
           )}
           {nextPageQuery !== null ? (
             <p className={styles.more}>

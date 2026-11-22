@@ -104,3 +104,12 @@ export function logsHref(query: Pick<LogQuery, "from" | "to" | "service" | "leve
 export function requestFlowHref(requestId: string, range: { from: string; to: string }, limit: number): string {
   return logsHref({ requestId, from: range.from, to: range.to, service: null, level: null, text: null, before: null, limit });
 }
+
+/** 서비스 하나로 걸러 보는 주소 — 지금 조건(수준 · 요청 ID · 낱말 · 건수)과 지금 쪽의 조회 범위(응답의 from · to)를 그대로 두고 service 만 그 값으로 바꾼다.
+ * 이어 보기 위치(before)는 뺀다(그 범위의 첫 쪽 — 최신부터). */
+export function serviceFilterHref(service: string, query: Pick<LogQuery, "level" | "requestId" | "text" | "limit">, range: { from: string; to: string }): string {
+  return logsHref({
+    service, level: query.level, requestId: query.requestId, text: query.text, limit: query.limit,
+    from: range.from, to: range.to, before: null,
+  });
+}

@@ -157,7 +157,7 @@ describe("로그 조회 화면 — 결과", () => {
     expect(html).toContain("2026-11-22 10:00:00.123");
     expect(html).toContain('title="UTC 2026-11-22T01:00:00.123Z"');
     expect(html).toContain("2026-11-22 09:59:59.000");
-    for (const service of ["backend", "llm", "front", "admin"]) expect(html).toContain(`<td>${service}</td>`);
+    for (const service of ["backend", "llm", "front", "admin"]) expect(html).toContain(`>${service}</a></td>`);
     expect(html).toContain("4건");
     expect(html).toMatch(/조회 범위\(KST\) <time[^>]*>2026-11-22 09:00:00\.250<\/time> ~ <time[^>]*>2026-11-22 10:00:00\.750<\/time>/);
   });
@@ -184,6 +184,32 @@ describe("로그 조회 화면 — 결과", () => {
     expect(html).toContain(">req-flow<");   // 앞 8자
     expect(html).toContain('aria-label="요청 ID req-flow-0001-abcd 의 로그만 보기"');
     expect(html).not.toMatch(/href="[^"]*request_id=&/);
+  });
+
+  it("서비스 이름을 누르면 그 서비스만 — 수준 · 요청 ID · 낱말 · 건수 · 응답의 범위는 그대로, 커서는 뺀다", async () => {
+    handler = () => logBody(ROWS, "1763773100000-0");
+    const html = await render({
+      level: "error", request_id: "req-flow-0001-abcd", q: "실패", limit: "50", from: RANGE.from, to: RANGE.to, before: "1763773197000-0",
+    });
+    expect(paramsOf(hrefOf(html, /aria-label="llm 의 로그만 보기"/))).toEqual({
+      service: "llm", level: "error", request_id: "req-flow-0001-abcd", q: "실패", limit: "50", from: RANGE.from, to: RANGE.to,
+    });
+    for (const service of ["backend", "llm", "front", "admin"]) expect(html).toContain(`aria-label="${service} 의 로그만 보기"`);
+  });
+
+  it("이미 그 서비스로 걸러 보는 중이면 그 서비스 칸은 링크 없이 글자", async () => {
+    const html = await render({ service: "backend" });
+    expect(html).toContain("<td>backend</td>");
+    expect(html).not.toContain('aria-label="backend 의 로그만 보기"');
+    expect(html).toContain('aria-label="llm 의 로그만 보기"');
+  });
+
+  it("서비스 이름의 특수문자는 주소에서 인코딩된다", async () => {
+    handler = () => logBody([{ ...ROWS[3], service: "odd&level=debug x" }]);
+    const html = await render();
+    const href = hrefOf(html, /aria-label="odd&amp;level=debug x 의 로그만 보기"/);
+    expect(href).toContain("service=odd%26level%3Ddebug+x");
+    expect(paramsOf(href)).toEqual({ service: "odd&level=debug x", from: RANGE.from, to: RANGE.to });
   });
 
   it("더 보기 — 같은 조건 + 응답의 from · to + before = next_before (조건을 잃지 않는다)", async () => {

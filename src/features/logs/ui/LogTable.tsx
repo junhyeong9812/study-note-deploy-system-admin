@@ -1,4 +1,5 @@
 /** 로그 결과 표 — 시각(KST, 밀리초까지 · 원본 UTC 는 title) · 서비스 · 수준(기호 + 낱말 + 색) · 요청 ID(누르면 그 요청의 흐름을 다시 조회) · 메시지.
+ * 서비스 이름을 누르면 그 서비스만 걸러 다시 조회한다(이미 그 서비스로 걸러 보는 중이면 링크 없이 글자 — 같은 화면으로 가는 링크를 두지 않는다).
  * 메시지는 받은 글자 그대로(React 의 글자 출력 — HTML 로 해석하지 않는다), 고정폭. 여러 줄이거나 길면 첫 줄만 보이고 <details> 로 전체를 편다
  * (줄바꿈 · 공백 유지). 좁은 화면에서는 표만 가로로 스크롤된다. */
 import { formatKoreanTime, shortPrefix } from "@/features/deploys/lib/deploy-format";
@@ -50,9 +51,13 @@ export interface LogTableProps {
   requestHref: (requestId: string) => string;
   /** 지금 조건의 요청 ID(그 줄의 링크에 aria-current) — 없으면 null */
   currentRequestId: string | null;
+  /** 서비스 이름을 누르면 가는 주소(그 서비스만 걸러 다시 조회) */
+  serviceHref: (service: string) => string;
+  /** 지금 조건의 서비스(그 칸은 링크 없이 글자) — 없으면 null */
+  currentService: string | null;
 }
 
-export function LogTable({ logs, requestHref, currentRequestId }: LogTableProps) {
+export function LogTable({ logs, requestHref, currentRequestId, serviceHref, currentService }: LogTableProps) {
   return (
     <div className={styles.scroller} tabIndex={0} role="region" aria-label="로그 결과 표">
       <table className={styles.table}>
@@ -71,7 +76,11 @@ export function LogTable({ logs, requestHref, currentRequestId }: LogTableProps)
               <td className={styles.time}>
                 <time dateTime={entry.at} title={`UTC ${entry.at}`}>{formatKoreanLogTime(entry.at)}</time>
               </td>
-              <td>{entry.service}</td>
+              <td>
+                {entry.service === currentService ? entry.service : (
+                  <a className={styles.serviceLink} href={serviceHref(entry.service)} aria-label={`${entry.service} 의 로그만 보기`}>{entry.service}</a>
+                )}
+              </td>
               <td><LevelBadge level={entry.level} /></td>
               <td>
                 {entry.requestId === "" ? <span className={styles.none}>—</span> : (
