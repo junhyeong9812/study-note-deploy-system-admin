@@ -9,8 +9,16 @@ export const LOGIN_PATH = "/login";
 
 export type PathAccess = "public" | "session_required";
 
+/** 접두 허용에서 막는 모양 — 상위 이동(`..`)·빈 조각(`//`)·인코딩된 글자(`%`)·역슬래시. */
+const SUSPICIOUS_PATH_PATTERN = /(^|\/)\.\.?(\/|$)|\/\/|%|\\/;
+
 export function classifyPath(pathname: string): PathAccess {
-  throw new Error("not implemented");
+  if (PUBLIC_EXACT_PATHS.includes(pathname)) return "public";
+  if (SUSPICIOUS_PATH_PATTERN.test(pathname)) return "session_required";
+  for (const prefix of PUBLIC_PATH_PREFIXES) {
+    if (pathname.startsWith(prefix) && pathname.length > prefix.length) return "public";
+  }
+  return "session_required";
 }
 
 export type UnauthenticatedAction =
@@ -19,5 +27,6 @@ export type UnauthenticatedAction =
 
 /** 세션 필요 경로에 세션이 없을 때 할 일. */
 export function unauthenticatedAction(pathname: string): UnauthenticatedAction {
-  throw new Error("not implemented");
+  if (pathname === "/api" || pathname.startsWith("/api/")) return { kind: "unauthorized", status: 401 };
+  return { kind: "redirect", location: LOGIN_PATH };
 }

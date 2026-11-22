@@ -1,0 +1,18 @@
+.header {
+  height: var(--header-h); padding: 0 var(--space-4);
+  display: flex; align-items: center; justify-content: space-between;
+  border-bottom: 1px solid var(--line);
+}
+.brand { font-weight: 700; }
+.main { max-width: var(--reading-width); margin: 0 auto; padding: var(--space-6) var(--space-4); }
+.menu { list-style: none; display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: var(--space-4); }
+.menuItem {
+  padding: var(--space-4); border: 1px solid var(--line); border-radius: var(--radius-md);
+  display: flex; flex-direction: column; gap: var(--space-1);
+}
+.menuTitle { font-weight: 600; }
+.menuDescription { font-size: var(--text-sm); color: var(--muted); }
+.pending {
+  align-self: flex-start; margin-top: var(--space-2); padding: 0 var(--space-2);
+  font-size: var(--text-xs); color: var(--muted); border: 1px solid var(--line); border-radius: var(--radius-pill);
+}

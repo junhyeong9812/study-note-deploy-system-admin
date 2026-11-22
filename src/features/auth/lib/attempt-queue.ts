@@ -24,6 +24,39 @@ export interface AttemptQueue {
   flush(send: (record: QueuedRecord) => Promise<boolean>): Promise<FlushResult>;
 }
 
-export function createAttemptQueue(options?: AttemptQueueOptions): AttemptQueue {
-  throw new Error("not implemented");
+export function createAttemptQueue(options: AttemptQueueOptions = {}): AttemptQueue {
+  const capacity = options.capacity ?? 500;
+  const records: QueuedRecord[] = [];
+  let dropped = 0;
+
+  return {
+    enqueue(record) {
+      if (records.length >= capacity) {
+        dropped += 1;
+        return false;
+      }
+      records.push(record);
+      return true;
+    },
+    size: () => records.length,
+    droppedCount: () => dropped,
+    async flush(send) {
+      let sent = 0;
+      while (records.length > 0) {
+        const head = records[0];
+        let delivered = false;
+        try {
+          delivered = (await send(head)) === true;
+        } catch {
+          delivered = false;
+        }
+        if (!delivered) break;
+        // 보내는 동안 새 항목은 뒤에 붙었으므로 맨 앞(보낸 항목)만 뺀다
+        const headIndex = records.indexOf(head);
+        if (headIndex >= 0) records.splice(headIndex, 1);
+        sent += 1;
+      }
+      return { sent, remaining: records.length };
+    },
+  };
 }

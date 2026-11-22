@@ -16,5 +16,44 @@ export interface TemporaryLockout {
 }
 
 export function createTemporaryLockout(options: TemporaryLockoutOptions): TemporaryLockout {
-  throw new Error("not implemented");
+  const maxFailures = options.maxFailures ?? 3;
+  const lockMilliseconds = options.lockMilliseconds ?? 15 * 60 * 1000;
+  let failureCount = 0;
+  let lockedUntilTime: number | null = null;
+
+  /** 잠금이 끝났으면 풀고 0 부터. */
+  const releaseIfExpired = (now: number) => {
+    if (lockedUntilTime !== null && now >= lockedUntilTime) {
+      lockedUntilTime = null;
+      failureCount = 0;
+    }
+  };
+
+  return {
+    decide(credentialOk) {
+      const now = options.clock();
+      releaseIfExpired(now);
+      if (lockedUntilTime !== null) {
+        return { allowed: false, outcome: "locked", lockedUntil: new Date(lockedUntilTime).toISOString(), lockStarted: false, failures: failureCount };
+      }
+      if (credentialOk) {
+        failureCount = 0;
+        return { allowed: true, outcome: "success", lockedUntil: null, lockStarted: false, failures: 0 };
+      }
+      failureCount += 1;
+      if (failureCount >= maxFailures) {
+        lockedUntilTime = now + lockMilliseconds;
+        return { allowed: false, outcome: "locked", lockedUntil: new Date(lockedUntilTime).toISOString(), lockStarted: true, failures: failureCount };
+      }
+      return { allowed: false, outcome: "failure", lockedUntil: null, lockStarted: false, failures: failureCount };
+    },
+    failures() {
+      releaseIfExpired(options.clock());
+      return failureCount;
+    },
+    lockedUntil() {
+      releaseIfExpired(options.clock());
+      return lockedUntilTime;
+    },
+  };
 }

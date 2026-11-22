@@ -89,3 +89,12 @@ describe("src/app 의 실제 경로 전수", () => {
     }
   });
 });
+
+describe("classifyPath — 정적 자산 접두 뒤의 상위 이동·인코딩(구현 task 추가 사례)", () => {
+  it.each([
+    "/_next/static/../../api/deploys", "/_next/static/./x/../../deploys", "/_next/static/%2e%2e/%2e%2e/api/deploys",
+    "/_next/static//api/deploys", "/_next/static/..\\..\\api", "/_next/static/..",
+  ])("%j → session_required", (pathname) => {
+    expect(classifyPath(pathname)).toBe("session_required");
+  });
+});

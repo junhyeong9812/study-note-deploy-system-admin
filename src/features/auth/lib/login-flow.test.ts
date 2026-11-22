@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createAttemptQueue } from "@/features/auth/lib/attempt-queue";
+import { UNKNOWN_CLIENT_IP, clientIpOrUnknown } from "@/features/auth/lib/client-ip";
 import { createLoginFlow, loginResultStatus, type LoginInput, type LoginResult } from "@/features/auth/lib/login-flow";
 import { createRateLimiter } from "@/features/auth/lib/rate-limit";
 import { verifySessionToken } from "@/features/auth/lib/session";
@@ -342,5 +343,41 @@ describe("loginResultStatus", () => {
     [{ kind: "origin_rejected" }, 403],
   ])("%j → %i", (result, status) => {
     expect(loginResultStatus(result)).toBe(status);
+  });
+});
+
+describe("로그인 흐름 — 임시 제한의 잠금 알림(구현 task 추가 사례)", () => {
+  it("관측 서버 장애 중 3번째 실패로 임시 잠금이 걸리면 알림 1건(잠금 끝 시각), 잠금 중 시도로는 더 보내지 않는다", async () => {
+    const harness = buildHarness();
+    harness.observe.respondAttempt = () => OUTAGE;
+    for (let index = 0; index < 2; index += 1) await harness.flow.login(input({ password: "fake-wrong" }));
+    expect(harness.alert.lockedEvents).toEqual([]);
+    const third = await harness.flow.login(input({ password: "fake-wrong" }));
+    expect(third).toEqual({ kind: "locked", temporaryRestriction: true });
+    expect(harness.alert.lockedEvents).toEqual([new Date(harness.clock.now() + 15 * 60 * 1000).toISOString()]);
+    await harness.flow.login(input());
+    await harness.flow.login(input({ password: "fake-wrong" }));
+    expect(harness.alert.lockedEvents).toHaveLength(1);
+  });
+
+  it("임시 잠금 알림이 실패해도 결과는 locked 그대로", async () => {
+    const harness = buildHarness();
+    harness.observe.respondAttempt = () => OUTAGE;
+    harness.alert.behavior = "throw";
+    for (let index = 0; index < 2; index += 1) await harness.flow.login(input({ password: "fake-wrong" }));
+    expect(await harness.flow.login(input({ password: "fake-wrong" }))).toEqual({ kind: "locked", temporaryRestriction: true });
+  });
+});
+
+describe("로그인 흐름 — X-Real-IP 가 없는 요청(구현 task 추가 사례)", () => {
+  it("헤더 없는 요청은 unknown 한 통으로 센다 — 11번째는 rate_limited", async () => {
+    const harness = buildHarness();
+    const results: LoginResult[] = [];
+    for (let index = 0; index < 11; index += 1) {
+      results.push(await harness.flow.login(input({ ip: clientIpOrUnknown(new Headers()), password: "fake-wrong" })));
+    }
+    expect(results.slice(0, 10).every((result) => result.kind === "failure")).toBe(true);
+    expect(results[10]).toEqual({ kind: "rate_limited" });
+    expect(harness.observe.attempts[0].ip).toBe(UNKNOWN_CLIENT_IP);
   });
 });

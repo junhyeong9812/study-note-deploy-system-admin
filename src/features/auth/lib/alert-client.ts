@@ -17,5 +17,33 @@ export interface AlertClient {
 }
 
 export function createAlertClient(options: AlertClientOptions): AlertClient {
-  throw new Error("not implemented");
+  const baseUrl = options.baseUrl.replace(/\/+$/, "");
+  const timeoutSignal = options.timeoutSignal ?? ((milliseconds: number) => AbortSignal.timeout(milliseconds));
+
+  return {
+    async sendLoginLocked(lockedUntil) {
+      const body = {
+        source: "admin",
+        kind: "login_locked",
+        severity: "warning",
+        key: `admin:login_locked:${lockedUntil}`.slice(0, 120),
+        title: "어드민 로그인 잠금",
+        detail: `연속 로그인 실패로 ${lockedUntil} 까지 로그인이 잠겼습니다.`,
+      };
+      try {
+        const response = await options.fetch(`${baseUrl}/events`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Alert-Secret": options.secret },
+          body: JSON.stringify(body),
+          signal: timeoutSignal(ALERT_TIMEOUT_MILLISECONDS),
+          redirect: "manual",
+          cache: "no-store",
+        });
+        response.body?.cancel().catch(() => undefined);
+        return response.status >= 200 && response.status < 300;
+      } catch {
+        return false;
+      }
+    },
+  };
 }

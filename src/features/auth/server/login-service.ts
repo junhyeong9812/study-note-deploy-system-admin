@@ -1,0 +1,56 @@
+/** 로그인 흐름의 프로세스 단일 인스턴스 — 속도 제한 · 임시 제한 · 대기열이 프로세스 안에 하나만 있게 한다.
+ * globalThis 에 둔다: 개발 모드의 모듈 재로딩과 라우트별 묶음에서도 같은 인스턴스를 쓴다. */
+import "server-only";
+import { randomUUID } from "node:crypto";
+import { createAlertClient } from "@/features/auth/lib/alert-client";
+import { createAttemptQueue } from "@/features/auth/lib/attempt-queue";
+import { createLoginFlow, type LoginFlow } from "@/features/auth/lib/login-flow";
+import { createObserveClient } from "@/features/auth/lib/observe-client";
+import { verifyArgon2idPassword } from "@/features/auth/lib/password-hash";
+import { createRateLimiter } from "@/features/auth/lib/rate-limit";
+import { createTemporaryLockout } from "@/features/auth/lib/temporary-lockout";
+import { missingLoginConfigKeys, readServerConfig } from "@/shared/config/server-config";
+import { log } from "@/shared/lib/logger";
+
+export interface LoginService {
+  /** 설정이 비어 있으면 null — 로그인은 전부 거절. */
+  flow: LoginFlow | null;
+}
+
+const GLOBAL_KEY = Symbol.for("study-note-admin.login-service");
+
+interface GlobalHolder {
+  [GLOBAL_KEY]?: LoginService;
+  [key: symbol]: unknown;
+}
+
+function createLoginService(): LoginService {
+  const config = readServerConfig();
+  const missing = missingLoginConfigKeys(config);
+  if (missing.length > 0) {
+    void log("login-service", `login:disabled 설정 없음 keys=${missing.join(",")}`, "error");
+    return { flow: null };
+  }
+  const clock = () => Date.now();
+  const flow = createLoginFlow({
+    clock,
+    newAttemptId: () => randomUUID(),
+    account: { adminId: config.adminUser, passwordHash: config.adminPasswordHash },
+    verifyPassword: verifyArgon2idPassword,
+    sessionSigningKey: config.sessionSecret,
+    configuredOrigin: config.adminOrigin,
+    rateLimiter: createRateLimiter({ clock }),
+    temporaryLockout: createTemporaryLockout({ clock }),
+    attemptQueue: createAttemptQueue(),
+    observeClient: createObserveClient({ baseUrl: config.observeUrl, secret: config.observeSecret, fetch: (input, init) => fetch(input, init) }),
+    alertClient: createAlertClient({ baseUrl: config.alertUrl, secret: config.alertSecret, fetch: (input, init) => fetch(input, init) }),
+    logger: log,
+  });
+  return { flow };
+}
+
+export function loginService(): LoginService {
+  const holder = globalThis as unknown as GlobalHolder;
+  if (holder[GLOBAL_KEY] === undefined) holder[GLOBAL_KEY] = createLoginService();
+  return holder[GLOBAL_KEY];
+}
