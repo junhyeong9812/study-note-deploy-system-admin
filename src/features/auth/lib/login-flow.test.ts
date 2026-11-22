@@ -1,48 +1,11 @@
-import { describe, expect, it, vi } from "vitest";
-import { createAttemptQueue } from "@/features/auth/lib/attempt-queue";
+import { describe, expect, it } from "vitest";
 import { UNKNOWN_CLIENT_IP, clientIpOrUnknown } from "@/features/auth/lib/client-ip";
-import { createLoginFlow, loginResultStatus, type LoginInput, type LoginResult } from "@/features/auth/lib/login-flow";
-import { createRateLimiter } from "@/features/auth/lib/rate-limit";
+import { OUTAGE, buildHarness, input } from "@/features/auth/lib/login-flow-harness";
+import { loginResultStatus, type LoginResult } from "@/features/auth/lib/login-flow";
 import { verifySessionToken } from "@/features/auth/lib/session";
-import { createTemporaryLockout } from "@/features/auth/lib/temporary-lockout";
 import {
-  FAKE_ADMIN_ID, FAKE_IP, FAKE_ORIGIN, FAKE_PASSWORD, FAKE_PASSWORD_HASH, FAKE_SIGNING_KEY, FAKE_USER_AGENT,
-  createFakeAlertClient, createFakeClock, createFakeObserveClient, createRecordingLogger, verdict,
+  FAKE_ADMIN_ID, FAKE_IP, FAKE_PASSWORD, FAKE_SIGNING_KEY, FAKE_USER_AGENT, verdict,
 } from "@/features/auth/lib/test-fakes";
-import type { PasswordVerifier } from "@/features/auth/lib/types";
-
-const OUTAGE = { ok: false as const, reason: "unreachable" as const };
-
-function buildHarness(options: { queueCapacity?: number; account?: { adminId: string; passwordHash: string } } = {}) {
-  const clock = createFakeClock();
-  const recording = createRecordingLogger();
-  const observe = createFakeObserveClient();
-  const alert = createFakeAlertClient();
-  const queue = createAttemptQueue({ capacity: options.queueCapacity ?? 500 });
-  const temporaryLockout = createTemporaryLockout({ clock: clock.now });
-  const rateLimiter = createRateLimiter({ clock: clock.now });
-  const verifyPassword = vi.fn<PasswordVerifier>(async (passwordHash, password) =>
-    passwordHash === FAKE_PASSWORD_HASH && password === FAKE_PASSWORD);
-  let attemptCounter = 0;
-  const flow = createLoginFlow({
-    clock: clock.now,
-    newAttemptId: () => {
-      attemptCounter += 1;
-      return `00000000-0000-4000-8000-${String(attemptCounter).padStart(12, "0")}`;
-    },
-    account: options.account ?? { adminId: FAKE_ADMIN_ID, passwordHash: FAKE_PASSWORD_HASH },
-    verifyPassword,
-    sessionSigningKey: FAKE_SIGNING_KEY,
-    configuredOrigin: FAKE_ORIGIN,
-    rateLimiter, temporaryLockout, attemptQueue: queue,
-    observeClient: observe, alertClient: alert, logger: recording.logger,
-  });
-  return { clock, recording, observe, alert, queue, temporaryLockout, verifyPassword, flow };
-}
-
-function input(overrides: Partial<LoginInput> = {}): LoginInput {
-  return { id: FAKE_ADMIN_ID, password: FAKE_PASSWORD, ip: FAKE_IP, userAgent: FAKE_USER_AGENT, origin: FAKE_ORIGIN, ...overrides };
-}
 
 describe("로그인 흐름 — 정상(관측 서버 응답)", () => {
   it("맞는 자격 + allowed:true → 성공, 세션은 지금 시각으로 서명되어 검증된다", async () => {
@@ -121,7 +84,7 @@ describe("로그인 흐름 — 정상(관측 서버 응답)", () => {
 
   it("lock_started:true 면 알림 1건(locked_until 그대로), 결과는 locked", async () => {
     const harness = buildHarness();
-    harness.observe.respondAttempt = () => ({ ok: true, value: verdict({ allowed: false, outcome: "locked", lockedUntil: "2026-01-01T00:15:00.000Z", lockStarted: true, failures: 5 }) });
+    harness.observe.respondAttempt = () => ({ ok: true, value: verdict({ allowed: false, outcome: "failure", lockedUntil: "2026-01-01T00:15:00.000Z", lockStarted: true, failures: 5 }) });
     const result = await harness.flow.login(input({ password: "fake-wrong" }));
     expect(harness.alert.lockedEvents).toEqual(["2026-01-01T00:15:00.000Z"]);
     expect(result.kind).toBe("locked");
@@ -139,7 +102,7 @@ describe("로그인 흐름 — 정상(관측 서버 응답)", () => {
     const reference = buildHarness();
     const harness = buildHarness();
     harness.alert.behavior = behavior;
-    const lockVerdict = () => ({ ok: true as const, value: verdict({ allowed: false, outcome: "locked", lockedUntil: "2026-01-01T00:15:00.000Z", lockStarted: true, failures: 5 }) });
+    const lockVerdict = () => ({ ok: true as const, value: verdict({ allowed: false, outcome: "failure", lockedUntil: "2026-01-01T00:15:00.000Z", lockStarted: true, failures: 5 }) });
     reference.observe.respondAttempt = lockVerdict;
     harness.observe.respondAttempt = lockVerdict;
     const expected = await reference.flow.login(input({ password: "fake-wrong" }));
@@ -159,7 +122,9 @@ describe("로그인 흐름 — Origin 검사", () => {
       expect(loginResultStatus(result)).toBe(403);
       expect(harness.verifyPassword).not.toHaveBeenCalled();
       expect(harness.observe.attempts).toHaveLength(0);
-      expect(harness.observe.rejected).toHaveLength(0);
+      // 세부 2: 자격 검증 전에 거절한 것도 rejected 로 기록한다(reason origin_rejected)
+      expect(harness.observe.rejected).toHaveLength(1);
+      expect(harness.observe.rejected[0]).toMatchObject({ reason: "origin_rejected", ip: FAKE_IP, user_agent: FAKE_USER_AGENT });
     });
 
   it("출처 거절은 속도 제한 횟수를 쓰지 않는다", async () => {
@@ -263,7 +228,7 @@ describe("로그인 흐름 — 관측 서버 장애(임시 제한)", () => {
     await harness.flow.waitForReplay();
     const replays = harness.observe.attempts.filter((body) => body.replayed);
     expect(replays).toHaveLength(1);
-    expect(replays[0]).toEqual({ ...outageAttempt, replayed: true });
+    expect(replays[0]).toEqual({ ...outageAttempt, replayed: true, outcome: "failure" });   // 세부 2: 재전송에 실제 판정
     expect(harness.queue.size()).toBe(0);
   });
 
@@ -315,7 +280,7 @@ describe("로그인 흐름 — 앱 로그에 IP · 입력 ID · 비밀번호 · 
     await harness.flow.login(input());
     await harness.flow.login(input({ id: typedId, password: typedPassword }));
     harness.alert.behavior = "throw";
-    harness.observe.respondAttempt = () => ({ ok: true, value: verdict({ allowed: false, outcome: "locked", lockedUntil: "2026-01-01T00:15:00.000Z", lockStarted: true }) });
+    harness.observe.respondAttempt = () => ({ ok: true, value: verdict({ allowed: false, outcome: "failure", lockedUntil: "2026-01-01T00:15:00.000Z", lockStarted: true, failures: 5 }) });
     await harness.flow.login(input({ password: typedPassword }));
     harness.observe.respondAttempt = () => OUTAGE;
     harness.observe.respondRejected = () => OUTAGE;

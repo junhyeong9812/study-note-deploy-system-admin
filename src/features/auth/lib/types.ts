@@ -16,10 +16,14 @@ export type TimeoutSignalFactory = (milliseconds: number) => AbortSignal;
 /** argon2id 검증 — (저장된 해시, 입력 비밀번호) → 맞음 여부. */
 export type PasswordVerifier = (passwordHash: string, password: string) => Promise<boolean>;
 
-/** 관측 서버 `POST /auth/attempts` 의 판정(응답 data). 임시 제한도 같은 모양으로 답한다. */
+/** 시도의 결과 낱말 — 관측 서버 판정과 재전송 본문의 `outcome`. */
+export type AttemptOutcome = "success" | "failure" | "locked";
+
+/** 관측 서버 `POST /auth/attempts` 의 판정(응답 data). 임시 제한도 같은 모양으로 답한다.
+ * 잠금을 건 그 시도는 outcome:"failure" + lockStarted:true(그 시도 자체는 실패) — 어드민 응답은 잠금(423). */
 export interface AttemptVerdict {
   allowed: boolean;
-  outcome: "success" | "failure" | "locked";
+  outcome: AttemptOutcome;
   lockedUntil: string | null;   // ISO-8601
   lockStarted: boolean;
   failures: number;
@@ -33,13 +37,18 @@ export interface AttemptRecordBody {
   ip: string;
   user_agent: string;            // 앞 200자
   replayed: boolean;
+  /** 세부 2: replayed:true 면 필수(임시 제한이 실제로 내린 판정), replayed:false 면 보내지 않는다(키 자체가 없다). */
+  outcome?: AttemptOutcome;
 }
 
-/** 관측 서버 `POST /auth/attempts/rejected` 본문. */
+/** 자격 검증 전에 거절한 이유(세부 2 — 기록 범위). */
+export type RejectionReason = "rate_limited" | "origin_rejected" | "malformed";
+
+/** 관측 서버 `POST /auth/attempts/rejected` 본문. IP 마다 60초 창에 이유별 첫 1건만 보낸다. */
 export interface RejectedAttemptBody {
   attempt_id: string;
   at: string;
-  reason: "rate_limited";
+  reason: RejectionReason;
   ip: string;
   user_agent: string;
 }

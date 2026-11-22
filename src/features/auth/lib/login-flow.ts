@@ -25,6 +25,9 @@ export interface LoginInput {
   origin: string | null;
   /** 앱 로그의 requestId — 없으면 이 시도의 attempt_id 를 쓴다. */
   requestId?: string;
+  /** 세부 2: 본문 형식이 틀렸거나 상한을 넘었다(Route Handler 가 해석해 넘긴다). true 면 id·password 는 보지 않는다.
+   * 순서는 Origin 검사 → 속도 제한 → 이 표시 — 형식 오류도 속도 제한에 센다. */
+  malformed?: boolean;
 }
 
 export type LoginResult =
@@ -32,7 +35,8 @@ export type LoginResult =
   | { kind: "failure"; temporaryRestriction: boolean }      // ID 틀림 · 비밀번호 틀림 구별 없음
   | { kind: "locked"; temporaryRestriction: boolean }
   | { kind: "rate_limited" }                                 // HTTP 429
-  | { kind: "origin_rejected" };                             // HTTP 403
+  | { kind: "origin_rejected" }                              // HTTP 403
+  | { kind: "malformed" };                                   // HTTP 400
 
 export interface LoginFlowDependencies {
   clock: Clock;
@@ -47,11 +51,17 @@ export interface LoginFlowDependencies {
   observeClient: ObserveClient;
   alertClient: AlertClient;
   logger: AppLogger;
+  /** 알림 대기 상한용 — milliseconds 뒤에 끝나는 약속. 기본은 setTimeout. 테스트는 직접 끝내는 Fake 를 준다. */
+  delay?: (milliseconds: number) => Promise<void>;
 }
+
+/** 세부 2: 잠금 알림은 로그인 응답을 이만큼만 기다린다. 넘으면 응답을 먼저 돌려주고 앱 로그 1줄. */
+export const ALERT_WAIT_MILLISECONDS = 2_000;
 
 export interface LoginFlow {
   login(input: LoginInput): Promise<LoginResult>;
-  /** login 이 시작한 대기열 재전송(있으면)이 끝날 때까지 기다린다. 재전송을 login 안에서 기다리는 구현이면 바로 끝난다. */
+  /** login 이 시작한 대기열 재전송(있으면)이 끝날 때까지 기다린다 — 재전송 응답으로 보낸 잠금 알림까지 포함.
+   * 재전송을 login 안에서 기다리는 구현이면 바로 끝난다. */
   waitForReplay(): Promise<void>;
 }
 
@@ -186,5 +196,6 @@ export function loginResultStatus(result: LoginResult): number {
     case "locked": return 423;
     case "rate_limited": return 429;
     case "origin_rejected": return 403;
+    case "malformed": throw new Error("not implemented");
   }
 }

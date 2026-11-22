@@ -1,30 +1,6 @@
-import { existsSync, readdirSync, statSync } from "node:fs";
-import { join, relative, sep } from "node:path";
-import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { LOGIN_PATH, classifyPath, unauthenticatedAction } from "@/features/auth/lib/auth-boundary";
-
-const APP_DIRECTORY = fileURLToPath(new URL("../../../app", import.meta.url));
-
-/** src/app 의 page.tsx · route.ts 에서 경로를 뽑는다. (그룹)은 지우고 [동적]은 견본 값으로 바꾼다. */
-function routesFromAppDirectory(): { path: string; kind: "page" | "route" }[] {
-  if (!existsSync(APP_DIRECTORY)) return [];
-  const routes: { path: string; kind: "page" | "route" }[] = [];
-  const walk = (directory: string) => {
-    for (const entry of readdirSync(directory)) {
-      const fullPath = join(directory, entry);
-      if (statSync(fullPath).isDirectory()) { walk(fullPath); continue; }
-      const match = /^(page|route)\.(tsx|ts|jsx|js)$/.exec(entry);
-      if (!match) continue;
-      const segments = relative(APP_DIRECTORY, directory).split(sep).filter(Boolean)
-        .filter((segment) => !/^\(.*\)$/.test(segment))
-        .map((segment) => (/^\[.*\]$/.test(segment) ? "sample-segment" : segment));
-      routes.push({ path: `/${segments.join("/")}`, kind: match[1] as "page" | "route" });
-    }
-  };
-  walk(APP_DIRECTORY);
-  return routes;
-}
+import { routesFromAppDirectory } from "@/features/auth/lib/test-fakes";
 
 describe("classifyPath — 허용 목록", () => {
   it.each(["/login", "/api/auth/login", "/api/health", "/favicon.ico", "/_next/static/chunks/main-abc123.js", "/_next/static/css/app.css"])(

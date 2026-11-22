@@ -92,3 +92,36 @@ describe("argon2id 어댑터 (실제 @node-rs/argon2)", () => {
       await expect(verifyArgon2idPassword(passwordHash, FAKE_PASSWORD)).resolves.toBe(false);
     });
 });
+
+describe("세부 2 — 해시 비용(m·t·p)이 더미 해시와 다르면 설정 없음과 같다", () => {
+  const SAME_COST_HASH = FAKE_PASSWORD_HASH;   // m=19456,t=2,p=1 — 더미와 같은 비용
+  const salt = "ZmFrZXNhbHRmYWtlc2FsdA";
+  const digest = "ZmFrZWhhc2hmYWtlaGFzaGZha2VoYXNoZmFrZWhhcw";
+  const withHeader = (header: string) => [header, salt, digest].join("$");
+
+  it("더미 해시의 비용은 m=19456,t=2,p=1 (설정 해시도 이 값으로 만든다)", () => {
+    expect(DUMMY_PASSWORD_HASH.startsWith("$argon2id$v=19$m=19456,t=2,p=1$")).toBe(true);
+    expect(SAME_COST_HASH.startsWith("$argon2id$v=19$m=19456,t=2,p=1$")).toBe(true);
+  });
+
+  it("같은 비용이면 맞는 자격은 true", async () => {
+    const alwaysTrue = vi.fn<PasswordVerifier>(async () => true);
+    expect(await verifyCredentials({ id: FAKE_ADMIN_ID, password: FAKE_PASSWORD },
+      { adminId: FAKE_ADMIN_ID, passwordHash: SAME_COST_HASH }, alwaysTrue)).toBe(true);
+  });
+
+  it.each([
+    ["m 다름", withHeader("$argon2id$v=19$m=65536,t=2,p=1")],
+    ["t 다름", withHeader("$argon2id$v=19$m=19456,t=3,p=1")],
+    ["p 다름", withHeader("$argon2id$v=19$m=19456,t=2,p=4")],
+    ["셋 다 다름", withHeader("$argon2id$v=19$m=4096,t=1,p=1")],
+    ["argon2i", withHeader("$argon2i$v=19$m=19456,t=2,p=1")],
+    ["매개변수 없음", withHeader("$argon2id$v=19")],
+  ])("%s → 검증 함수가 true 여도 거절, 검증은 더미 해시로 1회(시간 구별 방지)", async (_label, passwordHash) => {
+    const alwaysTrue = vi.fn<PasswordVerifier>(async () => true);
+    expect(await verifyCredentials({ id: FAKE_ADMIN_ID, password: FAKE_PASSWORD },
+      { adminId: FAKE_ADMIN_ID, passwordHash }, alwaysTrue)).toBe(false);
+    expect(alwaysTrue).toHaveBeenCalledTimes(1);
+    expect(alwaysTrue.mock.calls[0][0]).toBe(DUMMY_PASSWORD_HASH);
+  });
+});

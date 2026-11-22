@@ -16,7 +16,8 @@ describe("임시 제한 — 3회 실패 → 15분", () => {
     expect(lockout.decide(false)).toMatchObject({ allowed: false, outcome: "failure", lockStarted: false, failures: 1 });
     expect(lockout.decide(false)).toMatchObject({ allowed: false, outcome: "failure", lockStarted: false, failures: 2 });
     const third = lockout.decide(false);
-    expect(third).toMatchObject({ allowed: false, lockStarted: true, failures: 3 });
+    // 세부 2: 잠금을 건 그 시도는 관측 서버와 같은 꼴 — outcome:"failure" + lockStarted:true(그 시도 자체는 실패)
+    expect(third).toMatchObject({ allowed: false, outcome: "failure", lockStarted: true, failures: 3 });
     expect(third.lockedUntil).toBe(new Date(clock.now() + FIFTEEN_MINUTES).toISOString());
     expect(lockout.lockedUntil()).toBe(clock.now() + FIFTEEN_MINUTES);
   });

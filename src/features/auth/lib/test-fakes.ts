@@ -1,4 +1,7 @@
 /** 테스트 전용 Fake — 시계 · 로거 · fetch · 관측/알림 클라이언트. 값은 전부 명백한 가짜. */
+import { existsSync, readdirSync, statSync } from "node:fs";
+import { join, relative, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import { vi } from "vitest";
 import type { AlertClient } from "@/features/auth/lib/alert-client";
 import type { ObserveClient, ObserveResult } from "@/features/auth/lib/observe-client";
@@ -68,7 +71,8 @@ export function createFakeObserveClient(): FakeObserveClient {
 
 export interface FakeAlertClient extends AlertClient {
   lockedEvents: string[];
-  behavior: "ok" | "fail" | "throw";
+  /** hang = 끝나지 않는 알림(느린 알림 서버) */
+  behavior: "ok" | "fail" | "throw" | "hang";
 }
 
 export function createFakeAlertClient(): FakeAlertClient {
@@ -78,6 +82,7 @@ export function createFakeAlertClient(): FakeAlertClient {
     sendLoginLocked: async (lockedUntil) => {
       client.lockedEvents.push(lockedUntil);
       if (client.behavior === "throw") throw new Error("alert unreachable (fake)");
+      if (client.behavior === "hang") return new Promise<boolean>(() => undefined);
       return client.behavior === "ok";
     },
   };
@@ -101,3 +106,34 @@ export function createFakeFetch(steps: FetchStep[]) {
 export function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 }
+
+export const APP_DIRECTORY = fileURLToPath(new URL("../../../app", import.meta.url));
+
+export interface AppRoute {
+  path: string;
+  kind: "page" | "route";
+  file: string;   // 절대 경로
+}
+
+/** src/app 의 page · route 에서 경로를 뽑는다. (그룹)은 지우고 [동적]은 견본 값으로 바꾼다. */
+export function routesFromAppDirectory(): AppRoute[] {
+  if (!existsSync(APP_DIRECTORY)) return [];
+  const routes: AppRoute[] = [];
+  const walk = (directory: string) => {
+    for (const entry of readdirSync(directory)) {
+      const fullPath = join(directory, entry);
+      if (statSync(fullPath).isDirectory()) { walk(fullPath); continue; }
+      const match = /^(page|route)\.(tsx|ts|jsx|js)$/.exec(entry);
+      if (!match) continue;
+      const segments = relative(APP_DIRECTORY, directory).split(sep).filter(Boolean)
+        .filter((segment) => !/^\(.*\)$/.test(segment))
+        .map((segment) => (/^\[.*\]$/.test(segment) ? "sample-segment" : segment));
+      routes.push({ path: `/${segments.join("/")}`, kind: match[1] as "page" | "route", file: fullPath });
+    }
+  };
+  walk(APP_DIRECTORY);
+  return routes;
+}
+
+/** 세션 없이 열리는 실제 경로(명세 ② 인증 경계: 로그인 화면 · 로그인 요청 · 헬스). */
+export const PUBLIC_ROUTE_PATHS: ReadonlySet<string> = new Set(["/login", "/api/auth/login", "/api/health"]);

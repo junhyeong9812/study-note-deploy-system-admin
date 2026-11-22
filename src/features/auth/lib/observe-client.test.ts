@@ -103,7 +103,7 @@ describe("관측 서버 — POST /auth/attempts", () => {
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
-  it("시간 초과(느리지만 죽지 않은 관측 서버) — 신호가 끊기면 장애, 재시도도 같은 제한", async () => {
+  it("시간 초과(느리지만 죽지 않은 관측 서버) — 5초 신호가 끊기면 재시도 없이 바로 timeout(세부 2)", async () => {
     const first = new AbortController();
     const second = new AbortController();
     const fetch = createFakeFetch([hangUntilAborted(first), hangUntilAborted(second)]);
@@ -112,9 +112,37 @@ describe("관측 서버 — POST /auth/attempts", () => {
     const observe = createObserveClient({ baseUrl: BASE_URL, secret: SECRET, fetch, timeoutSignal });
     const result = await observe.recordAttempt(ATTEMPT);
     expect(result).toEqual({ ok: false, reason: "timeout" });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(timeoutSignal).toHaveBeenCalledTimes(1);
+    expect(timeoutSignal).toHaveBeenCalledWith(5000);
+  });
+
+  it("fetch 가 TimeoutError 로 거절해도(신호 모양과 무관) 재시도 없이 timeout", async () => {
+    const { fetch, observe } = client([new DOMException("timed out", "TimeoutError"), jsonResponse({ success: true, data: VERDICT_DATA })]);
+    expect(await observe.recordAttempt(ATTEMPT)).toEqual({ ok: false, reason: "timeout" });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("첫 호출이 연결 실패, 재시도가 시간 초과면 timeout — 호출은 2회에서 끝", async () => {
+    const controller = new AbortController();
+    const fetch = createFakeFetch([new TypeError("fetch failed"), hangUntilAborted(controller)]);
+    const signals = [new AbortController().signal, controller.signal];
+    const observe = createObserveClient({ baseUrl: BASE_URL, secret: SECRET, fetch, timeoutSignal: () => signals.shift()! });
+    expect(await observe.recordAttempt(ATTEMPT)).toEqual({ ok: false, reason: "timeout" });
     expect(fetch).toHaveBeenCalledTimes(2);
-    expect(timeoutSignal).toHaveBeenCalledTimes(2);
-    expect(timeoutSignal.mock.calls.every(([milliseconds]) => milliseconds === 5000)).toBe(true);
+  });
+
+  it("rejected 기록도 시간 초과면 재시도 없음", async () => {
+    const { fetch, observe } = client([new DOMException("timed out", "TimeoutError"), jsonResponse({ success: true, data: {} })]);
+    expect(await observe.recordRejected(REJECTED)).toEqual({ ok: false, reason: "timeout" });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("재전송 본문(replayed:true + outcome)은 그대로 보낸다", async () => {
+    const { fetch, observe } = client([jsonResponse({ success: true, data: VERDICT_DATA })]);
+    const replay = { ...ATTEMPT, replayed: true, outcome: "locked" as const };
+    await observe.recordAttempt(replay);
+    expect(JSON.parse(String(fetch.mock.calls[0][1].body))).toEqual(replay);
   });
 
   it("baseUrl 뒤의 / 는 겹치지 않는다", async () => {
