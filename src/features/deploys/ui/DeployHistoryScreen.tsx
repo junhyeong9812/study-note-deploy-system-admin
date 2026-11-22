@@ -9,6 +9,7 @@ import { DEPLOY_HISTORY_DEFAULT_LIMIT, DEPLOY_SERVICES, type DeployService } fro
 import { DeployHistoryTable } from "@/features/deploys/ui/DeployHistoryTable";
 import { deploysHref, type DeployListAddress } from "@/features/deploys/ui/deploys-address";
 import styles from "@/features/deploys/ui/DeployHistoryScreen.module.css";
+import parts from "@/shared/ui/screen-parts.module.css";
 
 /** 입력 이름 → 화면 글자(잘못된 입력 안내). */
 const FIELD_LABELS: Readonly<Record<string, string>> = { service: "서비스", limit: "건수" };
@@ -54,9 +55,9 @@ export function DeployHistoryScreen({ view, detail, selectedRequestId }: DeployH
   const listContent = (
     <>
       {!deployments.ok && deployments.reason === "invalid_input" && (
-        <div className={styles.problem} role="alert">
-          <p className={styles.problemTitle}>조회 조건이 맞지 않습니다</p>
-          <p className={styles.problemDetail}>
+        <div className={parts.problem} role="alert">
+          <p className={parts.problemTitle}>조회 조건이 맞지 않습니다</p>
+          <p className={parts.problemDetail}>
             {FIELD_LABELS[deployments.field ?? ""] ?? deployments.field} 값을 확인하세요. 고를 수 있는 서비스: 전체 · {DEPLOY_SERVICES.join(" · ")}
             {" "}· 건수는 1~200. <a href="/deploys">전체 보기</a>
           </p>
@@ -64,16 +65,16 @@ export function DeployHistoryScreen({ view, detail, selectedRequestId }: DeployH
       )}
 
       {!deployments.ok && deployments.reason !== "invalid_input" && (
-        <div className={styles.problem} role="alert">
-          <p className={styles.problemTitle}>배포 이력을 불러오지 못했습니다</p>
-          <p className={styles.problemDetail}>
+        <div className={parts.problem} role="alert">
+          <p className={parts.problemTitle}>배포 이력을 불러오지 못했습니다</p>
+          <p className={parts.problemDetail}>
             배포 서버: {deployments.message}{deployments.status !== undefined && <> · HTTP {deployments.status}</>}
           </p>
         </div>
       )}
 
       {deployments.ok && deployments.value.length === 0 && (
-        <p className={styles.empty}>{selected === null ? "배포 기록이 없습니다." : `${selected} 의 배포 기록이 없습니다.`}</p>
+        <p className={parts.empty}>{selected === null ? "배포 기록이 없습니다." : `${selected} 의 배포 기록이 없습니다.`}</p>
       )}
 
       {deployments.ok && deployments.value.length > 0 && (
@@ -88,12 +89,12 @@ export function DeployHistoryScreen({ view, detail, selectedRequestId }: DeployH
   );
   return (
     <main className={`${styles.main} ${detail !== null ? styles.mainSplit : ""}`}>
-      <div className={styles.heading}>
-        <h1 className={styles.title}>배포 이력</h1>
+      <div className={parts.heading}>
+        <h1 className={parts.title}>배포 이력</h1>
         {deployments.ok && (
-          <p className={styles.count}>
+          <p className={parts.count}>
             {selected ?? "전체"} · <strong>{deployments.value.length}건</strong>
-            <span className={styles.countNote}>(최신순, 최대 {limit}건)</span>
+            <span className={parts.countNote}>(최신순, 최대 {limit}건)</span>
           </p>
         )}
       </div>

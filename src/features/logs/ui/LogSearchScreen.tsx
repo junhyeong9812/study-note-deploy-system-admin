@@ -12,6 +12,7 @@ import {
 import { LogTable, formatKoreanLogTime } from "@/features/logs/ui/LogTable";
 import { LOGS_PATH, logsHref, pinnedListQuery, requestFlowHref, serviceFilterHref, type LogFormValues } from "@/features/logs/ui/logs-address";
 import styles from "@/features/logs/ui/LogSearchScreen.module.css";
+import parts from "@/shared/ui/screen-parts.module.css";
 
 const MAXIMUM_RANGE_DAYS = Math.round(LOG_QUERY_MAXIMUM_RANGE_MILLISECONDS / (24 * 60 * 60 * 1000));
 const PROBLEM_ID = "log-query-problem";
@@ -120,9 +121,9 @@ export function LogSearchScreen({ view, formValues, trace, selectedLogId }: LogS
   const resultsArea = (
     <>
       {!logs.ok && logs.reason !== "invalid_input" && (
-        <div className={styles.problem} role="alert">
-          <p className={styles.problemTitle}>로그를 불러오지 못했습니다</p>
-          <p className={styles.problemDetail}>
+        <div className={parts.problem} role="alert">
+          <p className={parts.problemTitle}>로그를 불러오지 못했습니다</p>
+          <p className={parts.problemDetail}>
             관측 서버: {logs.message}{logs.status !== undefined && <> · HTTP {logs.status}</>}
           </p>
         </div>
@@ -137,7 +138,7 @@ export function LogSearchScreen({ view, formValues, trace, selectedLogId }: LogS
             )}
           </p>
           {page.logs.length === 0 ? (
-            <p className={styles.empty}>조건에 맞는 로그가 없습니다.</p>
+            <p className={parts.empty}>조건에 맞는 로그가 없습니다.</p>
           ) : (
             <LogTable logs={page.logs} currentRequestId={query.requestId}
               requestHref={(requestId) => requestFlowHref(requestId, page, limit)}
@@ -157,20 +158,20 @@ export function LogSearchScreen({ view, formValues, trace, selectedLogId }: LogS
   );
   return (
     <main className={`${styles.main} ${trace !== null ? styles.mainSplit : ""}`}>
-      <div className={styles.heading}>
-        <h1 className={styles.title}>로그 조회</h1>
+      <div className={parts.heading}>
+        <h1 className={parts.title}>로그 조회</h1>
         {page !== null && (
-          <p className={styles.count}>
+          <p className={parts.count}>
             <strong>{page.logs.length}건</strong>
-            <span className={styles.countNote}>(최신순, 한 번에 최대 {limit}건)</span>
+            <span className={parts.countNote}>(최신순, 한 번에 최대 {limit}건)</span>
           </p>
         )}
       </div>
 
       {fieldHint !== null && (
-        <div className={styles.problem} role="alert" id={PROBLEM_ID}>
-          <p className={styles.problemTitle}>조회 조건이 맞지 않습니다</p>
-          <p className={styles.problemDetail}>
+        <div className={parts.problem} role="alert" id={PROBLEM_ID}>
+          <p className={parts.problemTitle}>조회 조건이 맞지 않습니다</p>
+          <p className={parts.problemDetail}>
             <strong>{fieldHint.label}</strong>: {fieldHint.hint} <a href={LOGS_PATH}>조건 지우기</a>
           </p>
         </div>

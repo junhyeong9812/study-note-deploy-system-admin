@@ -1,9 +1,5 @@
+/* 제목 줄 · 건수 · 실패 상자 · 빈 상태는 공통 조각(src/shared/ui/screen-parts.module.css). */
 .main { max-width: var(--content-width); margin: 0 auto; padding: var(--space-6) var(--space-4); display: flex; flex-direction: column; gap: var(--space-4); }
-.heading { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-2) var(--space-4); }
-.title { font-size: var(--text-xl); }
-.count { font-size: var(--text-sm); color: var(--muted); }
-.count strong { color: var(--fg); }
-.countNote { margin-left: var(--space-2); font-size: var(--text-xs); }
 .filter { overflow-x: auto; }
 .filterList { list-style: none; display: flex; gap: var(--space-2); }
 .filterLink {
@@ -13,16 +9,6 @@
 }
 .filterLink:hover { background: var(--code-bg); text-decoration: none; }
 .filterLink[aria-current="page"] { color: var(--accent); background: var(--accent-bg); border-color: var(--accent); font-weight: 600; }
-.problem {
-  padding: var(--space-3) var(--space-4); border-radius: var(--radius-md);
-  color: var(--danger); background: var(--danger-bg); border: 1px solid var(--danger);
-}
-.problemTitle { font-weight: 700; }
-.problemDetail { font-size: var(--text-sm); color: var(--fg); }
-.empty {
-  padding: var(--space-8) var(--space-4); text-align: center; color: var(--muted);
-  border: 1px dashed var(--line); border-radius: var(--radius-md);
-}
 /* 상세를 연 분할 화면 — 넓은 화면은 왼쪽 목록 | 오른쪽 상세(목록은 칸을 줄인다), 좁은 화면은 상세가 화면 전체를 덮는다(DeployDetailPanel). */
 .mainSplit { max-width: 1680px; }
 .split { display: flex; flex-direction: column; gap: var(--space-4); }

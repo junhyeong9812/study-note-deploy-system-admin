@@ -1,18 +1,5 @@
-/* 로그 조회 — 색은 전부 globals.css 토큰(다크 모드 포함). */
+/* 로그 조회 — 색은 전부 globals.css 토큰(다크 모드 포함). 제목 줄 · 건수 · 실패 상자 · 빈 상태는 공통 조각(src/shared/ui/screen-parts.module.css). */
 .main { max-width: var(--content-width); margin: 0 auto; padding: var(--space-6) var(--space-4); display: flex; flex-direction: column; gap: var(--space-4); }
-.heading { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-2) var(--space-4); }
-.title { font-size: var(--text-xl); }
-.count { font-size: var(--text-sm); color: var(--muted); }
-.count strong { color: var(--fg); }
-.countNote { margin-left: var(--space-2); font-size: var(--text-xs); }
-
-/* 실패 · 잘못된 입력 — 배포 이력 화면의 실패 표시와 같은 꼴 */
-.problem {
-  padding: var(--space-3) var(--space-4); border-radius: var(--radius-md);
-  color: var(--danger); background: var(--danger-bg); border: 1px solid var(--danger);
-}
-.problemTitle { font-weight: 700; }
-.problemDetail { font-size: var(--text-sm); color: var(--fg); }
 
 /* 조회 폼 */
 .form { display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-4); border: 1px solid var(--line); border-radius: var(--radius-md); }
@@ -43,10 +30,6 @@
 .results { display: flex; flex-direction: column; gap: var(--space-3); min-width: 0; }
 .range { font-size: var(--text-sm); color: var(--muted); font-variant-numeric: tabular-nums; }
 .range time { color: var(--fg); }
-.empty {
-  padding: var(--space-8) var(--space-4); text-align: center; color: var(--muted);
-  border: 1px dashed var(--line); border-radius: var(--radius-md);
-}
 .more { text-align: center; }
 .moreLink {
   display: inline-block; padding: var(--space-2) var(--space-6); font-size: var(--text-sm); font-weight: 600;

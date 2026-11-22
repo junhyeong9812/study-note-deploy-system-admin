@@ -1,0 +1,20 @@
+/* 화면 셋(배포 이력 · 로그 조회 · 상태 한눈에)이 함께 쓰는 조각 — 제목 줄 · 건수 · 실패 상자 · 빈 상태. 색은 전부 globals.css 토큰(다크 모드 포함). */
+.heading { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-2) var(--space-4); }
+.title { font-size: var(--text-xl); }
+.count { font-size: var(--text-sm); color: var(--muted); }
+.count strong { color: var(--fg); }
+.countNote { margin-left: var(--space-2); font-size: var(--text-xs); }
+
+/* 다른 서버 실패 · 잘못된 입력 */
+.problem {
+  padding: var(--space-3) var(--space-4); border-radius: var(--radius-md);
+  color: var(--danger); background: var(--danger-bg); border: 1px solid var(--danger);
+}
+.problemTitle { font-weight: 700; }
+.problemDetail { font-size: var(--text-sm); color: var(--fg); }
+
+/* 빈 목록 */
+.empty {
+  padding: var(--space-8) var(--space-4); text-align: center; color: var(--muted);
+  border: 1px dashed var(--line); border-radius: var(--radius-md);
+}
