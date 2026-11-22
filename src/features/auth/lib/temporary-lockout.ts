@@ -43,7 +43,8 @@ export function createTemporaryLockout(options: TemporaryLockoutOptions): Tempor
       failureCount += 1;
       if (failureCount >= maxFailures) {
         lockedUntilTime = now + lockMilliseconds;
-        return { allowed: false, outcome: "locked", lockedUntil: new Date(lockedUntilTime).toISOString(), lockStarted: true, failures: failureCount };
+        // 잠금을 건 그 시도 자체는 실패다(관측 서버와 같은 꼴) — 응답은 lockStarted 를 보고 잠금으로 답한다
+        return { allowed: false, outcome: "failure", lockedUntil: new Date(lockedUntilTime).toISOString(), lockStarted: true, failures: failureCount };
       }
       return { allowed: false, outcome: "failure", lockedUntil: null, lockStarted: false, failures: failureCount };
     },

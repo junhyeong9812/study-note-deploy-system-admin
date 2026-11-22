@@ -1,6 +1,7 @@
 /** 관측 서버 클라이언트 — 로그인 시도 기록·판정. 헤더 X-Observe-Secret, 호출마다 5초 제한.
  * 장애 = 연결 실패 · 시간 초과 · 2xx 아님 · 해석 불가 본문({success:true,data:{…}} 형식이 아님).
- * 장애면 같은 본문(같은 attempt_id)으로 1회 재시도, 그래도 안 되면 { ok:false }. */
+ * 연결 실패 · 2xx 아님 · 해석 불가면 같은 본문(같은 attempt_id)으로 1회 재시도, 그래도 안 되면 { ok:false }.
+ * 시간 초과는 재시도하지 않는다(세부 2 — 로그인이 최대 약 5초에 끝나게). */
 import type {
   AttemptRecordBody, AttemptVerdict, FetchLike, RejectedAttemptBody, TimeoutSignalFactory,
 } from "@/features/auth/lib/types";
@@ -87,10 +88,10 @@ export function createObserveClient(options: ObserveClientOptions): ObserveClien
     return { ok: true, value };
   }
 
-  /** 장애면 같은 본문으로 1회 재시도. */
+  /** 시간 초과가 아닌 장애면 같은 본문으로 1회 재시도. */
   async function callWithRetry<Value>(path: string, body: unknown, parse: (data: unknown) => Value | undefined): Promise<ObserveResult<Value>> {
     const first = await callOnce(path, body, parse);
-    if (first.ok) return first;
+    if (first.ok || first.reason === "timeout") return first;
     return callOnce(path, body, parse);
   }
 

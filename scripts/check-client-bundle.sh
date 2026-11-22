@@ -1,9 +1,19 @@
 #!/bin/sh
 # 클라이언트 산출물(.next/static — 브라우저로 가는 스크립트·스타일)에 비밀값 이름·테스트용 비밀값이 없는지 검색한다.
-# `npm run build` 뒤에 돈다(Dockerfile build 단계). 하나라도 나오면 실패(exit 1).
+# 하나라도 나오면 실패(exit 1). 값은 출력하지 않는다 — 패턴 번호 · 환경 변수 이름 · 파일만.
+#
+#   sh scripts/check-client-bundle.sh [.next/static]               빌드 때(Dockerfile build 단계): 이름·테스트용 값 검사
+#   sh scripts/check-client-bundle.sh --env-values [.next/static]  배포된 컨테이너 안에서: 위 검사 + 실제 환경 변수 값 검사
+#       예) docker exec admin-app-blue sh scripts/check-client-bundle.sh --env-values
+#
 # 추가 검사 값: 환경 변수 CHECK_BUNDLE_EXTRA_VALUES(줄바꿈 구분) — 빌드 때 넣은 가짜 비밀값을 함께 찾는다.
 set -eu
 
+CHECK_ENVIRONMENT_VALUES=0
+if [ "${1:-}" = "--env-values" ]; then
+  CHECK_ENVIRONMENT_VALUES=1
+  shift
+fi
 STATIC_DIRECTORY="${1:-.next/static}"
 if [ ! -d "$STATIC_DIRECTORY" ]; then
   echo "check-client-bundle: $STATIC_DIRECTORY 가 없다 — 빌드 뒤에 실행해야 한다" >&2
@@ -58,7 +68,36 @@ while IFS= read -r PATTERN; do
   fi
 done < "$PATTERN_FILE"
 
+# 실제 환경 변수 값 — 값이 있는 키만, 값은 찍지 않는다. 너무 짧은 값은 우연히 겹칠 수 있어 이름만 알리고 건너뛴다.
+VALUE_NAMES='ADMIN_USER ADMIN_PASSWORD_HASH SESSION_SECRET OBSERVE_URL OBSERVE_SECRET ALERT_URL ALERT_SECRET DEPLOY_MASTER_URL DEPLOY_SECRET BACKEND_URL LOG_REDIS_URL'
+MINIMUM_VALUE_LENGTH=8
+CHECKED_VALUES=0
+if [ "$CHECK_ENVIRONMENT_VALUES" -eq 1 ]; then
+  for NAME in $VALUE_NAMES; do
+    VALUE=$(printenv "$NAME" || true)
+    if [ -z "$VALUE" ]; then
+      echo "check-client-bundle: $NAME 비어 있음 — 건너뜀"
+      continue
+    fi
+    if [ "${#VALUE}" -lt "$MINIMUM_VALUE_LENGTH" ]; then
+      echo "check-client-bundle: $NAME 값이 ${MINIMUM_VALUE_LENGTH}자보다 짧음 — 건너뜀"
+      continue
+    fi
+    MATCHES=$(grep -rlF -- "$VALUE" "$STATIC_DIRECTORY" || true)
+    CHECKED_VALUES=$((CHECKED_VALUES + 1))
+    if [ -n "$MATCHES" ]; then
+      echo "check-client-bundle: 환경 변수 $NAME 의 값 발견:" >&2
+      echo "$MATCHES" >&2
+      FOUND=1
+    fi
+  done
+fi
+
 if [ "$FOUND" -ne 0 ]; then
   exit 1
 fi
-echo "check-client-bundle: ok — 파일 $FILE_COUNT 개, 패턴 $(wc -l < "$PATTERN_FILE") 개 없음"
+if [ "$CHECK_ENVIRONMENT_VALUES" -eq 1 ]; then
+  echo "check-client-bundle: ok — 파일 $FILE_COUNT 개, 패턴 $(wc -l < "$PATTERN_FILE") 개 · 환경 변수 값 $CHECKED_VALUES 개 없음"
+else
+  echo "check-client-bundle: ok — 파일 $FILE_COUNT 개, 패턴 $(wc -l < "$PATTERN_FILE") 개 없음"
+fi

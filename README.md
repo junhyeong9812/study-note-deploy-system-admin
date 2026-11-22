@@ -33,13 +33,19 @@
 
   - `deploy/active/` 는 서버에만 있고 git 에 없다. `edge-allow.conf` 가 없으면 nginx 가 뜨지 않는다(닫힌 쪽으로 실패).
   - 배포·전환·수동 조작은 ci-cd 저장소 README 의 "무중단 배포" 절을 따른다. 자리 포트: blue `127.0.0.1:18001`, green `127.0.0.1:18002`.
-- 비밀번호 해시 만들기(한 줄 — 평문이 셸 기록에 남지 않게 읽어서 넣는다. 기본값 m=19456,t=2,p=1 이 더미 해시와 같아 검증 시간이 비슷하다):
+- 비밀번호 해시 만들기(한 줄 — 평문이 셸 기록에 남지 않게 읽어서 넣는다). **비용은 `m=19456,t=2,p=1` 로 고정**이다 — 설정 해시가 `$argon2id$v=19$m=19456,t=2,p=1$` 로 시작하지 않으면 더미 해시와 검증 시간이 달라지므로 설정 없음과 같이 로그인을 전부 거절하고 시작 로그에 `ADMIN_PASSWORD_HASH` 이름만 남긴다. 아래 명령은 그 매개변수를 명시한다:
 
   ```sh
-  docker run --rm -it admin-app:local node -e 'const r=require("readline").createInterface({input:process.stdin,output:process.stderr});r.question("password: ",p=>{r.close();require("@node-rs/argon2").hash(p,{algorithm:2}).then(h=>console.log(h))})'
+  docker run --rm -it admin-app:local node -e 'const r=require("readline").createInterface({input:process.stdin,output:process.stderr});r.question("password: ",p=>{r.close();require("@node-rs/argon2").hash(p,{algorithm:2,memoryCost:19456,timeCost:2,parallelism:1}).then(h=>console.log(h))})'
   ```
 
 - 세션 서명 키: `openssl rand -hex 32`.
+
+- 배포된 컨테이너에서의 **값 검사**(빌드 때는 비밀값이 없어 이름만 검사한다): 컨테이너 안의 실제 환경 변수 값으로 브라우저로 가는 묶음을 검색한다. 값은 출력하지 않고 이름·파일만 알린다(8자보다 짧은 값은 이름만 알리고 건너뛴다). 하나라도 나오면 exit 1.
+
+  ```sh
+  docker exec admin-app-blue sh scripts/check-client-bundle.sh --env-values   # 활성 자리 이름으로
+  ```
 
 ## 환경 변수
 
@@ -53,3 +59,6 @@
 - 잠금은 관측 서버가 판정한다(연속 5회 → 15분). 관측 서버에 닿지 않으면 자리 메모리의 임시 제한(3회 → 15분)으로 판정하고 화면에 "임시 제한 중"을 표시한다. 잠금이 시작되면(임시 제한 포함) 알림 서버에 이벤트 1건.
 - 클라이언트 IP: nginx 가 **엣지 IP 와 사설 대역에서 온 연결만** 받고(나머지는 응답 없이 닫음), 앱에 넘기는 `X-Real-IP` 를 다시 쓴다 — 엣지에서 온 연결이면 엣지가 넣은 값, 아니면 실제 접속 주소. 앱은 `X-Real-IP` 하나만 읽고(`X-Forwarded-For` 는 보지 않는다), 없으면 `unknown` 한 통으로 센다.
 - 보호 화면·데이터 응답은 요청마다 렌더링하고 `Cache-Control: no-store`.
+- 판정 순서: Origin 검사 → 속도 제한 → 본문 형식 → 자격 검증. 형식이 틀린 본문도 속도 제한에 센다(Origin 거절은 세지 않는다). 관측 서버는 5초 안에 답이 없으면 재시도 없이 임시 제한으로 판정한다(연결 실패·2xx 아님·해석 불가만 같은 `attempt_id` 로 1회 재시도).
+- 시도 기록: 자격 검증에 이른 요청은 `/auth/attempts`, 그 전에 거절한 요청은 `/auth/attempts/rejected`(`reason` = `rate_limited` · `origin_rejected` · `malformed`). 거절 기록은 IP 마다 60초 창에 이유별 첫 1건만 보내고 나머지는 건수만 앱 로그에 남긴다. 관측 서버 장애 중의 기록은 대기열에 두었다가 복귀 뒤 `replayed:true` + 임시 제한이 실제로 내린 `outcome` 으로 보낸다. 재전송 응답이 잠금 시작이면 그때 알림을 보낸다. 알림은 로그인 응답을 최대 2초만 기다린다.
+- 종료 로그: 대기열에 넣을 때마다 `queued=<건수>`, SIGTERM 을 받으면 `login:shutdown queued=<대기 건수> dropped=<누적 유실 건수>` 1줄. 종료 자체는 Next 서버의 SIGTERM 처리(연결 정리 뒤 종료)가 한다. 강제 종료(SIGKILL) 때는 마지막 `queued=` 줄이 근사값이다.

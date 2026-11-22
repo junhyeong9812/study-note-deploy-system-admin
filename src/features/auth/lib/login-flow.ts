@@ -1,19 +1,23 @@
 /** 로그인 흐름 조립 — Route Handler(POST /api/auth/login)가 부른다.
- * 순서: Origin 검사 → 속도 제한(초과면 비밀번호 검증 없이 rate_limited, IP 마다 창당 첫 1건만 rejected 기록)
- *   → 자격 검증 → 관측 서버 판정(성공 = 자격이 맞고 allowed:true)
- *   → lock_started:true 면 알림 1건(실패해도 결과 불변, 앱 로그 1줄)
- *   → 관측 서버 장애면 임시 제한으로 판정 + 대기열에 기록 + temporaryRestriction:true.
- * 관측 서버 호출이 성공하면 대기열을 replayed:true 로 비운다.
- * 대기열이 넘쳐 버린 항목이 생기면 앱 로그(warning)에 `dropped=<누적 건수>` 를 남긴다. */
+ * 순서(세부 2): Origin 검사(틀리면 origin_rejected — 속도 제한을 쓰지 않는다)
+ *   → 속도 제한(초과면 비밀번호 검증 없이 rate_limited) → 형식 판정(malformed — 형식 오류도 속도 제한에 센다)
+ *   → 자격 검증 → 관측 서버 판정(성공 = 자격이 맞고 allowed:true, lockStarted:true 면 결과는 잠금)
+ *   → lockStarted:true 면 알림 1건(최대 ALERT_WAIT_MILLISECONDS 만 기다린다. 실패·초과는 결과 불변, 앱 로그 1줄)
+ *   → 관측 서버 장애면 임시 제한으로 판정 + 대기열에 기록(그 판정의 outcome 과 함께) + temporaryRestriction:true.
+ * 자격 검증 전에 거절한 것(rate_limited · origin_rejected · malformed)은 IP 마다 60초 창에 이유별 첫 1건만 rejected 로 기록.
+ * 관측 서버 호출이 성공하면 대기열을 비운다 — 시도 기록은 replayed:true + outcome, 응답이 잠금 시작이면 알림.
+ * 대기열에 넣을 때마다 `queued=<현재 건수>`, 넘쳐 버리면 `dropped=<누적 건수>` 를 앱 로그에 남긴다. */
 import type { AlertClient } from "@/features/auth/lib/alert-client";
 import type { AttemptQueue, QueuedRecord } from "@/features/auth/lib/attempt-queue";
 import { verifyCredentials, type AccountConfig } from "@/features/auth/lib/credentials";
 import type { ObserveClient } from "@/features/auth/lib/observe-client";
 import { isAllowedOrigin } from "@/features/auth/lib/origin";
-import type { RateLimiter } from "@/features/auth/lib/rate-limit";
+import { createRateLimiter, type RateLimiter } from "@/features/auth/lib/rate-limit";
 import { issueSessionToken } from "@/features/auth/lib/session";
 import type { TemporaryLockout } from "@/features/auth/lib/temporary-lockout";
-import type { AppLogger, AttemptRecordBody, AttemptVerdict, Clock, PasswordVerifier } from "@/features/auth/lib/types";
+import type {
+  AppLogger, AttemptRecordBody, AttemptVerdict, Clock, PasswordVerifier, RejectedAttemptBody, RejectionReason,
+} from "@/features/auth/lib/types";
 
 export const USER_AGENT_MAX_LENGTH = 200;
 
@@ -58,6 +62,17 @@ export interface LoginFlowDependencies {
 /** 세부 2: 잠금 알림은 로그인 응답을 이만큼만 기다린다. 넘으면 응답을 먼저 돌려주고 앱 로그 1줄. */
 export const ALERT_WAIT_MILLISECONDS = 2_000;
 
+/** 거절 기록의 창 — IP 마다 이유별 첫 1건만 관측 서버에 보낸다. */
+const REJECTION_RECORD_WINDOW_MILLISECONDS = 60_000;
+
+/** 기본 대기 — 프로세스 종료를 붙잡지 않는다(unref). */
+function defaultDelay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, milliseconds);
+    timer.unref?.();
+  });
+}
+
 export interface LoginFlow {
   login(input: LoginInput): Promise<LoginResult>;
   /** login 이 시작한 대기열 재전송(있으면)이 끝날 때까지 기다린다 — 재전송 응답으로 보낸 잠금 알림까지 포함.
@@ -70,8 +85,11 @@ export function createLoginFlow(dependencies: LoginFlowDependencies): LoginFlow 
     clock, newAttemptId, account, verifyPassword, sessionSigningKey, configuredOrigin,
     rateLimiter, temporaryLockout, attemptQueue, observeClient, alertClient,
   } = dependencies;
+  const delay = dependencies.delay ?? defaultDelay;
+  // origin_rejected · malformed 거절 기록의 창(IP 마다 60초에 이유별 1건) — rate_limited 는 rateLimiter 의 표시를 쓴다
+  const rejectionRecordWindow = createRateLimiter({ clock, limit: 1, windowMilliseconds: REJECTION_RECORD_WINDOW_MILLISECONDS });
+  const unrecordedRejections: Record<RejectionReason, number> = { rate_limited: 0, origin_rejected: 0, malformed: 0 };
   let replayInFlight: Promise<void> | null = null;
-  let unrecordedRateLimited = 0;   // 관측 서버에 남기지 않은(창당 첫 1건이 아닌) 속도 제한 거절의 누적 건수
 
   /** 로그는 요청을 막지 않는다 — 로거의 실패·예외를 흡수한다. */
   const log = (requestId: string, message: string, level: "info" | "warning" | "error" = "info") => {
@@ -83,10 +101,30 @@ export function createLoginFlow(dependencies: LoginFlowDependencies): LoginFlow 
     }
   };
 
-  /** 대기열에 넣고, 넘쳐 버렸으면 누적 건수를 남긴다(조용히 버리지 않는다). */
+  /** 대기열에 넣고 현재 건수를 남긴다. 넘쳐 버렸으면 누적 유실 건수를 남긴다(조용히 버리지 않는다). */
   const enqueueRecord = (requestId: string, record: QueuedRecord) => {
-    if (!attemptQueue.enqueue(record)) {
-      log(requestId, `login:queue_overflow dropped=${attemptQueue.droppedCount()} queued=${attemptQueue.size()}`, "warning");
+    if (attemptQueue.enqueue(record)) {
+      log(requestId, `login:queue_added kind=${record.kind} queued=${attemptQueue.size()}`);
+    } else {
+      log(requestId, `login:queue_overflow dropped=${attemptQueue.droppedCount()}`, "warning");
+    }
+  };
+
+  /** 잠금 알림 — 로그인 응답(또는 재전송)을 최대 ALERT_WAIT_MILLISECONDS 만 기다린다. 실패·초과는 앱 로그 1줄. */
+  const sendLockAlert = async (requestId: string, lockedUntil: string, source: "login" | "replay", temporaryRestriction: boolean) => {
+    const delivery = (async () => {
+      try {
+        return (await alertClient.sendLoginLocked(lockedUntil)) === true ? "delivered" as const : "failed" as const;
+      } catch {
+        return "failed" as const;
+      }
+    })();
+    const waitOver = delay(ALERT_WAIT_MILLISECONDS).then(() => "wait_over" as const, () => "wait_over" as const);
+    const outcome = await Promise.race([delivery, waitOver]);
+    if (outcome === "failed") {
+      log(requestId, `login:lock_alert_failed source=${source} temporary=${temporaryRestriction}`, "warning");
+    } else if (outcome === "wait_over") {
+      log(requestId, `login:lock_alert_not_confirmed source=${source} waited_ms=${ALERT_WAIT_MILLISECONDS}`, "warning");
     }
   };
 
@@ -96,10 +134,17 @@ export function createLoginFlow(dependencies: LoginFlowDependencies): LoginFlow 
     replayInFlight = (async () => {
       try {
         const result = await attemptQueue.flush(async (record) => {
-          if (record.kind === "attempt") return (await observeClient.recordAttempt({ ...record.body, replayed: true })).ok;
-          return (await observeClient.recordRejected(record.body)).ok;
+          if (record.kind === "rejected") return (await observeClient.recordRejected(record.body)).ok;
+          const replayed = await observeClient.recordAttempt({ ...record.body, replayed: true });
+          if (!replayed.ok) return false;
+          // 응답을 잃었던 잠금 — 재전송 응답이 잠금 시작이면 알린다(key 에 locked_until 이 있어 겹치지 않는다)
+          if (replayed.value.lockStarted && replayed.value.lockedUntil !== null) {
+            log(requestId, `login:lock_started source=replay until=${replayed.value.lockedUntil}`, "warning");
+            await sendLockAlert(requestId, replayed.value.lockedUntil, "replay", false);
+          }
+          return true;
         });
-        log(requestId, `login:queue_replay sent=${result.sent} remaining=${result.remaining} dropped=${attemptQueue.droppedCount()}`,
+        log(requestId, `login:queue_replay sent=${result.sent} remaining=${result.remaining}`,
           result.remaining > 0 ? "warning" : "info");
       } catch {
         log(requestId, "login:queue_replay failed", "warning");
@@ -109,42 +154,49 @@ export function createLoginFlow(dependencies: LoginFlowDependencies): LoginFlow 
     })();
   };
 
-  const sendLockAlert = async (requestId: string, lockedUntil: string, temporaryRestriction: boolean) => {
-    let delivered = false;
-    try {
-      delivered = await alertClient.sendLoginLocked(lockedUntil);
-    } catch {
-      delivered = false;
+  /** 자격 검증 전 거절의 기록 — 창당 첫 1건만 관측 서버에, 나머지는 건수만 앱 로그에. */
+  const recordRejection = async (requestId: string, reason: RejectionReason, firstInWindow: boolean,
+                                 base: { attemptId: string; at: string; ip: string; userAgent: string }) => {
+    if (!firstInWindow) {
+      unrecordedRejections[reason] += 1;
+      log(requestId, `login:${reason} recorded=false unrecorded_total=${unrecordedRejections[reason]}`);
+      return;
     }
-    if (!delivered) log(requestId, `login:lock_alert_failed temporary=${temporaryRestriction}`, "warning");
+    const body: RejectedAttemptBody = { attempt_id: base.attemptId, at: base.at, reason, ip: base.ip, user_agent: base.userAgent };
+    const recorded = await observeClient.recordRejected(body);
+    if (recorded.ok) {
+      log(requestId, `login:${reason} recorded=true`);
+      startReplay(requestId);
+    } else {
+      log(requestId, `login:${reason} recorded=false observe=${recorded.reason}`, "warning");
+      enqueueRecord(requestId, { kind: "rejected", body });
+    }
   };
 
   return {
     async login(input) {
-      if (!isAllowedOrigin(input.origin, configuredOrigin)) return { kind: "origin_rejected" };
-
       const attemptId = newAttemptId();
       const requestId = input.requestId ?? attemptId;
       const at = new Date(clock()).toISOString();
       const userAgent = input.userAgent.slice(0, USER_AGENT_MAX_LENGTH);
+      const base = { attemptId, at, ip: input.ip, userAgent };
+
+      if (!isAllowedOrigin(input.origin, configuredOrigin)) {
+        const firstInWindow = rejectionRecordWindow.hit(`origin_rejected|${input.ip}`).allowed;
+        await recordRejection(requestId, "origin_rejected", firstInWindow, base);
+        return { kind: "origin_rejected" };
+      }
 
       const rateDecision = rateLimiter.hit(input.ip);
       if (!rateDecision.allowed) {
-        if (rateDecision.firstRejectionInWindow) {
-          const body = { attempt_id: attemptId, at, reason: "rate_limited" as const, ip: input.ip, user_agent: userAgent };
-          const recorded = await observeClient.recordRejected(body);
-          if (recorded.ok) {
-            log(requestId, "login:rate_limited recorded=true");
-            startReplay(requestId);
-          } else {
-            log(requestId, `login:rate_limited recorded=false observe=${recorded.reason} queued=true`, "warning");
-            enqueueRecord(requestId, { kind: "rejected", body });
-          }
-        } else {
-          unrecordedRateLimited += 1;
-          log(requestId, `login:rate_limited recorded=false unrecorded_total=${unrecordedRateLimited}`);
-        }
+        await recordRejection(requestId, "rate_limited", rateDecision.firstRejectionInWindow, base);
         return { kind: "rate_limited" };
+      }
+
+      if (input.malformed === true) {
+        const firstInWindow = rejectionRecordWindow.hit(`malformed|${input.ip}`).allowed;
+        await recordRejection(requestId, "malformed", firstInWindow, base);
+        return { kind: "malformed" };
       }
 
       const credentialOk = await verifyCredentials({ id: input.id, password: input.password }, account, verifyPassword);
@@ -163,19 +215,20 @@ export function createLoginFlow(dependencies: LoginFlowDependencies): LoginFlow 
         verdict = temporaryLockout.decide(credentialOk);
         temporaryRestriction = true;
         log(requestId, `login:temporary_restriction observe=${observed.reason} outcome=${verdict.outcome} failures=${verdict.failures}`, "warning");
-        enqueueRecord(requestId, { kind: "attempt", body });
+        // 재전송 때 관측 서버가 그대로 기록할, 임시 제한이 실제로 내린 판정
+        enqueueRecord(requestId, { kind: "attempt", body: { ...body, outcome: verdict.outcome } });
       }
 
       if (verdict.lockStarted && verdict.lockedUntil !== null) {
-        log(requestId, `login:lock_started until=${verdict.lockedUntil} temporary=${temporaryRestriction}`, "warning");
-        await sendLockAlert(requestId, verdict.lockedUntil, temporaryRestriction);
+        log(requestId, `login:lock_started source=login until=${verdict.lockedUntil} temporary=${temporaryRestriction}`, "warning");
+        await sendLockAlert(requestId, verdict.lockedUntil, "login", temporaryRestriction);
       }
 
-      if (credentialOk && verdict.allowed) {
+      if (credentialOk && verdict.allowed && !verdict.lockStarted) {
         log(requestId, `login:success temporary=${temporaryRestriction}`);
         return { kind: "success", sessionToken: issueSessionToken(sessionSigningKey, clock()), temporaryRestriction };
       }
-      if (verdict.outcome === "locked") {
+      if (verdict.lockStarted || verdict.outcome === "locked") {
         log(requestId, `login:locked temporary=${temporaryRestriction}`);
         return { kind: "locked", temporaryRestriction };
       }
@@ -196,6 +249,6 @@ export function loginResultStatus(result: LoginResult): number {
     case "locked": return 423;
     case "rate_limited": return 429;
     case "origin_rejected": return 403;
-    case "malformed": throw new Error("not implemented");
+    case "malformed": return 400;
   }
 }

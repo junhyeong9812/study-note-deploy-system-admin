@@ -1,6 +1,7 @@
 /** 설정 읽기 — 비밀값이 든 환경 변수는 이 모듈만 읽는다. 서버 쪽 전용(클라이언트 묶음에 들어가면 빌드가 실패한다).
  * 값은 로그·응답에 내지 않는다. 비어 있는 키는 "이름만" 알린다. */
 import "server-only";
+import { hasRequiredHashCost } from "@/features/auth/lib/credentials";
 
 export interface ServerConfig {
   adminUser: string;
@@ -48,7 +49,8 @@ export function readServerConfig(): ServerConfig {
 export function missingLoginConfigKeys(config: ServerConfig): string[] {
   const missing: string[] = [];
   if (config.adminUser.length === 0) missing.push("ADMIN_USER");
-  if (!config.adminPasswordHash.startsWith("$argon2id$")) missing.push("ADMIN_PASSWORD_HASH");
+  // 해시 비용(m·t·p)이 더미 해시와 다르면 설정 없음과 같다(세부 2) — 값은 어디에도 찍지 않는다
+  if (!hasRequiredHashCost(config.adminPasswordHash)) missing.push("ADMIN_PASSWORD_HASH");
   if (config.sessionSecret.length < SESSION_SECRET_MINIMUM_LENGTH) missing.push("SESSION_SECRET");
   if (config.adminOrigin.length === 0) missing.push("ADMIN_ORIGIN");
   if (config.observeUrl.length === 0) missing.push("OBSERVE_URL");

@@ -2,11 +2,9 @@
  * 응답 본문은 구별 없는 짧은 코드만(ID 틀림 · 비밀번호 틀림 같은 응답). */
 import { randomUUID } from "node:crypto";
 import { clientIpOrUnknown } from "@/features/auth/lib/client-ip";
-import { isAllowedOrigin } from "@/features/auth/lib/origin";
 import { loginResultStatus, type LoginResult } from "@/features/auth/lib/login-flow";
 import { buildSessionCookieHeader } from "@/features/auth/lib/session";
 import { loginService } from "@/features/auth/server/login-service";
-import { readServerConfig } from "@/shared/config/server-config";
 import { log } from "@/shared/lib/logger";
 import { errorResponse, jsonResponse } from "@/shared/lib/responses";
 
@@ -49,6 +47,8 @@ function resultResponse(result: LoginResult): Response {
       return errorResponse(status, "rate_limited", {}, { "Retry-After": "60" });
     case "origin_rejected":
       return errorResponse(status, "origin_rejected");
+    case "malformed":
+      return errorResponse(status, "bad_request");
   }
 }
 
@@ -59,17 +59,15 @@ export async function POST(request: Request) {
     void log(requestId, "login:rejected reason=config_missing", "warning");
     return errorResponse(401, "invalid_credentials", { temporaryRestriction: false });
   }
-  const origin = request.headers.get("origin");
-  // 형식 오류는 출처가 맞을 때만 400 으로 알린다(다른 출처에는 403 한 가지)
-  if (!isAllowedOrigin(origin, readServerConfig().adminOrigin)) return resultResponse({ kind: "origin_rejected" });
+  // 본문은 여기서 해석만 하고, 판정 순서(Origin → 속도 제한 → 형식)는 흐름이 정한다
   const body = await readLoginBody(request);
-  if (body === null) return errorResponse(400, "bad_request");
   const result = await flow.login({
-    id: body.id,
-    password: body.password,
+    id: body?.id ?? "",
+    password: body?.password ?? "",
+    malformed: body === null,
     ip: clientIpOrUnknown(request.headers),
     userAgent: request.headers.get("user-agent") ?? "",
-    origin,
+    origin: request.headers.get("origin"),
     requestId,
   });
   return resultResponse(result);

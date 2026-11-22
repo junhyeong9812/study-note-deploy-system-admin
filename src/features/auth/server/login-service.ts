@@ -3,7 +3,7 @@
 import "server-only";
 import { randomUUID } from "node:crypto";
 import { createAlertClient } from "@/features/auth/lib/alert-client";
-import { createAttemptQueue } from "@/features/auth/lib/attempt-queue";
+import { createAttemptQueue, type AttemptQueue } from "@/features/auth/lib/attempt-queue";
 import { createLoginFlow, type LoginFlow } from "@/features/auth/lib/login-flow";
 import { createObserveClient } from "@/features/auth/lib/observe-client";
 import { verifyArgon2idPassword } from "@/features/auth/lib/password-hash";
@@ -15,6 +15,8 @@ import { log } from "@/shared/lib/logger";
 export interface LoginService {
   /** 설정이 비어 있으면 null — 로그인은 전부 거절. */
   flow: LoginFlow | null;
+  /** 관측 서버 장애 중의 기록 대기열(종료 로그가 건수를 읽는다). 설정이 비면 null. */
+  attemptQueue: AttemptQueue | null;
 }
 
 const GLOBAL_KEY = Symbol.for("study-note-admin.login-service");
@@ -29,9 +31,10 @@ function createLoginService(): LoginService {
   const missing = missingLoginConfigKeys(config);
   if (missing.length > 0) {
     void log("login-service", `login:disabled 설정 없음 keys=${missing.join(",")}`, "error");
-    return { flow: null };
+    return { flow: null, attemptQueue: null };
   }
   const clock = () => Date.now();
+  const attemptQueue = createAttemptQueue();
   const flow = createLoginFlow({
     clock,
     newAttemptId: () => randomUUID(),
@@ -41,12 +44,17 @@ function createLoginService(): LoginService {
     configuredOrigin: config.adminOrigin,
     rateLimiter: createRateLimiter({ clock }),
     temporaryLockout: createTemporaryLockout({ clock }),
-    attemptQueue: createAttemptQueue(),
+    attemptQueue,
     observeClient: createObserveClient({ baseUrl: config.observeUrl, secret: config.observeSecret, fetch: (input, init) => fetch(input, init) }),
     alertClient: createAlertClient({ baseUrl: config.alertUrl, secret: config.alertSecret, fetch: (input, init) => fetch(input, init) }),
     logger: log,
   });
-  return { flow };
+  return { flow, attemptQueue };
+}
+
+/** 이미 만들어진 인스턴스만 — 없으면 null(만들지 않는다). 종료 로그용. */
+export function existingLoginService(): LoginService | null {
+  return (globalThis as unknown as GlobalHolder)[GLOBAL_KEY] ?? null;
 }
 
 export function loginService(): LoginService {

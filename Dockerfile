@@ -22,6 +22,8 @@ WORKDIR /app
 ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1
 COPY --from=build --chown=node:node /app/.next/standalone ./
 COPY --from=build --chown=node:node /app/.next/static ./.next/static
+# 배포된 컨테이너 안에서 실제 환경 변수 값으로 클라이언트 산출물을 검사하는 데 쓴다(README "값 검사")
+COPY --from=build --chown=node:node /app/scripts/check-client-bundle.sh ./scripts/check-client-bundle.sh
 USER node
 EXPOSE 18000
 ENV PORT=18000 HOSTNAME=0.0.0.0
