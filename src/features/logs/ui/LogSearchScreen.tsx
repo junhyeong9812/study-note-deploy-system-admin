@@ -1,13 +1,16 @@
 /** 로그 조회 화면의 본문(서버 컴포넌트) — 조회 폼 · 조회 범위 · 결과 표 · 더 보기 · 0건 · 관측 서버 실패 · 잘못된 입력.
  * 받은 값(진입 함수가 칸을 고른 결과)과 주소의 글자만 그린다 — 다른 서버를 부르지 않고, 서버 모듈 · 클라이언트 · 설정을 임포트하지 않는다.
- * 폼은 GET 제출, 더 보기 · 요청 ID · 최신부터 · 조건 지우기는 링크라 브라우저 스크립트 없이 동작한다. */
+ * 폼은 GET 제출, 더 보기 · 요청 ID · 최신부터 · 조건 지우기는 링크라 브라우저 스크립트 없이 동작한다.
+ * 줄을 누르면 연관 로그(§11.2)가 열린다 — 넓은 화면(1100px 이상)은 왼쪽 목록 | 오른쪽 상세, 좁은 화면은 상세가 화면 전체를 덮는다. */
+import type { LogTraceOutcome } from "@/features/log-trace/lib/log-trace-view";
+import { LogTracePanel } from "@/features/log-trace/ui/LogTracePanel";
 import type { LogSearchView } from "@/features/logs/server/log-search";
 import {
   LOG_LEVELS, LOG_QUERY_DEFAULT_LIMIT, LOG_QUERY_MAXIMUM_LIMIT, LOG_QUERY_MAXIMUM_RANGE_MILLISECONDS, LOG_SEARCH_TEXT_MAXIMUM_LENGTH,
   LOG_SEARCH_TEXT_MINIMUM_LENGTH,
 } from "@/features/logs/lib/log-query";
 import { LogTable, formatKoreanLogTime } from "@/features/logs/ui/LogTable";
-import { LOGS_PATH, logsHref, requestFlowHref, serviceFilterHref, type LogFormValues } from "@/features/logs/ui/logs-address";
+import { LOGS_PATH, logsHref, pinnedListQuery, requestFlowHref, serviceFilterHref, type LogFormValues } from "@/features/logs/ui/logs-address";
 import styles from "@/features/logs/ui/LogSearchScreen.module.css";
 
 const MAXIMUM_RANGE_DAYS = Math.round(LOG_QUERY_MAXIMUM_RANGE_MILLISECONDS / (24 * 60 * 60 * 1000));
@@ -94,38 +97,28 @@ export interface LogSearchScreenProps {
   view: LogSearchView;
   /** 폼에 다시 채울 값(주소의 글자 — logFormValues) */
   formValues: LogFormValues;
+  /** 연관 로그(주소에 selected 가 있을 때) — 없으면 null */
+  trace: LogTraceOutcome | null;
+  /** 목록에서 강조할 로그 id(주소의 selected) */
+  selectedLogId: string | null;
 }
 
-export function LogSearchScreen({ view, formValues }: LogSearchScreenProps) {
+export function LogSearchScreen({ view, formValues, trace, selectedLogId }: LogSearchScreenProps) {
   const { logs, query, nextPageQuery } = view;
   const invalidField = !logs.ok && logs.reason === "invalid_input" ? logs.field ?? "" : null;
   const page = logs.ok ? logs.value : null;
   const services = page === null ? [] : [...new Set(page.logs.map((entry) => entry.service))].sort();
   const limit = query?.limit ?? LOG_QUERY_DEFAULT_LIMIT;
   const fieldHint = invalidField === null ? null : FIELD_HINTS[invalidField] ?? { label: invalidField, hint: "값을 확인하세요." };
-  return (
-    <main className={styles.main}>
-      <div className={styles.heading}>
-        <h1 className={styles.title}>로그 조회</h1>
-        {page !== null && (
-          <p className={styles.count}>
-            <strong>{page.logs.length}건</strong>
-            <span className={styles.countNote}>(최신순, 한 번에 최대 {limit}건)</span>
-          </p>
-        )}
-      </div>
-
-      {fieldHint !== null && (
-        <div className={styles.problem} role="alert" id={PROBLEM_ID}>
-          <p className={styles.problemTitle}>조회 조건이 맞지 않습니다</p>
-          <p className={styles.problemDetail}>
-            <strong>{fieldHint.label}</strong>: {fieldHint.hint} <a href={LOGS_PATH}>조건 지우기</a>
-          </p>
-        </div>
-      )}
-
-      <LogSearchForm values={formValues} invalidField={invalidField} services={services} />
-
+  // 줄 · 닫기 링크의 목록 조건 — 지금 조건과 커서 그대로(비어 있던 시각만 응답의 범위로 고정). 입력이 틀렸으면 조건 없음.
+  const listQuery = query === null ? null : page === null ? query : pinnedListQuery(query, page);
+  const listHref = (selected: string | null) => (listQuery === null ? (selected === null ? LOGS_PATH : `${LOGS_PATH}?selected=${encodeURIComponent(selected)}`) : logsHref(listQuery, selected));
+  const tracePanel = trace === null ? null : (
+    <LogTracePanel outcome={trace} closeHref={listHref(null)} selectHref={(logId) => listHref(logId)}
+      requestHref={(requestId, range) => logsHref({ requestId, from: range.from, to: range.to, service: null, level: null, text: null, before: null, limit }, trace.kind === "view" ? trace.view.query.selectedLogId : null)} />
+  );
+  const resultsArea = (
+    <>
       {!logs.ok && logs.reason !== "invalid_input" && (
         <div className={styles.problem} role="alert">
           <p className={styles.problemTitle}>로그를 불러오지 못했습니다</p>
@@ -148,16 +141,48 @@ export function LogSearchScreen({ view, formValues }: LogSearchScreenProps) {
           ) : (
             <LogTable logs={page.logs} currentRequestId={query.requestId}
               requestHref={(requestId) => requestFlowHref(requestId, page, limit)}
-              currentService={query.service} serviceHref={(service) => serviceFilterHref(service, query, page)} />
+              currentService={query.service} serviceHref={(service) => serviceFilterHref(service, query, page)}
+              rowHref={(entry) => listHref(entry.id)} selectedLogId={trace === null ? null : selectedLogId} compact={trace !== null} />
           )}
           {nextPageQuery !== null ? (
             <p className={styles.more}>
-              <a className={styles.moreLink} href={logsHref(nextPageQuery)}>더 보기 — 이전 로그 {limit}건</a>
+              <a className={styles.moreLink} href={logsHref(nextPageQuery, trace === null ? null : selectedLogId)}>더 보기 — 이전 로그 {limit}건</a>
             </p>
           ) : page.logs.length > 0 && (
             <p className={styles.end}>이 범위의 로그를 끝까지 보았습니다.</p>
           )}
         </section>
+      )}
+    </>
+  );
+  return (
+    <main className={`${styles.main} ${trace !== null ? styles.mainSplit : ""}`}>
+      <div className={styles.heading}>
+        <h1 className={styles.title}>로그 조회</h1>
+        {page !== null && (
+          <p className={styles.count}>
+            <strong>{page.logs.length}건</strong>
+            <span className={styles.countNote}>(최신순, 한 번에 최대 {limit}건)</span>
+          </p>
+        )}
+      </div>
+
+      {fieldHint !== null && (
+        <div className={styles.problem} role="alert" id={PROBLEM_ID}>
+          <p className={styles.problemTitle}>조회 조건이 맞지 않습니다</p>
+          <p className={styles.problemDetail}>
+            <strong>{fieldHint.label}</strong>: {fieldHint.hint} <a href={LOGS_PATH}>조건 지우기</a>
+          </p>
+        </div>
+      )}
+
+      <LogSearchForm values={formValues} invalidField={invalidField} services={services} />
+
+      {tracePanel === null ? resultsArea : (
+        <div className={styles.split}>
+          <div className={styles.splitList}>{resultsArea}</div>
+          {tracePanel}
+        </div>
       )}
     </main>
   );

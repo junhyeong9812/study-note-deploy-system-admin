@@ -1,0 +1,82 @@
+/* 연관 로그 — 넓은 화면은 로그 목록 오른쪽 칸(LogSearchScreen 의 분할), 좁은 화면은 화면 전체를 덮는다. 색은 전부 globals.css 토큰(다크 모드 포함). */
+.panel {
+  display: flex; flex-direction: column; gap: var(--space-4); min-width: 0;
+  padding: var(--space-4); background: var(--bg);
+  border: 1px solid var(--line); border-radius: var(--radius-md);
+}
+.panelHeader { display: flex; align-items: center; gap: var(--space-3); }
+.panelTitle { font-size: var(--text-lg); flex: 1 1 auto; }
+.backLink { display: none; white-space: nowrap; }
+.closeLink { white-space: nowrap; font-size: var(--text-sm); }
+.backLink:focus-visible, .closeLink:focus-visible, .traceLink:focus-visible, .stateLink:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.section { display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; }
+.sectionTitle { font-size: var(--text-md); padding-bottom: var(--space-1); border-bottom: 1px solid var(--line); }
+.summary { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: var(--space-1) var(--space-4); font-size: var(--text-sm); }
+.summary dt { color: var(--muted); }
+.summary dd { min-width: 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: var(--text-xs);
+  padding: 0 var(--space-1); background: var(--code-bg); border-radius: var(--radius-sm); overflow-wrap: anywhere;
+}
+.muted { color: var(--muted); font-size: var(--text-sm); }
+.note { font-size: var(--text-sm); padding: var(--space-1) var(--space-2); color: var(--warning-fg); background: var(--warning-bg); border-radius: var(--radius-sm); }
+.rangeNote { font-size: var(--text-xs); color: var(--muted); font-variant-numeric: tabular-nums; }
+.problem { font-size: var(--text-sm); color: var(--danger); }
+.problemBox {
+  padding: var(--space-3) var(--space-4); border-radius: var(--radius-md);
+  color: var(--fg); background: var(--danger-bg); border: 1px solid var(--danger); font-size: var(--text-sm);
+}
+.problemTitle { font-weight: 700; color: var(--danger); }
+
+/* 메시지 — 받은 글자 그대로(줄바꿈 · 공백 유지) */
+.message, .messageInline {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: var(--text-xs); line-height: 1.55;
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.message { padding: var(--space-2) var(--space-3); background: var(--code-bg); border-radius: var(--radius-md); max-height: 24rem; overflow-y: auto; }
+.messageInline { max-height: 8rem; overflow-y: auto; }
+
+/* 연관 로그 — 한 줄씩, 누르면 그 줄을 고른다 */
+.traceList { list-style: none; display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: var(--radius-md); max-height: 32rem; overflow-y: auto; }
+.traceList li + li { border-top: 1px solid var(--line); }
+.traceLink {
+  display: grid; grid-template-columns: max-content 5.5rem max-content max-content minmax(0, 1fr); align-items: baseline; gap: var(--space-2);
+  padding: var(--space-1) var(--space-3); color: var(--fg); font-size: var(--text-sm);
+}
+.traceLink:hover { background: var(--code-bg); text-decoration: none; }
+.traceLinkSelected { background: var(--accent-bg); box-shadow: inset 3px 0 0 var(--accent); font-weight: 600; }
+.traceTime, .traceGap { font-variant-numeric: tabular-nums; font-size: var(--text-xs); white-space: nowrap; }
+.traceGap { color: var(--muted); text-align: right; }
+.traceService { font-size: var(--text-xs); white-space: nowrap; }
+.traceMessage {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: var(--text-xs);
+  white-space: pre-wrap; overflow-wrap: anywhere; max-height: 4.8em; overflow: hidden;
+}
+
+/* 그때 서버 상태 */
+.stateBlock { display: flex; flex-direction: column; gap: var(--space-1); padding: var(--space-2) 0; }
+.stateBlock + .stateBlock { border-top: 1px dashed var(--line); }
+.stateTitle { font-size: var(--text-sm); font-weight: 700; }
+.countTable { border-collapse: collapse; font-size: var(--text-sm); font-variant-numeric: tabular-nums; }
+.countTable th, .countTable td { padding: var(--space-1) var(--space-3); text-align: left; border-bottom: 1px solid var(--line); }
+.countTable thead th { font-size: var(--text-xs); color: var(--muted); }
+.countTable tbody th { font-weight: 600; }
+.stateList { list-style: none; display: flex; flex-direction: column; gap: var(--space-1); font-size: var(--text-sm); }
+.stateLink { display: inline-flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); color: var(--fg); font-variant-numeric: tabular-nums; }
+.stateLink:hover span:not([class]) { color: var(--accent); }
+.incident { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-2); font-variant-numeric: tabular-nums; }
+.incidentTitle { overflow-wrap: anywhere; }
+.incidentKind { font-size: var(--text-xs); padding: 0 var(--space-2); border: 1px solid var(--line); border-radius: var(--radius-pill); color: var(--muted); }
+
+/* 좁은 화면 — 상세가 화면 전체를 덮고 위에 "목록으로" */
+@media (max-width: 1099px) {
+  .panel {
+    position: fixed; inset: 0; z-index: var(--z-drawer); overflow-y: auto;
+    border: none; border-radius: 0; padding: var(--space-4) var(--space-4) var(--space-8);
+  }
+  .backLink { display: inline-block; }
+  .closeLink { display: none; }
+  .traceLink { grid-template-columns: max-content max-content minmax(0, 1fr); }
+  .traceLink .traceMessage { grid-column: 1 / -1; }
+}

@@ -1,7 +1,9 @@
 /** 로그 결과 표 — 시각(KST, 밀리초까지 · 원본 UTC 는 title) · 서비스 · 수준(기호 + 낱말 + 색) · 요청 ID(누르면 그 요청의 흐름을 다시 조회) · 메시지.
  * 서비스 이름을 누르면 그 서비스만 걸러 다시 조회한다(이미 그 서비스로 걸러 보는 중이면 링크 없이 글자 — 같은 화면으로 가는 링크를 두지 않는다).
  * 메시지는 받은 글자 그대로(React 의 글자 출력 — HTML 로 해석하지 않는다), 고정폭. 여러 줄이거나 길면 첫 줄만 보이고 <details> 로 전체를 편다
- * (줄바꿈 · 공백 유지). 좁은 화면에서는 표만 가로로 스크롤된다. */
+ * (줄바꿈 · 공백 유지). 좁은 화면에서는 표만 가로로 스크롤된다.
+ * 줄마다 연관 로그를 여는 링크(시각 칸 — 줄 전체를 덮는다, 배포 이력 표와 같은 방식)가 있다. 줄 안의 서비스 · 요청 ID 링크와 메시지의 <details> 는
+ * 덮개 위에 놓여 계속 눌린다(CSS position · z-index). compact(연관 로그를 연 분할 화면) = 시각 · 서비스 · 수준 · 메시지 첫 줄만. */
 import { formatKoreanTime, shortPrefix } from "@/features/deploys/lib/deploy-format";
 import type { LogEntryView, LogLevel } from "@/features/logs/lib/log-query";
 import styles from "@/features/logs/ui/LogSearchScreen.module.css";
@@ -31,8 +33,9 @@ export function LevelBadge({ level }: { level: LogLevel }) {
   );
 }
 
-function LogMessage({ message }: { message: string }) {
+function LogMessage({ message, compact }: { message: string; compact: boolean }) {
   const lines = message.split("\n");
+  if (compact) return <span className={styles.messageOneLine} title={lines.length > 1 ? `${lines.length}줄` : undefined}>{lines[0]}</span>;
   if (lines.length === 1 && message.length <= FOLD_MESSAGE_LENGTH) return <span className={styles.messageText}>{message}</span>;
   return (
     <details className={styles.messageFold}>
@@ -55,26 +58,41 @@ export interface LogTableProps {
   serviceHref: (service: string) => string;
   /** 지금 조건의 서비스(그 칸은 링크 없이 글자) — 없으면 null */
   currentService: string | null;
+  /** 줄을 누르면 가는 주소(연관 로그 열기) */
+  rowHref: (entry: LogEntryView) => string;
+  /** 연관 로그를 연 로그 id(강조 · aria-current) — 없으면 null */
+  selectedLogId: string | null;
+  compact: boolean;
 }
 
-export function LogTable({ logs, requestHref, currentRequestId, serviceHref, currentService }: LogTableProps) {
+function rowClass(entry: LogEntryView, selected: boolean): string {
+  const tone = entry.level === "error" ? styles.rowError : entry.level === "warning" ? styles.rowWarning : "";
+  return [styles.row, tone, selected ? styles.rowSelected : ""].filter((name) => name !== "").join(" ");
+}
+
+export function LogTable({ logs, requestHref, currentRequestId, serviceHref, currentService, rowHref, selectedLogId, compact }: LogTableProps) {
   return (
     <div className={styles.scroller} tabIndex={0} role="region" aria-label="로그 결과 표">
-      <table className={styles.table}>
+      <table className={`${styles.table} ${compact ? styles.tableCompact : ""}`}>
         <thead>
           <tr>
             <th scope="col">시각(KST)</th>
             <th scope="col">서비스</th>
             <th scope="col">수준</th>
-            <th scope="col">요청 ID</th>
+            {!compact && <th scope="col">요청 ID</th>}
             <th scope="col">메시지</th>
           </tr>
         </thead>
         <tbody>
-          {logs.map((entry) => (
-            <tr key={entry.id} className={entry.level === "error" ? styles.rowError : entry.level === "warning" ? styles.rowWarning : undefined}>
+          {logs.map((entry) => {
+            const selected = entry.id === selectedLogId;
+            return (
+            <tr key={entry.id} className={rowClass(entry, selected)}>
               <td className={styles.time}>
-                <time dateTime={entry.at} title={`UTC ${entry.at}`}>{formatKoreanLogTime(entry.at)}</time>
+                <a className={styles.rowLink} href={rowHref(entry)} aria-current={selected ? "true" : undefined}
+                  aria-label={`${formatKoreanLogTime(entry.at)} ${entry.service} ${entry.level} 연관 로그 열기`}>
+                  <time dateTime={entry.at} title={`UTC ${entry.at}`}>{formatKoreanLogTime(entry.at)}</time>
+                </a>
               </td>
               <td>
                 {entry.service === currentService ? entry.service : (
@@ -82,7 +100,7 @@ export function LogTable({ logs, requestHref, currentRequestId, serviceHref, cur
                 )}
               </td>
               <td><LevelBadge level={entry.level} /></td>
-              <td>
+              {!compact && <td>
                 {entry.requestId === "" ? <span className={styles.none}>—</span> : (
                   <a className={styles.requestLink} href={requestHref(entry.requestId)} title={entry.requestId}
                     aria-label={`요청 ID ${entry.requestId} 의 로그만 보기`}
@@ -90,10 +108,11 @@ export function LogTable({ logs, requestHref, currentRequestId, serviceHref, cur
                     <code>{shortPrefix(entry.requestId, REQUEST_ID_PREFIX_LENGTH)}</code>
                   </a>
                 )}
-              </td>
-              <td className={styles.message}><LogMessage message={entry.message} /></td>
+              </td>}
+              <td className={styles.message}><LogMessage message={entry.message} compact={compact} /></td>
             </tr>
-          ))}
+            );
+          })}
         </tbody>
       </table>
     </div>

@@ -8,7 +8,10 @@
  * key · title 은 maskUpstreamReason 을 거친 값(주소 꼴 → `(주소)`, 줄바꿈 → 공백, 120자).
  * 한 항목이라도 꼴이 다르면(칸 빠짐 · 형이 다름 · at 이 parseIsoUtc 로 읽히지 않음) 전체 unparseable. */
 import type { FetchLike, TimeoutSignalFactory } from "@/features/auth/lib/types";
-import type { UpstreamResult } from "@/shared/lib/upstream-result";
+import { parseIsoUtc } from "@/shared/lib/query-input";
+import { envelopeData, getUpstream, isRecord, upstreamUrl } from "@/shared/lib/upstream-fetch";
+import { maskUpstreamReason } from "@/shared/lib/upstream-reason";
+import { failureForHttpStatus, invalidInput, upstreamFailure, type UpstreamResult } from "@/shared/lib/upstream-result";
 
 /** 알림 서버의 상한(AlertController.kt:101 coerceIn(1, 200)). */
 export const INCIDENT_LIST_MAXIMUM_LIMIT = 200;
@@ -40,7 +43,36 @@ export interface IncidentClient {
   listIncidents(limit: number): Promise<UpstreamResult<IncidentSummary[]>>;
 }
 
+/** 알림 서버의 한 항목 → 화면 한 줄. 꼴이 다르면 null. */
+function parseIncident(row: unknown): IncidentSummary | null {
+  if (!isRecord(row)) return null;
+  const { at, kind, key, title, delivered_by: deliveredBy, suppressed } = row;
+  if (typeof at !== "string" || parseIsoUtc(at) === null) return null;
+  if (typeof kind !== "string" || typeof key !== "string" || typeof title !== "string") return null;
+  if (typeof deliveredBy !== "string" || typeof suppressed !== "boolean") return null;
+  return {
+    at, kind, key: maskUpstreamReason(key), title: maskUpstreamReason(title),
+    deliveredBy: deliveredBy === "" ? null : deliveredBy, suppressed,
+  };
+}
+
 export function createIncidentClient(options: IncidentClientOptions): IncidentClient {
-  void options;
-  throw new Error("not implemented");
+  return {
+    async listIncidents(limit) {
+      if (!Number.isInteger(limit) || limit < 1 || limit > INCIDENT_LIST_MAXIMUM_LIMIT) return invalidInput("limit");
+      const url = upstreamUrl(options.baseUrl, "/incidents", [["limit", String(limit)]]);
+      const response = await getUpstream(url, { fetch: options.fetch, timeoutSignal: options.timeoutSignal, headers: { "X-Alert-Secret": options.secret } });
+      if (!response.ok) return response;
+      if (response.status < 200 || response.status >= 300) return failureForHttpStatus(response.status);
+      const rows = envelopeData(response)?.incidents;
+      if (!Array.isArray(rows)) return upstreamFailure("unparseable");
+      const incidents: IncidentSummary[] = [];
+      for (const row of rows) {
+        const incident = parseIncident(row);
+        if (incident === null) return upstreamFailure("unparseable");   // 한 항목이라도 다르면 전체
+        incidents.push(incident);
+      }
+      return { ok: true, value: incidents };
+    },
+  };
 }

@@ -3,7 +3,8 @@
  * - service · level · request_id · q · limit · before · from · to — 데이터 계층(parseLogQuery)과 같은 이름 · 같은 뜻.
  *   from · to 는 ISO-8601 UTC(관측 서버가 준 값 그대로) — "더 보기" · 요청 ID 링크가 쓴다.
  * - from_kst · to_kst — 조회 폼의 시각 칸(`<input type="datetime-local">`, KST `YYYY-MM-DDTHH:MM[:SS]`). 진입 함수에 넘기기 전에
- *   UTC 의 from · to 로 바꾼다(logSearchInput). 폼은 브라우저 스크립트 없이 GET 으로 제출되므로 시각 칸의 글자는 이 꼴로 온다. */
+ *   UTC 의 from · to 로 바꾼다(logSearchInput). 폼은 브라우저 스크립트 없이 GET 으로 제출되므로 시각 칸의 글자는 이 꼴로 온다.
+ * - selected — 연관 로그(오른쪽 상세)를 연 로그 id(명세 §11.2). 목록의 조회에는 넘기지 않고(logSearchInput 이 뺀다) 연관 로그 진입에만 넘긴다(traceInput). */
 import { formatKoreanTime } from "@/features/deploys/lib/deploy-format";
 import { LOG_QUERY_DEFAULT_LIMIT, type LogQuery } from "@/features/logs/lib/log-query";
 import { parseIsoUtc } from "@/shared/lib/query-input";
@@ -86,13 +87,13 @@ export function logFormValues(input: SearchParamsInput): LogFormValues {
   };
 }
 
-/** 조건 → 화면 주소(null 인 조건은 넣지 않는다, 건수는 기본값이면 뺀다). from · to 는 UTC 이름으로. */
-export function logsHref(query: Pick<LogQuery, "from" | "to" | "service" | "level" | "requestId" | "text" | "before" | "limit">): string {
+/** 조건 → 화면 주소(null 인 조건은 넣지 않는다, 건수는 기본값이면 뺀다). from · to 는 UTC 이름으로. selectedLogId 가 있으면 맨 뒤에 selected. */
+export function logsHref(query: Pick<LogQuery, "from" | "to" | "service" | "level" | "requestId" | "text" | "before" | "limit">, selectedLogId: string | null = null): string {
   const search = new URLSearchParams();
   const pairs: [string, string | null][] = [
     ["service", query.service], ["level", query.level], ["request_id", query.requestId], ["q", query.text],
     ["from", query.from], ["to", query.to], ["before", query.before],
-    ["limit", query.limit === LOG_QUERY_DEFAULT_LIMIT ? null : String(query.limit)],
+    ["limit", query.limit === LOG_QUERY_DEFAULT_LIMIT ? null : String(query.limit)], ["selected", selectedLogId],
   ];
   for (const [name, value] of pairs) if (value !== null) search.set(name, value);
   const text = search.toString();
@@ -112,4 +113,25 @@ export function serviceFilterHref(service: string, query: Pick<LogQuery, "level"
     service, level: query.level, requestId: query.requestId, text: query.text, limit: query.limit,
     from: range.from, to: range.to, before: null,
   });
+}
+
+/** 연관 로그를 열었는가(selected 인자가 있다 — 빈 글자는 열지 않음, 형식 검사는 연관 로그 진입이 한다). */
+export function hasLogSelection(input: SearchParamsInput): boolean {
+  return input.selected !== undefined && input.selected !== "";
+}
+
+/** 목록에서 강조할 로그 id(하나의 글자일 때만). */
+export function selectedLogIdOf(input: SearchParamsInput): string | null {
+  return typeof input.selected === "string" && input.selected.length > 0 ? input.selected : null;
+}
+
+/** 화면 주소의 인자 → 연관 로그 진입(loadLogTrace)의 입력 — selected 만 옮긴다(배열이면 그대로 넘겨 진입이 거절한다). */
+export function traceInput(input: SearchParamsInput): SearchParamsInput {
+  return { selected: input.selected };
+}
+
+/** 줄을 누를 때의 목록 조건 — 지금 조건 · 커서를 그대로 두고, 비어 있던 시각(관측 서버 기본 "최근 1시간")만 응답의 범위로 고정한다
+ * (줄을 누른 뒤 목록이 시간이 흘러 밀리지 않게 — 고른 줄이 목록에 남는다). */
+export function pinnedListQuery(query: LogQuery, range: { from: string; to: string }): LogQuery {
+  return { ...query, from: query.from ?? range.from, to: query.to ?? range.to };
 }

@@ -31,10 +31,11 @@
  * 거부(reject)하지 않는다 — 클라이언트가 실패를 돌려주면 그 칸만 실패. */
 import type { DeployHistoryClient, DeploymentSummary } from "@/features/deploys/lib/deploy-history-client";
 import type { IncidentClient, IncidentSummary } from "@/features/log-trace/lib/incident-client";
-import type { LogTraceQuery } from "@/features/log-trace/lib/log-trace-query";
+import { cursorJustAfter, type LogTraceQuery } from "@/features/log-trace/lib/log-trace-query";
 import type { LogClient } from "@/features/logs/lib/log-client";
-import type { LogEntryView, LogLevel } from "@/features/logs/lib/log-query";
-import type { UpstreamResult } from "@/shared/lib/upstream-result";
+import { LOG_LEVELS, type LogEntryView, type LogLevel, type LogPage, type LogQuery } from "@/features/logs/lib/log-query";
+import { parseIsoUtc } from "@/shared/lib/query-input";
+import { upstreamFailure, type UpstreamResult } from "@/shared/lib/upstream-result";
 
 export const RELATED_LOG_WINDOW_MILLISECONDS = 60 * 60 * 1000;
 export const SERVICE_LOG_WINDOW_MILLISECONDS = 30 * 1000;
@@ -143,19 +144,178 @@ export interface LogTraceDependencies {
 
 /** 수준의 높낮이 — debug 0 · info 1 · warning 2 · error 3, 그 밖의 값은 −1(가장 낮다). */
 export function logLevelSeverity(level: string): number {
-  void level;
-  throw new Error("not implemented");
+  return (LOG_LEVELS as readonly string[]).indexOf(level);
 }
 
 /** 시간순 줄(옛것부터)의 요약. 줄이 없으면 null. */
 export function summarizeRequest(lines: readonly LogEntryView[], hasMore: boolean): RequestSummary | null {
-  void lines;
-  void hasMore;
-  throw new Error("not implemented");
+  if (lines.length === 0) return null;
+  const first = lines[0];
+  const last = lines[lines.length - 1];
+  const services: string[] = [];
+  let highestLevel: LogLevel = first.level;
+  for (const line of lines) {
+    if (!services.includes(line.service)) services.push(line.service);
+    if (logLevelSeverity(line.level) > logLevelSeverity(highestLevel)) highestLevel = line.level;
+  }
+  const firstMilliseconds = parseIsoUtc(first.at);
+  const lastMilliseconds = parseIsoUtc(last.at);
+  // 읽히지 않는 시각은 buildLogTrace 가 먼저 unparseable 로 거른다 — 여기서 0 으로 숨기지 않고 NaN(화면 "—")
+  const durationMilliseconds = firstMilliseconds === null || lastMilliseconds === null ? Number.NaN : lastMilliseconds - firstMilliseconds;
+  return {
+    services, firstAt: first.at, lastAt: last.at, durationMilliseconds,
+    lineCount: lines.length, hasMore, highestLevel, firstMessage: first.message,
+  };
+}
+
+const EMPTY_LOG_QUERY: LogQuery = { from: null, to: null, service: null, level: null, requestId: null, text: null, before: null, limit: 1 };
+
+function isoText(epochMilliseconds: number): string {
+  return new Date(epochMilliseconds).toISOString();
+}
+
+/** 고른 로그 확인 — 받은 첫 줄의 id 가 글자까지 같을 때만 그 줄. 줄이 없거나 다르면 "not_found". */
+async function locateSelected(logs: LogClient, query: LogTraceQuery): Promise<UpstreamResult<LogEntryView> | "not_found"> {
+  const moment = isoText(query.selectedAtMilliseconds);
+  const page = await logs.searchLogs({ ...EMPTY_LOG_QUERY, from: moment, to: moment, before: cursorJustAfter(query.selectedLogId), limit: 1 });
+  if (!page.ok) return page;
+  const [found] = page.value.logs;
+  return found !== undefined && found.id === query.selectedLogId ? { ok: true, value: found } : "not_found";
+}
+
+/** 2단계 — 같은 요청 ID(±1시간) 또는 같은 서비스(±30초)의 최신 500줄 + 넘치는지 확인 1회. */
+async function loadRelatedLogs(logs: LogClient, selected: LogEntryView, at: number): Promise<UpstreamResult<RelatedLogs>> {
+  const scope: RelatedLogs["scope"] = selected.requestId !== "" ? "request" : "service";
+  const window = scope === "request" ? RELATED_LOG_WINDOW_MILLISECONDS : SERVICE_LOG_WINDOW_MILLISECONDS;
+  const from = isoText(at - window);
+  const to = isoText(at + window);
+  const relatedQuery: LogQuery = {
+    ...EMPTY_LOG_QUERY, from, to, limit: RELATED_LOG_MAXIMUM_LINES,
+    requestId: scope === "request" ? selected.requestId : null,
+    service: scope === "service" ? selected.service : null,
+  };
+  const first = await logs.searchLogs(relatedQuery);
+  if (!first.ok) return first;
+  let hasMore = false;
+  if (first.value.nextBefore !== null) {
+    const probe = await logs.searchLogs({ ...relatedQuery, before: first.value.nextBefore, from: first.value.from, to: first.value.to, limit: 1 });
+    if (!probe.ok) return probe;   // 조용히 hasMore false 로 두지 않는다
+    hasMore = probe.value.logs.length > 0;
+  }
+  const lines: TraceLine[] = [];
+  let previousMilliseconds: number | null = null;
+  for (const entry of [...first.value.logs].reverse()) {   // 관측 서버는 최신순 — 화면은 옛것부터
+    const entryMilliseconds = parseIsoUtc(entry.at);
+    if (entryMilliseconds === null) return upstreamFailure("unparseable");
+    lines.push({ ...entry, selected: entry.id === selected.id, gapMilliseconds: previousMilliseconds === null ? null : entryMilliseconds - previousMilliseconds });
+    previousMilliseconds = entryMilliseconds;
+  }
+  return { ok: true, value: { scope, from, to, lines, hasMore } };
+}
+
+function countLevels(warnings: UpstreamResult<LogPage>, errors: UpstreamResult<LogPage>, at: number): UpstreamResult<LevelCounts> {
+  if (!warnings.ok) return warnings;
+  if (!errors.ok) return errors;
+  const counts = new Map<string, ServiceLevelCount>();
+  const countOf = (service: string) => {
+    let count = counts.get(service);
+    if (count === undefined) { count = { service, warning: 0, error: 0 }; counts.set(service, count); }
+    return count;
+  };
+  for (const entry of warnings.value.logs) countOf(entry.service).warning += 1;
+  for (const entry of errors.value.logs) countOf(entry.service).error += 1;
+  const services = [...counts.values()].sort((left, right) => (left.service < right.service ? -1 : left.service > right.service ? 1 : 0));
+  return {
+    ok: true,
+    value: {
+      from: isoText(at - LEVEL_COUNT_WINDOW_MILLISECONDS), to: isoText(at + LEVEL_COUNT_WINDOW_MILLISECONDS), services,
+      warningAtLimit: warnings.value.nextBefore !== null, errorAtLimit: errors.value.nextBefore !== null,
+    },
+  };
+}
+
+function deploymentsAround(listed: UpstreamResult<DeploymentSummary[]>, at: number): UpstreamResult<DeploymentsAround> {
+  if (!listed.ok) return listed;
+  const windowStart = at - CHANGE_WINDOW_MILLISECONDS;
+  const windowEnd = at + CHANGE_WINDOW_MILLISECONDS;
+  const inWindow = (milliseconds: number | null) => milliseconds !== null && milliseconds >= windowStart && milliseconds <= windowEnd;
+  const deployments: DeploymentSummary[] = [];
+  let oldestAcceptedMilliseconds: number | null = null;
+  for (const deployment of listed.value) {
+    const acceptedMilliseconds = parseIsoUtc(deployment.acceptedAt);
+    const finishedMilliseconds = deployment.finishedAt === null ? null : parseIsoUtc(deployment.finishedAt);
+    if (acceptedMilliseconds === null || (deployment.finishedAt !== null && finishedMilliseconds === null)) return upstreamFailure("unparseable");
+    if (inWindow(acceptedMilliseconds) || inWindow(finishedMilliseconds)) deployments.push(deployment);
+    oldestAcceptedMilliseconds = acceptedMilliseconds;   // master 는 최신순 — 마지막 항목이 가장 오래된 것
+  }
+  const coversWindow = listed.value.length < DEPLOYMENT_LOOKUP_LIMIT || (oldestAcceptedMilliseconds !== null && oldestAcceptedMilliseconds < windowStart);
+  return { ok: true, value: { from: isoText(windowStart), to: isoText(windowEnd), deployments, coversWindow } };
+}
+
+function incidentsAround(listed: UpstreamResult<IncidentSummary[]>, at: number): UpstreamResult<IncidentsAround> {
+  if (!listed.ok) return listed;
+  const windowStart = at - CHANGE_WINDOW_MILLISECONDS;
+  const windowEnd = at + CHANGE_WINDOW_MILLISECONDS;
+  const incidents: IncidentSummary[] = [];
+  let earliestMilliseconds = Number.POSITIVE_INFINITY;
+  for (const incident of listed.value) {
+    const incidentMilliseconds = parseIsoUtc(incident.at);
+    if (incidentMilliseconds === null) return upstreamFailure("unparseable");
+    if (incidentMilliseconds >= windowStart && incidentMilliseconds <= windowEnd) incidents.push(incident);
+    earliestMilliseconds = Math.min(earliestMilliseconds, incidentMilliseconds);
+  }
+  const coversWindow = listed.value.length < INCIDENT_LOOKUP_LIMIT || earliestMilliseconds < windowStart;
+  return { ok: true, value: { from: isoText(windowStart), to: isoText(windowEnd), incidents, coversWindow } };
+}
+
+interface LocatedWithRelated {
+  located: UpstreamResult<LogEntryView> | "not_found";
+  related: UpstreamResult<RelatedLogs> | null;
 }
 
 export async function buildLogTrace(dependencies: LogTraceDependencies, query: LogTraceQuery): Promise<LogTraceOutcome> {
-  void dependencies;
-  void query;
-  throw new Error("not implemented");
+  const at = query.selectedAtMilliseconds;
+  const notConfigured = upstreamFailure("not_configured");
+  const { logs, deployHistory, incidents } = dependencies;
+
+  // 1단계 — 다섯 호출을 한꺼번에. 2단계(연관 로그)는 고른 로그 확인이 끝나는 대로 이어 붙인다(b~e 를 기다리지 않는다).
+  const locatedWithRelated: Promise<LocatedWithRelated> = logs === null
+    ? Promise.resolve({ located: notConfigured, related: null })
+    : locateSelected(logs, query).then(async (located) => ({
+      located,
+      related: located !== "not_found" && located.ok ? await loadRelatedLogs(logs, located.value, at) : null,
+    }));
+  const levelWindow = { from: isoText(at - LEVEL_COUNT_WINDOW_MILLISECONDS), to: isoText(at + LEVEL_COUNT_WINDOW_MILLISECONDS), limit: LEVEL_COUNT_LIMIT };
+  const warningsPromise: Promise<UpstreamResult<LogPage>> = logs === null
+    ? Promise.resolve(notConfigured) : logs.searchLogs({ ...EMPTY_LOG_QUERY, ...levelWindow, level: "warning" });
+  const errorsPromise: Promise<UpstreamResult<LogPage>> = logs === null
+    ? Promise.resolve(notConfigured) : logs.searchLogs({ ...EMPTY_LOG_QUERY, ...levelWindow, level: "error" });
+  const deploymentsPromise: Promise<UpstreamResult<DeploymentSummary[]>> = deployHistory === null
+    ? Promise.resolve(notConfigured) : deployHistory.listDeployments({ service: null, limit: DEPLOYMENT_LOOKUP_LIMIT });
+  const incidentsPromise: Promise<UpstreamResult<IncidentSummary[]>> = incidents === null
+    ? Promise.resolve(notConfigured) : incidents.listIncidents(INCIDENT_LOOKUP_LIMIT);
+
+  const [{ located, related }, warnings, errors, listedDeployments, listedIncidents] = await Promise.all([
+    locatedWithRelated, warningsPromise, errorsPromise, deploymentsPromise, incidentsPromise,
+  ]);
+  if (located === "not_found") return { kind: "not_found" };
+
+  const serverState: ServerStateAround = {
+    levelCounts: countLevels(warnings, errors, at),
+    deployments: deploymentsAround(listedDeployments, at),
+    incidents: incidentsAround(listedIncidents, at),
+  };
+  if (!located.ok) {
+    return { kind: "view", view: { query, selected: located, requestSummary: located, relatedLogs: located, serverState } };
+  }
+  const relatedLogs = related as UpstreamResult<RelatedLogs>;   // 고른 로그를 찾았으면 언제나 2단계를 돈다
+  let requestSummary: UpstreamResult<RequestSummary> | null = null;
+  if (located.value.requestId !== "") {
+    if (!relatedLogs.ok) requestSummary = relatedLogs;
+    else {
+      const summary = summarizeRequest(relatedLogs.value.lines, relatedLogs.value.hasMore);
+      requestSummary = summary === null ? upstreamFailure("not_found") : { ok: true, value: summary };
+    }
+  }
+  return { kind: "view", view: { query, selected: located, requestSummary, relatedLogs, serverState } };
 }
