@@ -11,7 +11,9 @@ export const UPSTREAM_TIMEOUT_MILLISECONDS = 5_000;
  * - invalid_input: 어드민 쪽 입력 검증에서 거절 — 호출하지 않는다(field 에 입력 이름).
  * - unreachable: 연결 실패. timeout: 5초 안에 응답(본문 포함)이 끝나지 않았다.
  * - unauthorized(401) · invalid_request(422) · unavailable(503) · server_timeout(504) · bad_status(그 밖의 2xx 아님, 3xx 포함).
- * - unparseable: 2xx 인데 본문이 JSON 이 아니거나 계약과 다른 꼴(칸 빠짐 · 형이 다름) — 원문은 넘기지 않는다. */
+ * - unparseable: 2xx 인데 본문이 JSON 이 아니거나 계약과 다른 꼴(칸 빠짐 · 형이 다름) — 원문은 넘기지 않는다.
+ * - rate_limited: 호출 한도 초과(GitHub — 403 · 429 와 한도 머리글). not_found: 대상이 없다(GitHub — 없는 커밋 · 저장소, 404 · 422).
+ *   (배포 상세 task 07 에서 더했다 — 위 열 가지의 뜻과 failureForHttpStatus 의 대응은 그대로다.) */
 export type UpstreamFailureReason =
   | "not_configured"
   | "invalid_input"
@@ -22,7 +24,9 @@ export type UpstreamFailureReason =
   | "unavailable"
   | "server_timeout"
   | "bad_status"
-  | "unparseable";
+  | "unparseable"
+  | "rate_limited"
+  | "not_found";
 
 export interface UpstreamFailure {
   ok: false;
@@ -49,6 +53,8 @@ export const UPSTREAM_FAILURE_MESSAGES: Readonly<Record<UpstreamFailureReason, s
   server_timeout: "서버 조회 시간 초과",
   bad_status: "예상하지 못한 응답",
   unparseable: "해석 불가",
+  rate_limited: "한도 초과",
+  not_found: "찾을 수 없음",
 };
 
 /** Next 의 searchParams 와 같은 꼴 — 같은 이름이 여러 번 오면 배열(어드민 입력 검증은 배열을 거절한다). */
