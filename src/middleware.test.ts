@@ -16,10 +16,14 @@ const protectedPaths = (() => {
   return [...new Set([...fromApp, ...NEW_PATHS])];
 })();
 
-function request(pathname: string, cookieValue?: string): NextRequest {
-  const headers = new Headers();
+/** 앱이 실제로 받는 요청은 nginx 뒤의 내부 주소다 — 기본 요청 주소를 설정값(ADMIN_ORIGIN)과 다르게 둔다. */
+const INTERNAL_REQUEST_BASE = "http://localhost:18000";
+const EXPECTED_LOGIN_LOCATION = `${FAKE_ORIGIN}/login`;   // 세부 3(정정): <ADMIN_ORIGIN>/login, 요청 Host 와 무관
+
+function request(pathname: string, cookieValue?: string, requestBase: string = INTERNAL_REQUEST_BASE): NextRequest {
+  const headers = new Headers({ host: new URL(requestBase).host });
   if (cookieValue !== undefined) headers.set("cookie", `${SESSION_COOKIE_NAME}=${cookieValue}`);
-  return new NextRequest(new URL(pathname, FAKE_ORIGIN), { headers });
+  return new NextRequest(new URL(pathname, requestBase), { headers });
 }
 
 const invalidCookies: [string, () => string | undefined][] = [
@@ -34,6 +38,7 @@ const invalidCookies: [string, () => string | undefined][] = [
 beforeEach(() => {
   vi.unstubAllEnvs();
   vi.stubEnv("SESSION_SECRET", FAKE_SIGNING_KEY);
+  vi.stubEnv("ADMIN_ORIGIN", FAKE_ORIGIN);
 });
 
 describe("middleware — 경로 목록", () => {
@@ -61,8 +66,8 @@ describe("middleware — 세션이 없거나 무효면 막는다(보호 경로 �
           expect(body).not.toHaveProperty("data");
         } else {
           expect([302, 303, 307, 308]).toContain(response.status);
-          // 세부 3: 상대 주소를 글자 그대로(절대 주소 · 호스트 이름 없음)
-          expect(response.headers.get("location")).toBe("/login");
+          // 세부 3(정정): 설정값 기준 <ADMIN_ORIGIN>/login 을 글자 그대로 — 요청 주소(localhost:18000)에서 만들지 않는다
+          expect(response.headers.get("location")).toBe(EXPECTED_LOGIN_LOCATION);
           expect(bodyText).toBe("");
         }
       });
@@ -88,5 +93,33 @@ describe("middleware — 허용 목록은 세션 없이 통과", () => {
   it.each(["/login", "/api/auth/login", "/api/health", "/_next/static/chunks/main-abc123.js"])("%s", async (pathname) => {
     const response = await middleware(request(pathname));
     expect(response.headers.get("x-middleware-next")).toBe("1");
+  });
+});
+
+describe("세부 3(정정) — 로그인 이동 주소는 요청 Host · nextUrl 과 무관하게 <ADMIN_ORIGIN>/login", () => {
+  const pagePaths = protectedPaths.filter((pathname) => !pathname.startsWith("/api/"));
+  const requestBases = ["https://evil.example.test", "http://localhost:18000", "http://admin-green:3000", FAKE_ORIGIN];
+
+  it("화면 경로를 하나 이상 검사한다", () => {
+    expect(pagePaths.length).toBeGreaterThan(0);
+  });
+
+  for (const pathname of pagePaths) {
+    it.each(requestBases)(`${pathname} · 요청 주소 %s → Location 은 언제나 ${EXPECTED_LOGIN_LOCATION}`, async (requestBase) => {
+      const response = await middleware(request(pathname, undefined, requestBase));
+      expect(response.headers.get("location")).toBe(EXPECTED_LOGIN_LOCATION);
+    });
+  }
+
+  it("Host 헤더만 다른 값으로 바꿔도 같다", async () => {
+    const headers = new Headers({ host: "evil.example.test", "x-forwarded-host": "evil.example.test" });
+    const response = await middleware(new NextRequest(new URL("/", INTERNAL_REQUEST_BASE), { headers }));
+    expect(response.headers.get("location")).toBe(EXPECTED_LOGIN_LOCATION);
+  });
+
+  it("ADMIN_ORIGIN 이 바뀌면 그 값을 따른다(설정값 기준)", async () => {
+    vi.stubEnv("ADMIN_ORIGIN", "https://admin-other.example.test");
+    const response = await middleware(request("/", undefined, "https://evil.example.test"));
+    expect(response.headers.get("location")).toBe("https://admin-other.example.test/login");
   });
 });

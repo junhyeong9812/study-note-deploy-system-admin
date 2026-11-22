@@ -1,7 +1,8 @@
-/** POST /api/auth/login — JSON {id, password}. 결과 → 상태 코드 · Set-Cookie · 임시 제한 표시.
+/** POST /api/auth/login — JSON {id, password}(본문 상한 4KB · 기한 3초, login-body). 결과 → 상태 코드 · Set-Cookie · 임시 제한 표시.
  * 응답 본문은 구별 없는 짧은 코드만(ID 틀림 · 비밀번호 틀림 같은 응답). */
 import { randomUUID } from "node:crypto";
 import { clientIpOrUnknown } from "@/features/auth/lib/client-ip";
+import { readLoginBody } from "@/features/auth/lib/login-body";
 import { loginResultStatus, type LoginResult } from "@/features/auth/lib/login-flow";
 import { buildSessionCookieHeader } from "@/features/auth/lib/session";
 import { loginService } from "@/features/auth/server/login-service";
@@ -9,29 +10,6 @@ import { log } from "@/shared/lib/logger";
 import { errorResponse, jsonResponse } from "@/shared/lib/responses";
 
 export const dynamic = "force-dynamic";
-
-const MAX_BODY_BYTES = 4_096;
-const MAX_ID_LENGTH = 200;
-const MAX_PASSWORD_LENGTH = 1_024;   // argon2 에 아주 긴 입력을 넣어 시간을 끌지 못하게
-
-interface LoginBody { id: string; password: string }
-
-async function readLoginBody(request: Request): Promise<LoginBody | null> {
-  if (!(request.headers.get("content-type") ?? "").toLowerCase().startsWith("application/json")) return null;
-  const text = await request.text();
-  if (Buffer.byteLength(text) > MAX_BODY_BYTES) return null;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    return null;
-  }
-  if (typeof parsed !== "object" || parsed === null) return null;
-  const { id, password } = parsed as Record<string, unknown>;
-  if (typeof id !== "string" || typeof password !== "string") return null;
-  if (id.length > MAX_ID_LENGTH || password.length > MAX_PASSWORD_LENGTH) return null;
-  return { id, password };
-}
 
 function resultResponse(result: LoginResult): Response {
   const status = loginResultStatus(result);
@@ -56,15 +34,15 @@ export async function POST(request: Request) {
   const requestId = request.headers.get("x-request-id")?.match(/^[A-Za-z0-9-]{1,64}$/)?.[0] ?? randomUUID();
   const { flow } = loginService();
   if (flow === null) {
+    // 정상 구동에서는 닿지 않는다(설정이 없으면 서버가 뜨지 않는다) — 거절만, 관측 서버 기록 없음
     void log(requestId, "login:rejected reason=config_missing", "warning");
     return errorResponse(401, "invalid_credentials", { temporaryRestriction: false });
   }
-  // 본문은 여기서 해석만 하고, 판정 순서(Origin → 속도 제한 → 형식)는 흐름이 정한다
-  const body = await readLoginBody(request);
+  // 본문은 여기서 읽지 않는다 — 흐름이 Origin 검사 · 속도 제한 뒤에 readCredentials 를 부른다(상한 4KB · 기한 3초)
   const result = await flow.login({
-    id: body?.id ?? "",
-    password: body?.password ?? "",
-    malformed: body === null,
+    id: "",
+    password: "",
+    readCredentials: () => readLoginBody(request),
     ip: clientIpOrUnknown(request.headers),
     userAgent: request.headers.get("user-agent") ?? "",
     origin: request.headers.get("origin"),

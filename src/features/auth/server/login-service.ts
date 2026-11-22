@@ -45,7 +45,7 @@ function createLoginService(): LoginService {
     rateLimiter: createRateLimiter({ clock }),
     temporaryLockout: createTemporaryLockout({ clock }),
     attemptQueue,
-    observeClient: createObserveClient({ baseUrl: config.observeUrl, secret: config.observeSecret, fetch: (input, init) => fetch(input, init) }),
+    observeClient: createObserveClient({ baseUrl: config.observeUrl, secret: config.observeSecret, clock, fetch: (input, init) => fetch(input, init) }),
     alertClient: createAlertClient({ baseUrl: config.alertUrl, secret: config.alertSecret, fetch: (input, init) => fetch(input, init) }),
     logger: log,
   });

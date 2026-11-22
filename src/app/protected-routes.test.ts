@@ -16,7 +16,8 @@ vi.mock("next/headers", () => ({
     has: (name: string) => navigation.cookieValues.has(name),
     getAll: () => [...navigation.cookieValues].map(([name, value]) => ({ name, value })),
   }),
-  headers: async () => new Headers(),
+  // 요청 Host 가 내부 · 엉뚱한 값이어도 이동 주소가 그것을 따르지 않는지 보려고 일부러 다른 값을 둔다
+  headers: async () => new Headers({ host: "evil.example.test", "x-forwarded-host": "evil.example.test" }),
 }));
 vi.mock("next/navigation", () => ({
   redirect: (location: string) => { throw new navigation.RedirectSignal(location); },
@@ -43,6 +44,12 @@ const invalidSessions: [string, () => string | undefined][] = [
 function setSessionCookie(value: string | undefined) {
   navigation.cookieValues.clear();
   if (value !== undefined) navigation.cookieValues.set(SESSION_COOKIE_NAME, value);
+}
+
+/** 상대 주소면 그 경로 그대로, 절대 주소면 ADMIN_ORIGIN + 경로여야 한다(요청 Host 에서 만들지 않는다). */
+function expectLocationNotFromRequestHost(location: string, expectedPath: string) {
+  if (/^[a-z][a-z0-9+.-]*:/i.test(location) || location.startsWith("//")) expect(location).toBe(`${FAKE_ORIGIN}${expectedPath}`);
+  else expect(location).toBe(expectedPath);
 }
 
 const pageProps = { params: Promise.resolve({ "sample-segment": "sample-segment" }), searchParams: Promise.resolve({}) };
@@ -74,7 +81,8 @@ describe("보호 화면(page) — 세션이 없으면 middleware 없이도 로�
           thrown = error;
         }
         expect(thrown).toBeInstanceOf(navigation.RedirectSignal);
-        expect((thrown as InstanceType<typeof navigation.RedirectSignal>).location).toBe("/login");
+        // 세부 3(정정): 서버 컴포넌트의 redirect 는 상대 주소가 정상 — 절대 주소라면 ADMIN_ORIGIN 기준이어야 한다
+        expectLocationNotFromRequestHost((thrown as InstanceType<typeof navigation.RedirectSignal>).location, "/login");
       });
     }
 
@@ -121,5 +129,28 @@ describe("보호 Route Handler — 세션이 없으면 middleware 없이도 401(
       const module = await import(/* @vite-ignore */ handler.file);
       expect(HTTP_METHODS.some((method) => typeof module[method] === "function"), handler.path).toBe(true);
     }
+  });
+});
+
+describe("세부 3(정정) — 로그인 상태에서 /login → / 이동", () => {
+  it("유효한 세션으로 로그인 화면을 열면 / 로 보낸다(상대 주소, 또는 ADMIN_ORIGIN 기준 절대 주소)", async () => {
+    setSessionCookie(issueSessionToken(FAKE_SIGNING_KEY, Date.now() - 60_000));
+    const loginPage = routesFromAppDirectory().find((route) => route.path === "/login" && route.kind === "page");
+    expect(loginPage).toBeDefined();
+    const module = await import(/* @vite-ignore */ loginPage!.file);
+    let thrown: unknown = null;
+    try {
+      await module.default(pageProps);
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(navigation.RedirectSignal);
+    expectLocationNotFromRequestHost((thrown as InstanceType<typeof navigation.RedirectSignal>).location, "/");
+  });
+
+  it("세션이 없으면 로그인 화면은 이동 없이 그린다", async () => {
+    const loginPage = routesFromAppDirectory().find((route) => route.path === "/login" && route.kind === "page");
+    const module = await import(/* @vite-ignore */ loginPage!.file);
+    await expect(module.default(pageProps)).resolves.toBeDefined();
   });
 });

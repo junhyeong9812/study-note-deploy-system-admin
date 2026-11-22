@@ -6,7 +6,7 @@
 
 ## 구성
 
-- `src/middleware.ts` — 공통 진입. **기본 거절**: `classifyPath`(`src/features/auth/lib/auth-boundary.ts`)가 public 이라고 한 경로(`/login` · `/api/auth/login` · `/api/health` · `/favicon.ico` · `/_next/static/…`)만 세션 없이 통과. 나머지는 서명한 세션 쿠키가 없으면 화면은 `/login` 으로(307), `/api/…` 는 401. 런타임은 Node.js(`config.runtime = "nodejs"`, Next 15.5 stable) — 세션 검증이 `node:crypto` HMAC 을 쓴다. argon2 · ioredis 는 임포트하지 않는다.
+- `src/middleware.ts` — 공통 진입. 세션 없는 화면 요청은 `ADMIN_ORIGIN` 기준의 `/login` 으로 307(Next 15.5 middleware 는 상대 Location 을 받지 못한다 — 내부 호스트 이름 대신 설정값을 쓰고, nginx 의 `proxy_redirect` + `absolute_redirect off` 가 바깥으로는 `Location: /login` 으로 바꾼다). **기본 거절**: `classifyPath`(`src/features/auth/lib/auth-boundary.ts`)가 public 이라고 한 경로(`/login` · `/api/auth/login` · `/api/health` · `/favicon.ico` · `/_next/static/…`)만 세션 없이 통과. 나머지는 서명한 세션 쿠키가 없으면 화면은 `/login` 으로(307), `/api/…` 는 401. 런타임은 Node.js(`config.runtime = "nodejs"`, Next 15.5 stable) — 세션 검증이 `node:crypto` HMAC 을 쓴다. argon2 · ioredis 는 임포트하지 않는다.
 - `src/features/auth/server/require-session.ts` — 두 번째 겹. 보호 화면은 `requireSession()`(없으면 `/login`), 데이터 경로는 `requireApiSession()`(없으면 401)을 **직접** 호출한다. 새 화면·경로·다른 서버를 부르는 서버 쪽 함수도 반드시 호출한다.
 - `src/features/auth/lib/` — 세션(HMAC-SHA256, 12시간, 연장 없음) · 자격(argon2id, ID 가 틀려도 더미 해시로 같은 검증) · Origin(설정값과 글자까지 같음) · 속도 제한(IP 마다 60초 10회, 자리별 메모리) · 관측 서버 판정 · 임시 제한(관측 서버 장애 시 3회 → 15분) · 대기열(상한 500, 복귀 뒤 `replayed:true`) · 잠금 알림.
 - `src/features/auth/server/login-service.ts` — 속도 제한 · 임시 제한 · 대기열을 프로세스 안에 하나만 둔다(`globalThis`).
@@ -31,9 +31,10 @@
   curl -sD- -o /dev/null http://<BIND_ADDR>:18000/api/health | grep -i x-deploy-slot
   ```
 
+  - nginx: 로그인 경로만 본문 상한 8KB · `client_body_timeout 3s`(4KB~8KB 는 앱이 `malformed` 로 기록, 8KB 초과는 nginx 413 — 기록 없음). nginx 가 본문을 다 받은 뒤 앱에 넘기므로(`proxy_request_buffering` 기본 on) 느린 본문은 nginx 에서 끊기고 앱의 3초 기한은 자리 포트로 직접 온 연결에서만 실제로 걸린다.
   - `deploy/active/` 는 서버에만 있고 git 에 없다. `edge-allow.conf` 가 없으면 nginx 가 뜨지 않는다(닫힌 쪽으로 실패).
   - 배포·전환·수동 조작은 ci-cd 저장소 README 의 "무중단 배포" 절을 따른다. 자리 포트: blue `127.0.0.1:18001`, green `127.0.0.1:18002`.
-- 비밀번호 해시 만들기(한 줄 — 평문이 셸 기록에 남지 않게 읽어서 넣는다). **비용은 `m=19456,t=2,p=1` 로 고정**이다 — 설정 해시가 `$argon2id$v=19$m=19456,t=2,p=1$` 로 시작하지 않으면 더미 해시와 검증 시간이 달라지므로 설정 없음과 같이 로그인을 전부 거절하고 시작 로그에 `ADMIN_PASSWORD_HASH` 이름만 남긴다. 아래 명령은 그 매개변수를 명시한다:
+- 비밀번호 해시 만들기(한 줄 — 평문이 셸 기록에 남지 않게 읽어서 넣는다). **비용은 `m=19456,t=2,p=1` 로 고정**이다 — 설정 해시가 `$argon2id$v=19$m=19456,t=2,p=1$` 로 시작하지 않으면 더미 해시와 검증 시간이 달라지므로 설정 없음과 같다(서버가 뜨지 않는다 — 아래 "환경 변수"). 아래 명령은 그 매개변수를 명시한다:
 
   ```sh
   docker run --rm -it admin-app:local node -e 'const r=require("readline").createInterface({input:process.stdin,output:process.stderr});r.question("password: ",p=>{r.close();require("@node-rs/argon2").hash(p,{algorithm:2,memoryCost:19456,timeCost:2,parallelism:1}).then(h=>console.log(h))})'
@@ -49,7 +50,13 @@
 
 ## 환경 변수
 
-`.env.example` 에 키 이름과 설명. 로그인에 필요한 키(`ADMIN_USER` · `ADMIN_PASSWORD_HASH`(argon2id) · `SESSION_SECRET`(32자 이상) · `ADMIN_ORIGIN` · `OBSERVE_URL` · `OBSERVE_SECRET`) 중 하나라도 비면 앱은 뜨고(헬스 ok) 로그인은 전부 거절하며, 시작 로그에 비어 있는 키 **이름**만 한 줄 남긴다. `ALERT_URL`·`ALERT_SECRET` 이 비면 잠금 알림이 실패하고 앱 로그에 한 줄 남는다. `DEPLOY_MASTER_URL` · `DEPLOY_SECRET` · `BACKEND_URL` 은 다음 task(화면 넷)용 자리다.
+`.env.example` 에 키 이름과 설명.
+
+- **필수**(하나라도 빠졌거나 잘못되면 **서버가 뜨지 않는다**): `ADMIN_USER` · `ADMIN_PASSWORD_HASH`(argon2id, 비용 `m=19456,t=2,p=1`) · `SESSION_SECRET`(32자 이상) · `ADMIN_ORIGIN` · `OBSERVE_URL` · `OBSERVE_SECRET`. 서버가 뜰 때(`instrumentation.register()`) 검사해 빠진 키 **이름**만 1줄(`startup:admin:설정 없음 — 서버를 끝낸다 keys=…`) 남기고 종료 코드 78 로 끝낸다(값은 찍지 않는다). 빌드(`next build`)는 설정 없이 된다 — 검사는 서버가 실제로 뜰 때만.
+  - 실측: 요청을 하나도 받기 전에 끝난다(컨테이너 안에서 시작 직후부터 헬스를 두드려도 응답 0건). `restart: unless-stopped` 아래에서는 재시작이 되풀이된다(12초에 5회).
+  - 배포에서의 뜻: 새 자리가 뜨지 않으므로 compose healthcheck 는 healthy 가 되지 않고, ci-cd agent 의 자리 헬스 확인(`127.0.0.1:18001`/`18002`)이 실패해 그 배포는 `cd_health` 실패로 끝난다 — nginx 는 전환되지 않고 이전 자리가 계속 서비스한다.
+  - 헬스(`GET /api/health`)도 필수 설정이 유효할 때만 200, 아니면 503(본문에 키 이름·값 없음) — 시작 검사가 건너뛰어져도 자리 헬스 확인에서 걸린다.
+- **선택**: `ALERT_URL` · `ALERT_SECRET`(비면 잠금 알림이 실패하고 앱 로그 1줄) · `LOG_REDIS_URL`(비면 stdout 만) · `DEPLOY_MASTER_URL` · `DEPLOY_SECRET` · `BACKEND_URL`(다음 task 화면 넷용). 비어 있으면 시작 로그에 이름만 1줄.
 
 ## 보안 경계 요약
 
@@ -59,6 +66,8 @@
 - 잠금은 관측 서버가 판정한다(연속 5회 → 15분). 관측 서버에 닿지 않으면 자리 메모리의 임시 제한(3회 → 15분)으로 판정하고 화면에 "임시 제한 중"을 표시한다. 잠금이 시작되면(임시 제한 포함) 알림 서버에 이벤트 1건.
 - 클라이언트 IP: nginx 가 **엣지 IP 와 사설 대역에서 온 연결만** 받고(나머지는 응답 없이 닫음), 앱에 넘기는 `X-Real-IP` 를 다시 쓴다 — 엣지에서 온 연결이면 엣지가 넣은 값, 아니면 실제 접속 주소. 앱은 `X-Real-IP` 하나만 읽고(`X-Forwarded-For` 는 보지 않는다), 없으면 `unknown` 한 통으로 센다.
 - 보호 화면·데이터 응답은 요청마다 렌더링하고 `Cache-Control: no-store`.
-- 판정 순서: Origin 검사 → 속도 제한 → 본문 형식 → 자격 검증. 형식이 틀린 본문도 속도 제한에 센다(Origin 거절은 세지 않는다). 관측 서버는 5초 안에 답이 없으면 재시도 없이 임시 제한으로 판정한다(연결 실패·2xx 아님·해석 불가만 같은 `attempt_id` 로 1회 재시도).
-- 시도 기록: 자격 검증에 이른 요청은 `/auth/attempts`, 그 전에 거절한 요청은 `/auth/attempts/rejected`(`reason` = `rate_limited` · `origin_rejected` · `malformed`). 거절 기록은 IP 마다 60초 창에 이유별 첫 1건만 보내고 나머지는 건수만 앱 로그에 남긴다. 관측 서버 장애 중의 기록은 대기열에 두었다가 복귀 뒤 `replayed:true` + 임시 제한이 실제로 내린 `outcome` 으로 보낸다. 재전송 응답이 잠금 시작이면 그때 알림을 보낸다. 알림은 로그인 응답을 최대 2초만 기다린다.
+- 판정 순서: Origin 검사 → 속도 제한 → 본문 읽기 → 자격 검증. 본문은 앞의 두 검사를 통과한 뒤에만 읽고, 읽으면서 상한 4KB·기한 3초를 적용한다(넘으면 400 `malformed`). 형식이 틀린 본문도 속도 제한에 센다(Origin 거절은 세지 않는다).
+- 관측 판정은 첫 호출과 재시도를 합쳐 기한 5초 하나다 — 연결 실패·2xx 아님·해석 불가만 같은 `attempt_id` 로 남은 시간 안에서 1회 재시도하고, 시간 초과는 재시도하지 않는다. 기한이 지나면 임시 제한으로 판정한다(관측 서버가 느려도 로그인은 약 5초에 끝난다).
+- 속도 제한 표(IP 상한 10,000): 창 안의 IP 는 지우지 않는다. 표가 활성 항목으로 가득 차면 새 IP 는 429(관측 서버에 기록하지 않고 건수만 앱 로그), 창이 지난 항목은 정리한다.
+- 시도 기록: 자격 검증에 이른 요청은 `/auth/attempts`, 그 전에 거절한 요청은 `/auth/attempts/rejected`(`reason` = `rate_limited` · `origin_rejected` · `malformed`). 거절 기록은 IP 마다 고정 60초 창에 이유별 첫 1건만 보내고(꾸준히 두드려도 1건) 나머지는 건수만 앱 로그에 남긴다. 403·400·429 응답은 기록 전송을 기다리지 않는다 — 전송은 뒤에서 끝까지 하고 실패하면 대기열에 넣는다. 관측 서버 장애 중의 기록은 대기열에 두었다가 복귀 뒤 `replayed:true` + 임시 제한이 실제로 내린 `outcome` 으로 보낸다. 재전송 응답이 잠금 시작이면 그때 알림을 보낸다. 재전송에 관측 서버가 **422**(본문 자체가 틀림)를 준 항목만 버리고 `discarded=<건수> status=422` 를 앱 로그에 남긴다 — 401·429·5xx·연결 실패·시간 초과는 남겨 다음에 다시 보낸다. 관측 서버가 허용한 성공은 임시 제한의 메모리 횟수도 0 으로 만든다. 알림은 로그인 응답을 최대 2초만 기다린다.
 - 종료 로그: 대기열에 넣을 때마다 `queued=<건수>`, SIGTERM 을 받으면 `login:shutdown queued=<대기 건수> dropped=<누적 유실 건수>` 1줄. 종료 자체는 Next 서버의 SIGTERM 처리(연결 정리 뒤 종료)가 한다. 강제 종료(SIGKILL) 때는 마지막 `queued=` 줄이 근사값이다.

@@ -1,5 +1,6 @@
 /** 로그인 속도 제한 — IP 마다 최근 60초(미끄러지는 창) 안의 허용 요청이 10회면 그다음은 거절.
- * 인스턴스 메모리에서 센다. 추적 IP 수에 상한이 있다(만료된 IP 부터, 그다음 가장 오래 활동 없는 IP 부터 정리). */
+ * 인스턴스 메모리에서 센다. 추적 IP 수에 상한이 있다 — 만료된 IP 는 정리하고, 아직 창 안에 있는 IP 는 지우지 않는다.
+ * 표가 활성 항목으로 가득 차면 새 IP 는 거절한다(닫힌 쪽 — 세부 3, tableFull:true). */
 import type { Clock } from "@/features/auth/lib/types";
 
 export interface RateLimiterOptions {
@@ -11,8 +12,10 @@ export interface RateLimiterOptions {
 
 export interface RateLimitDecision {
   allowed: boolean;
-  /** 거절이면서, 이 IP 의 이번 창에서 첫 거절일 때만 true — 관측 서버에 기록할 1건. */
+  /** 거절이면서, 이 IP 의 이번 창에서 첫 거절일 때만 true. */
   firstRejectionInWindow: boolean;
+  /** 표가 활성 항목으로 가득 차 새 IP 를 받지 못한 거절(관측 서버에 기록하지 않는다 — 건수만 로그). */
+  tableFull?: boolean;
 }
 
 export interface RateLimiter {
@@ -50,11 +53,8 @@ export function createRateLimiter(options: RateLimiterOptions): RateLimiter {
       pruneExpired(now);
       let window = windows.get(ip);
       if (window === undefined) {
-        while (windows.size >= maxTrackedIps) {
-          const oldestIp = windows.keys().next().value;
-          if (oldestIp === undefined) break;
-          windows.delete(oldestIp);
-        }
+        // 만료된 항목은 위에서 정리했다 — 남은 것은 전부 창 안이다. 지우지 않고 새 IP 를 거절한다.
+        if (windows.size >= maxTrackedIps) return { allowed: false, firstRejectionInWindow: false, tableFull: true };
         window = { allowedTimestamps: [], rejectionMarked: false };
       }
       while (window.allowedTimestamps.length > 0 && now - window.allowedTimestamps[0] >= windowMilliseconds) {

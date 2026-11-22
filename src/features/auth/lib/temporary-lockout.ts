@@ -13,6 +13,8 @@ export interface TemporaryLockout {
   decide(credentialOk: boolean): AttemptVerdict;
   failures(): number;
   lockedUntil(): number | null;  // epoch 밀리초, 잠금 아니면 null
+  /** 관측 서버가 허용한 성공 — 메모리 횟수와 임시 잠금을 지운다(세부 3). */
+  reset(): void;
 }
 
 export function createTemporaryLockout(options: TemporaryLockoutOptions): TemporaryLockout {
@@ -55,6 +57,10 @@ export function createTemporaryLockout(options: TemporaryLockoutOptions): Tempor
     lockedUntil() {
       releaseIfExpired(options.clock());
       return lockedUntilTime;
+    },
+    reset() {
+      failureCount = 0;
+      lockedUntilTime = null;
     },
   };
 }

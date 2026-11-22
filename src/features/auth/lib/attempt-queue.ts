@@ -45,21 +45,23 @@ export function createAttemptQueue(options: AttemptQueueOptions = {}): AttemptQu
     droppedCount: () => dropped,
     async flush(send) {
       let sent = 0;
+      let discarded = 0;
       while (records.length > 0) {
         const head = records[0];
-        let delivered = false;
+        let outcome: boolean | "discard" = false;
         try {
-          delivered = (await send(head)) === true;
+          outcome = await send(head);
         } catch {
-          delivered = false;
+          outcome = false;
         }
-        if (!delivered) break;
-        // 보내는 동안 새 항목은 뒤에 붙었으므로 맨 앞(보낸 항목)만 뺀다
+        if (outcome !== true && outcome !== "discard") break;
+        // 보내는 동안 새 항목은 뒤에 붙었으므로 보낸(또는 버린) 항목만 뺀다
         const headIndex = records.indexOf(head);
         if (headIndex >= 0) records.splice(headIndex, 1);
-        sent += 1;
+        if (outcome === "discard") discarded += 1;
+        else sent += 1;
       }
-      return { sent, remaining: records.length };
+      return { sent, remaining: records.length, discarded };
     },
   };
 }
