@@ -132,10 +132,12 @@ describe("배포 이력 화면 — 실패 · 잘못된 입력", () => {
 });
 
 describe("공통 틀", () => {
-  it("내비게이션 — 배포 이력은 링크(현재 화면), 나머지 셋은 링크 없이 '준비 중' · 로그아웃", async () => {
+  it("내비게이션 — 배포 이력은 링크(현재 화면), 로그 조회는 링크(현재 화면 아님), 나머지 둘은 링크 없이 '준비 중' · 로그아웃", async () => {
     const html = await render();
     expect(html).toMatch(/href="\/deploys" aria-current="page"[^>]*>배포 이력</);
-    for (const title of ["로그 조회", "상태 한눈에", "로그인 시도 기록"]) {
+    expect(html).toMatch(/<a[^>]*href="\/logs"[^>]*>로그 조회</);
+    expect(html).not.toMatch(/href="\/logs" aria-current/);
+    for (const title of ["상태 한눈에", "로그인 시도 기록"]) {
       expect(html).toContain(title);
       expect(html).not.toMatch(new RegExp(`<a[^>]*>${title}<`));
     }
