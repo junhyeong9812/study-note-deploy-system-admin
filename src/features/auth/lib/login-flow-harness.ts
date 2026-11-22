@@ -14,14 +14,14 @@ export const OUTAGE = { ok: false as const, reason: "unreachable" as const };
 export const TIMEOUT = { ok: false as const, reason: "timeout" as const };
 
 export function buildHarness(options: { queueCapacity?: number; account?: { adminId: string; passwordHash: string };
-                       delay?: (milliseconds: number) => Promise<void> } = {}) {
+                       delay?: (milliseconds: number) => Promise<void>; maxTrackedIps?: number } = {}) {
   const clock = createFakeClock();
   const recording = createRecordingLogger();
   const observe = createFakeObserveClient();
   const alert = createFakeAlertClient();
   const queue = createAttemptQueue({ capacity: options.queueCapacity ?? 500 });
   const temporaryLockout = createTemporaryLockout({ clock: clock.now });
-  const rateLimiter = createRateLimiter({ clock: clock.now });
+  const rateLimiter = createRateLimiter({ clock: clock.now, maxTrackedIps: options.maxTrackedIps });
   const verifyPassword = vi.fn<PasswordVerifier>(async (passwordHash, password) =>
     passwordHash === FAKE_PASSWORD_HASH && password === FAKE_PASSWORD);
   let attemptCounter = 0;

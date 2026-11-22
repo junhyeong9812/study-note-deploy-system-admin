@@ -61,8 +61,8 @@ describe("middleware — 세션이 없거나 무효면 막는다(보호 경로 �
           expect(body).not.toHaveProperty("data");
         } else {
           expect([302, 303, 307, 308]).toContain(response.status);
-          const location = response.headers.get("location") ?? "";
-          expect(new URL(location, FAKE_ORIGIN).pathname).toBe("/login");
+          // 세부 3: 상대 주소를 글자 그대로(절대 주소 · 호스트 이름 없음)
+          expect(response.headers.get("location")).toBe("/login");
           expect(bodyText).toBe("");
         }
       });

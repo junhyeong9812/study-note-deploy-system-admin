@@ -3,7 +3,7 @@
  * 연결 실패 · 2xx 아님 · 해석 불가면 같은 본문(같은 attempt_id)으로 1회 재시도, 그래도 안 되면 { ok:false }.
  * 시간 초과는 재시도하지 않는다(세부 2 — 로그인이 최대 약 5초에 끝나게). */
 import type {
-  AttemptRecordBody, AttemptVerdict, FetchLike, RejectedAttemptBody, TimeoutSignalFactory,
+  AttemptRecordBody, Clock, AttemptVerdict, FetchLike, RejectedAttemptBody, TimeoutSignalFactory,
 } from "@/features/auth/lib/types";
 
 export const OBSERVE_TIMEOUT_MILLISECONDS = 5_000;
@@ -12,12 +12,16 @@ export type ObserveFailureReason = "unreachable" | "timeout" | "bad_status" | "b
 
 export type ObserveResult<Value> =
   | { ok: true; value: Value }
-  | { ok: false; reason: ObserveFailureReason };
+  /** status: bad_status 일 때 관측 서버가 준 HTTP 상태(세부 3 — 422 만 대기열에서 버린다). */
+  | { ok: false; reason: ObserveFailureReason; status?: number };
 
 export interface ObserveClientOptions {
   baseUrl: string;
   secret: string;
   fetch: FetchLike;
+  /** 세부 3: 첫 호출과 재시도를 합친 기한 5초 하나 — 시계로 남은 시간을 잰다(기본 Date.now).
+   * timeoutSignal 은 호출마다 "남은 시간"으로 불리고, 남은 시간이 없으면 재시도하지 않는다. */
+  clock?: Clock;
   timeoutSignal?: TimeoutSignalFactory;   // 기본 AbortSignal.timeout
 }
 

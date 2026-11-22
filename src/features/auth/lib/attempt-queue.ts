@@ -13,6 +13,8 @@ export interface AttemptQueueOptions {
 export interface FlushResult {
   sent: number;
   remaining: number;
+  /** 세부 3: send 가 "discard" 를 돌려줘 버린 항목 수(관측 서버 422 — 다시 보내도 같은 본문). */
+  discarded: number;
 }
 
 export interface AttemptQueue {
@@ -20,8 +22,9 @@ export interface AttemptQueue {
   enqueue(record: QueuedRecord): boolean;
   size(): number;
   droppedCount(): number;
-  /** 들어온 순서대로 send 한다. send 가 false 를 돌려주거나 예외면 그 항목부터 대기열에 남기고 멈춘다. */
-  flush(send: (record: QueuedRecord) => Promise<boolean>): Promise<FlushResult>;
+  /** 들어온 순서대로 send 한다. send 가 false 를 돌려주거나 예외면 그 항목부터 대기열에 남기고 멈춘다.
+   * "discard" 면 그 항목만 버리고(누적 유실 건수와는 따로 센다) 다음 항목으로 이어 간다. */
+  flush(send: (record: QueuedRecord) => Promise<boolean | "discard">): Promise<FlushResult>;
 }
 
 export function createAttemptQueue(options: AttemptQueueOptions = {}): AttemptQueue {

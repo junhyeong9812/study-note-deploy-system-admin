@@ -30,7 +30,7 @@ describe("시도 기록 대기열", () => {
     [1, 2, 3].forEach((index) => queue.enqueue(attemptRecord(index)));
     const sent: QueuedRecord[] = [];
     const result = await queue.flush(async (record) => { sent.push(record); return true; });
-    expect(result).toEqual({ sent: 3, remaining: 0 });
+    expect(result).toMatchObject({ sent: 3, remaining: 0 });
     expect(sent).toEqual([attemptRecord(1), attemptRecord(2), attemptRecord(3)]);
     expect(queue.size()).toBe(0);
   });
@@ -40,10 +40,10 @@ describe("시도 기록 대기열", () => {
     [1, 2, 3].forEach((index) => queue.enqueue(attemptRecord(index)));
     const send = vi.fn<(record: QueuedRecord) => Promise<boolean>>()
       .mockResolvedValueOnce(true).mockResolvedValueOnce(false);
-    expect(await queue.flush(send)).toEqual({ sent: 1, remaining: 2 });
+    expect(await queue.flush(send)).toMatchObject({ sent: 1, remaining: 2 });
     expect(queue.size()).toBe(2);
     const sent: QueuedRecord[] = [];
-    expect(await queue.flush(async (record) => { sent.push(record); return true; })).toEqual({ sent: 2, remaining: 0 });
+    expect(await queue.flush(async (record) => { sent.push(record); return true; })).toMatchObject({ sent: 2, remaining: 0 });
     expect(sent).toEqual([attemptRecord(2), attemptRecord(3)]);
   });
 
@@ -51,7 +51,7 @@ describe("시도 기록 대기열", () => {
     const queue = createAttemptQueue({ capacity: 10 });
     [1, 2].forEach((index) => queue.enqueue(attemptRecord(index)));
     const result = await queue.flush(async () => { throw new Error("observe down (fake)"); });
-    expect(result).toEqual({ sent: 0, remaining: 2 });
+    expect(result).toMatchObject({ sent: 0, remaining: 2 });
     expect(queue.size()).toBe(2);
   });
 
@@ -74,5 +74,28 @@ describe("시도 기록 대기열", () => {
     });
     const total = sent.length + queue.size();
     expect(total).toBe(2);
+  });
+});
+
+describe("세부 3 — 버릴 항목(discard)", () => {
+  it("send 가 discard 를 돌려준 항목만 버리고 뒤 항목은 계속 보낸다", async () => {
+    const queue = createAttemptQueue({ capacity: 10 });
+    [1, 2, 3].forEach((index) => queue.enqueue(attemptRecord(index)));
+    const sent: string[] = [];
+    const result = await queue.flush(async (record) => {
+      if (record.body.attempt_id === attemptRecord(2).body.attempt_id) return "discard";
+      sent.push(record.body.attempt_id);
+      return true;
+    });
+    expect(result).toEqual({ sent: 2, remaining: 0, discarded: 1 });
+    expect(sent).toEqual([attemptRecord(1).body.attempt_id, attemptRecord(3).body.attempt_id]);
+    expect(queue.size()).toBe(0);
+    expect(queue.droppedCount()).toBe(0);   // 넘침 유실과는 따로 센다
+  });
+
+  it("버리지 않은 실패(false)에서는 멈추고 남긴다 — discarded 0", async () => {
+    const queue = createAttemptQueue({ capacity: 10 });
+    [1, 2].forEach((index) => queue.enqueue(attemptRecord(index)));
+    expect(await queue.flush(async () => false)).toEqual({ sent: 0, remaining: 2, discarded: 0 });
   });
 });

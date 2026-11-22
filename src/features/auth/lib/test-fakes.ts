@@ -53,8 +53,8 @@ export function verdict(overrides: Partial<AttemptVerdict> = {}): AttemptVerdict
 export interface FakeObserveClient extends ObserveClient {
   attempts: AttemptRecordBody[];
   rejected: RejectedAttemptBody[];
-  respondAttempt: (body: AttemptRecordBody) => ObserveResult<AttemptVerdict>;
-  respondRejected: (body: RejectedAttemptBody) => ObserveResult<null>;
+  respondAttempt: (body: AttemptRecordBody) => ObserveResult<AttemptVerdict> | Promise<ObserveResult<AttemptVerdict>>;
+  respondRejected: (body: RejectedAttemptBody) => ObserveResult<null> | Promise<ObserveResult<null>>;
 }
 
 export function createFakeObserveClient(): FakeObserveClient {

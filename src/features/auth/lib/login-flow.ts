@@ -32,6 +32,9 @@ export interface LoginInput {
   /** 세부 2: 본문 형식이 틀렸거나 상한을 넘었다(Route Handler 가 해석해 넘긴다). true 면 id·password 는 보지 않는다.
    * 순서는 Origin 검사 → 속도 제한 → 이 표시 — 형식 오류도 속도 제한에 센다. */
   malformed?: boolean;
+  /** 세부 3: 본문 읽기 — Route Handler 가 넘긴다. 흐름은 Origin 검사 → 속도 제한을 통과한 뒤에만 부른다(그 전에는 본문을 읽지 않는다).
+   * null 이면 형식 오류(상한 4KB · 기한 3초 초과 포함) → malformed. 주어지면 id·password·malformed 대신 이 결과를 쓴다. */
+  readCredentials?: () => Promise<{ id: string; password: string } | null>;
 }
 
 export type LoginResult =
@@ -78,6 +81,8 @@ export interface LoginFlow {
   /** login 이 시작한 대기열 재전송(있으면)이 끝날 때까지 기다린다 — 재전송 응답으로 보낸 잠금 알림까지 포함.
    * 재전송을 login 안에서 기다리는 구현이면 바로 끝난다. */
   waitForReplay(): Promise<void>;
+  /** 세부 3: 응답을 기다리게 하지 않은 거절 기록 전송(과 그 실패의 대기열 넣기)이 끝날 때까지 기다린다. */
+  waitForBackgroundRecords(): Promise<void>;
 }
 
 export function createLoginFlow(dependencies: LoginFlowDependencies): LoginFlow {

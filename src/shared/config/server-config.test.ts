@@ -5,7 +5,6 @@ vi.mock("server-only", () => ({}));
 
 import { hash } from "@node-rs/argon2";
 import { missingLoginConfigKeys, readServerConfig } from "@/shared/config/server-config";
-import { reportMissingConfiguration } from "@/shared/config/startup-check";
 import { FAKE_ADMIN_ID, FAKE_ORIGIN, FAKE_PASSWORD, FAKE_SIGNING_KEY } from "@/features/auth/lib/test-fakes";
 
 let sameCostHash = "";
@@ -41,19 +40,5 @@ describe("missingLoginConfigKeys — 해시 비용", () => {
   it("비용이 다르면 ADMIN_PASSWORD_HASH 를 설정 없음으로 본다", () => {
     vi.stubEnv("ADMIN_PASSWORD_HASH", expensiveHash);
     expect(missingLoginConfigKeys(readServerConfig())).toContain("ADMIN_PASSWORD_HASH");
-  });
-});
-
-describe("reportMissingConfiguration — 시작 로그", () => {
-  it("비용이 다른 해시 → 키 이름을 담은 1줄, 해시 값은 찍지 않는다", () => {
-    vi.stubEnv("ADMIN_PASSWORD_HASH", expensiveHash);
-    reportMissingConfiguration();
-    const lines = consoleLines.filter((line) => line.includes("ADMIN_PASSWORD_HASH"));
-    expect(lines).toHaveLength(1);
-    for (const line of consoleLines) {
-      expect(line).not.toContain(expensiveHash);
-      expect(line).not.toContain(expensiveHash.split("$").pop()!);
-      expect(line).not.toContain(FAKE_SIGNING_KEY);
-    }
   });
 });

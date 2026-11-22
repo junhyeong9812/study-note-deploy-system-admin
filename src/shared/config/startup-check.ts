@@ -3,6 +3,13 @@ import "server-only";
 import { missingLoginConfigKeys, missingOptionalConfigKeys, readServerConfig } from "@/shared/config/server-config";
 import { log } from "@/shared/lib/logger";
 
+/** 세부 3 — 설정이 없으면 뜨지 않는다. instrumentation.register() 가 Node 런타임에서 부른다.
+ * 빌드 단계(NEXT_PHASE === "phase-production-build")에는 검사하지 않는다.
+ * 로그인 필수 설정이 빠졌거나 잘못됐으면 키 이름만 1줄 남기고 process.exit(0 이 아닌 코드). 선택 설정(ALERT_*)은 막지 않는다. */
+export function checkStartupConfiguration(): void {
+  throw new Error("not implemented");
+}
+
 export function reportMissingConfiguration(): void {
   const config = readServerConfig();
   const missingLogin = missingLoginConfigKeys(config);

@@ -175,6 +175,7 @@ describe("로그인 흐름 — 속도 제한", () => {
     const harness = buildHarness();
     harness.observe.respondRejected = () => OUTAGE;
     for (let index = 0; index < 11; index += 1) await harness.flow.login(input({ password: "fake-wrong" }));
+    await harness.flow.waitForBackgroundRecords?.();   // 세부 3: 거절 기록은 뒤에서 끝난다
     expect(harness.queue.size()).toBe(1);
   });
 });

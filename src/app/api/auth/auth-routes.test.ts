@@ -243,17 +243,20 @@ describe("POST /api/auth/login — 관측 서버 장애(임시 제한 표시)", 
   });
 });
 
-describe("POST /api/auth/login — 설정이 비거나 쓸 수 없으면 전부 거절", () => {
+describe("POST /api/auth/login — 실행 중 방어: 설정이 없는 상태에 닿으면 401 거절만(기록 없음 — 세부 3)", () => {
   it.each([
     ["ADMIN_USER 빔", "ADMIN_USER", ""],
     ["ADMIN_PASSWORD_HASH 빔", "ADMIN_PASSWORD_HASH", ""],
     ["SESSION_SECRET 빔", "SESSION_SECRET", ""],
     ["ADMIN_ORIGIN 빔", "ADMIN_ORIGIN", ""],
-  ])("%s → 맞는 자격도 200 이 아니고 쿠키 없음", async (_label, name, value) => {
+    ["OBSERVE_URL 빔", "OBSERVE_URL", ""],
+    ["OBSERVE_SECRET 빔", "OBSERVE_SECRET", ""],
+  ])("%s → 맞는 자격도 401, 쿠키 없음, 관측 서버 호출 없음", async (_label, name, value) => {
     vi.stubEnv(name, value);
     const response = await loginPost(loginRequest());
-    expect(response.status).not.toBe(200);
+    expect(response.status).toBe(401);
     expect(response.headers.get("set-cookie")).toBeNull();
+    expect(observeCalls).toHaveLength(0);
   });
 
   it("ADMIN_USER 가 비면 응답이 '비밀번호 틀림'과 같다(설정 상태가 드러나지 않는다)", async () => {
@@ -270,6 +273,7 @@ describe("POST /api/auth/login — 설정이 비거나 쓸 수 없으면 전부 
     const response = await loginPost(loginRequest());
     expect(response.status).toBe(401);
     expect(response.headers.get("set-cookie")).toBeNull();
+    expect(observeCalls).toHaveLength(0);   // 세부 3: 기록 없음
   });
 });
 
@@ -316,6 +320,83 @@ describe("앱 로그(콘솔)에 IP · ID · 비밀번호 · UA 없음 — Route 
       for (const forbidden of [FAKE_IP, typedId, typedPassword, FAKE_ADMIN_ID, FAKE_PASSWORD, FAKE_USER_AGENT, passwordHash, FAKE_SIGNING_KEY]) {
         expect(line, `logged: ${line}`).not.toContain(forbidden);
       }
+    }
+  });
+});
+
+describe("세부 3 — 본문 읽기: Origin 검사 · 속도 제한을 본문을 읽기 전에, 읽으면서 상한·기한", () => {
+  /** 마이크로·매크로태스크만 돌려 본다(실제 대기 없음) — 그 안에 끝나지 않으면 본문을 기다리는 것. */
+  async function settlesWithinMacrotasks(promise: Promise<unknown>, rounds = 50): Promise<boolean> {
+    let settled = false;
+    void promise.then(() => { settled = true; }, () => { settled = true; });
+    for (let round = 0; round < rounds && !settled; round += 1) await new Promise<void>((resolve) => setImmediate(resolve));
+    return settled;
+  }
+  function stalledBody() {
+    let sent = false;
+    return new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (sent) return new Promise<void>(() => undefined);
+        sent = true;
+        controller.enqueue(new TextEncoder().encode("{\"id\":\""));
+        return undefined;
+      },
+    }, { highWaterMark: 0 });
+  }
+  function endlessBody() {
+    const state = { pulledBytes: 0 };
+    const stream = new ReadableStream<Uint8Array>({
+      // 64KB 에서 닫는다 — 다 읽는 구현이 테스트를 멈추게 하지 않고(빨강으로 끝나게) 하기 위한 안전 상한
+      pull(controller) {
+        if (state.pulledBytes >= 65_536) { controller.close(); return; }
+        state.pulledBytes += 1024;
+        controller.enqueue(new TextEncoder().encode("x".repeat(1024)));
+      },
+    }, { highWaterMark: 0 });
+    return { stream, state };
+  }
+  function streamLoginRequest(stream: ReadableStream<Uint8Array>, origin: string = FAKE_ORIGIN): Request {
+    return new Request(new URL("/api/auth/login", FAKE_ORIGIN), {
+      method: "POST",
+      headers: { origin, "content-type": "application/json", "x-real-ip": FAKE_IP, "user-agent": FAKE_USER_AGENT },
+      body: stream, duplex: "half",
+    } as RequestInit & { duplex: "half" });
+  }
+
+  it("틀린 Origin + 끝나지 않는 본문 → 본문을 기다리지 않고 403", async () => {
+    const pending = loginPost(streamLoginRequest(stalledBody(), "https://evil.example.test"));
+    expect(await settlesWithinMacrotasks(pending)).toBe(true);
+    expect((await pending).status).toBe(403);
+  });
+
+  it("속도 제한 초과 + 끝나지 않는 본문 → 본문을 기다리지 않고 429", async () => {
+    for (let index = 0; index < 10; index += 1) await loginPost(loginRequest({ body: { id: FAKE_ADMIN_ID, password: "fake-wrong" } }));
+    const pending = loginPost(streamLoginRequest(stalledBody()));
+    expect(await settlesWithinMacrotasks(pending)).toBe(true);
+    expect((await pending).status).toBe(429);
+  });
+
+  it("4KB 를 넘는 끝없는 본문 → 다 읽지 않고 400, 기록 reason malformed", async () => {
+    const { stream, state } = endlessBody();
+    const pending = loginPost(streamLoginRequest(stream));
+    expect(await settlesWithinMacrotasks(pending, 200)).toBe(true);
+    expect((await pending).status).toBe(400);
+    expect(state.pulledBytes).toBeLessThanOrEqual(4096 + 2048);
+    expect(rejectedCalls().map((call) => call.body.reason)).toEqual(["malformed"]);
+  });
+
+  it("3초 안에 끝나지 않는 본문 → 400, 기록 reason malformed (가짜 타이머로 3초를 앞당긴다)", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const pending = loginPost(streamLoginRequest(stalledBody()));
+      await vi.advanceTimersByTimeAsync(2_999);
+      expect(await settlesWithinMacrotasks(pending, 5)).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(await settlesWithinMacrotasks(pending)).toBe(true);
+      expect((await pending).status).toBe(400);
+      expect(rejectedCalls().map((call) => call.body.reason)).toEqual(["malformed"]);
+    } finally {
+      vi.useRealTimers();
     }
   });
 });

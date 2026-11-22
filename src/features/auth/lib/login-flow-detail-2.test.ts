@@ -56,6 +56,7 @@ describe("세부 2 — 재전송의 결과(outcome)", () => {
     const harness = buildHarness();
     harness.observe.respondRejected = () => OUTAGE;
     await harness.flow.login(input({ origin: BAD_ORIGIN }));
+    await harness.flow.waitForBackgroundRecords?.();   // 세부 3: 거절 기록은 뒤에서 끝난다
     const original = harness.observe.rejected[0];
     harness.observe.respondRejected = () => ({ ok: true, value: null });
     await harness.flow.login(input());
@@ -240,6 +241,7 @@ describe("세부 2 — 기록 범위(rejected 이유 3종, IP 마다 60초 창�
     const harness = buildHarness();
     harness.observe.respondRejected = () => OUTAGE;
     await harness.flow.login(input({ origin: BAD_ORIGIN }));
+    await harness.flow.waitForBackgroundRecords?.();   // 세부 3: 거절 기록은 뒤에서 끝난다
     expect(harness.queue.size()).toBe(1);
   });
 });
@@ -250,6 +252,7 @@ describe("세부 2 — 순서: Origin 검사 → 속도 제한 → 본문 해석
     for (let index = 0; index < 10; index += 1) expect((await harness.flow.login(input({ malformed: true }))).kind).toBe("malformed");
     expect(await harness.flow.login(input({ malformed: true }))).toEqual({ kind: "rate_limited" });
     expect(await harness.flow.login(input())).toEqual({ kind: "rate_limited" });
+    await harness.flow.waitForBackgroundRecords?.();   // 세부 3: 거절 기록은 뒤에서 끝난다
     expect(harness.observe.rejected.map((body) => body.reason)).toEqual(["malformed", "rate_limited"]);
   });
 
@@ -277,6 +280,7 @@ describe("세부 2 — 대기열을 넣을 때마다 현재 건수가 앱 로그
     const harness = buildHarness();
     harness.observe.respondRejected = () => OUTAGE;
     await harness.flow.login(input({ origin: BAD_ORIGIN }));
+    await harness.flow.waitForBackgroundRecords?.();   // 세부 3: 거절 기록은 뒤에서 끝난다
     expect(harness.recording.calls.some((call) => /\bqueued=1\b/.test(call.message))).toBe(true);
   });
 });
@@ -302,6 +306,7 @@ describe("세부 2 — 새 경로에서도 앱 로그에 IP · 입력 ID · 비�
     await harness.flow.login(input({ password: typedPassword }));
     harness.alert.behavior = "fail";
     await harness.flow.waitForReplay();
+    await harness.flow.waitForBackgroundRecords?.();   // 세부 3: 거절 기록은 뒤에서 끝난다
 
     const strings = harness.recording.allStrings();
     expect(strings.length).toBeGreaterThan(0);
