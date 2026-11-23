@@ -46,7 +46,7 @@ services:
     image: nginx:1.27-alpine
     container_name: admin-nginx
     ports:
-      - "${BIND_ADDR:?set BIND_ADDR in .env}:18000:18000"   # 엣지가 이 포트로 프록시. nginx 가 엣지 IP·사설 대역만 받는다
+      - "${BIND_ADDR:?set BIND_ADDR in .env}:${PUBLIC_PORT:-18000}:18000"   # 엣지가 이 포트로 프록시. nginx 가 엣지 IP·사설 대역만 받는다
     volumes:
       # nginx 는 git 밖의 활성 디렉토리만 읽는다(서버에만 있다): nginx.conf(본 설정 사본) + upstream.conf(활성 자리)
       # + edge-allow.conf(엣지 IP — 저장소에 적지 않는다, deploy/nginx/edge-allow.conf.example 참고. 없으면 nginx 가 뜨지 않는다).
