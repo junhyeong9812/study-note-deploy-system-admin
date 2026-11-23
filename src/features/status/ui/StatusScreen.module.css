@@ -63,6 +63,7 @@
 .monitorName { font-weight: 600; white-space: nowrap; }
 .time { font-variant-numeric: tabular-nums; white-space: nowrap; }
 .elapsed { display: block; font-size: var(--text-xs); color: var(--muted); }
+.ago { font-size: var(--text-xs); color: var(--muted); }
 .reasonCell { min-width: 16rem; }
 
 /* backend 의존성 */

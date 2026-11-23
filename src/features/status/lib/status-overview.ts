@@ -8,7 +8,7 @@
  *   (status 열거 = monitor/MonitorTracker.kt:14).
  * - alert `GET /health`(AlertController.kt:49-63, 인증 없음, 봉투 없음): `{status:"ok"|"starting"|"standby"|"stalled", last_round_at, active}` — stalled 만 503.
  * - observe `GET /health`(observe api/LogController.kt:140-144, collect/CollectorHealth.kt:48-72, 인증 없음, 봉투 없음):
- *   `{status:"ok"|"unreachable"|"failing"|"starting"|"stalled", …}` — 200 은 ok 하나뿐, 나머지는 503.
+ *   `{status:"ok"|"unreachable"|"failing"|"starting"|"stalled", failure, lag(-1=모름), last_stored_at(""=없음), …}` — 200 은 ok 하나뿐, 나머지는 503.
  * - backend `GET /api/health/dependencies`(backend shared/api/DependencyHealthController.kt:29-45, 인증 없음, 봉투 없음, 항상 200):
  *   `{status:"UP"|"DOWN", components:{<이름>:{status:"UP"|"DOWN", detail?}}}`.
  * - master `GET /health`(ci-cd cmd/server/main.go:19-21, 인증 없음): `{success:true,data:{mode}}`.
@@ -18,7 +18,7 @@ import { maskUpstreamReason } from "@/shared/lib/upstream-reason";
 import {
   envelopeData, getUpstream, isHttpBaseUrl, isNonNegativeInteger, isRecord, upstreamUrl, type UpstreamGetOptions, type UpstreamResponse,
 } from "@/shared/lib/upstream-fetch";
-import { failureForHttpStatus, upstreamFailure, type UpstreamResult } from "@/shared/lib/upstream-result";
+import { failureForHttpStatus, upstreamFailure, type UpstreamFailure, type UpstreamResult } from "@/shared/lib/upstream-result";
 
 export const STATUS_CHECK_NAMES = ["alertMonitors", "alertHealth", "observeHealth", "backendDependencies", "deployMasterHealth"] as const;
 export type StatusCheckName = (typeof STATUS_CHECK_NAMES)[number];
@@ -110,6 +110,11 @@ function successOnly<Value>(response: UpstreamResponse, parse: (response: Upstre
   return value === null ? upstreamFailure("unparseable") : { ok: true, value };
 }
 
+/** 헬스 본문이 계약 꼴이 아닐 때 — 503 이면 unavailable(503), 그 밖(2xx)은 unparseable. */
+function malformedHealth(response: UpstreamResponse): UpstreamFailure {
+  return response.status === 503 ? failureForHttpStatus(503) : upstreamFailure("unparseable");
+}
+
 /** 헬스 두 칸(alert · observe) — 200 과 503 은 본문의 상태 낱말로 판정한다. 503 인데 계약 꼴이 아니면 unavailable. */
 function healthCell(response: UpstreamResponse, statuses: readonly string[], readFailure: boolean): UpstreamResult<ServiceHealthView> {
   if (!isSuccessStatus(response.status) && response.status !== 503) return failureForHttpStatus(response.status);
@@ -117,10 +122,33 @@ function healthCell(response: UpstreamResponse, statuses: readonly string[], rea
   const status = body?.status;
   let failure: string | null | undefined = null;
   if (readFailure && body !== null && body.failure !== undefined) failure = typeof body.failure === "string" ? maskedOrNull(body.failure) : undefined;
-  if (body === null || typeof status !== "string" || !statuses.includes(status) || failure === undefined) {
-    return response.status === 503 ? failureForHttpStatus(503) : upstreamFailure("unparseable");
-  }
+  if (body === null || typeof status !== "string" || !statuses.includes(status) || failure === undefined) return malformedHealth(response);
   return { ok: true, value: { status, healthy: status === "ok", failure } };
+}
+
+/** `lag` → 밀린 건수. 칸 없음 · -1 = null, -1 이상의 정수가 아니면 undefined(틀린 형). */
+function readBacklog(lag: unknown): number | null | undefined {
+  if (lag === undefined) return null;
+  if (typeof lag !== "number" || !Number.isInteger(lag) || lag < -1) return undefined;
+  return lag === -1 ? null : lag;
+}
+
+/** `last_stored_at` → 최근 로그 시각(받은 글자 그대로). 칸 없음 · "" = null, 글자가 아니거나 시각으로 읽히지 않으면 undefined(틀린 형). */
+function readLastLogAt(lastStoredAt: unknown): string | null | undefined {
+  if (lastStoredAt === undefined || lastStoredAt === "") return null;
+  if (typeof lastStoredAt !== "string" || Number.isNaN(Date.parse(lastStoredAt))) return undefined;
+  return lastStoredAt;
+}
+
+/** 관측 서버 헬스 칸 — 상태 낱말 판정(healthCell)에 밀린 건수 · 최근 로그 시각을 더한다. 두 칸의 형이 틀리면 칸 전체가 계약 꼴이 아니다. */
+function observeHealthCell(response: UpstreamResponse): UpstreamResult<ObserveHealthView> {
+  const cell = healthCell(response, OBSERVE_HEALTH_STATUSES, true);
+  if (!cell.ok) return cell;
+  const body = response.parsed && isRecord(response.json) ? response.json : {};   // healthCell 이 성공했으면 본문은 객체다(형 좁히기용)
+  const backlog = readBacklog(body.lag);
+  const lastLogAt = readLastLogAt(body.last_stored_at);
+  if (backlog === undefined || lastLogAt === undefined) return malformedHealth(response);
+  return { ok: true, value: { ...cell.value, backlog, lastLogAt } };
 }
 
 function parseMonitors(response: UpstreamResponse): AlertMonitorsView | null {
@@ -179,9 +207,7 @@ export function collectStatusOverview(options: StatusOverviewOptions): Promise<S
   // 다섯 호출을 한꺼번에 시작한다(각자 5초)
   const alertMonitors = call(options.alertUrl, "/monitors", alertSecretHeaders, (response) => successOnly(response, parseMonitors));
   const alertHealth = call(options.alertUrl, "/health", {}, (response) => healthCell(response, ALERT_HEALTH_STATUSES, false));
-  // 구현 전 자리: backlog · lastLogAt 을 아직 읽지 않는다(계약 선언만 — status-overview.test.ts 의 관측 서버 칸 사례가 빨강)
-  const observeHealth = call(options.observeUrl, "/health", {},
-    (response) => healthCell(response, OBSERVE_HEALTH_STATUSES, true) as UpstreamResult<ObserveHealthView>);
+  const observeHealth = call(options.observeUrl, "/health", {}, observeHealthCell);
   const backendDependencies = call(options.backendUrl, "/api/health/dependencies", {}, (response) => successOnly(response, parseDependencies));
   const deployMasterHealth = call(options.deployMasterUrl, "/health", {}, (response) => successOnly(response, parseMasterHealth));
   return Promise.all([alertMonitors, alertHealth, observeHealth, backendDependencies, deployMasterHealth])

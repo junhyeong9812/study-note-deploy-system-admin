@@ -4,7 +4,7 @@
  * 상태는 색 + 기호 + 글자로 보인다. 다른 서버의 글자(대상 이름 · 가린 사유)는 React 의 글자 출력이라 HTML 로 해석되지 않는다. */
 import type { ReactNode } from "react";
 import type {
-  AlertMonitorsView, BackendDependenciesView, ServiceHealthView, StatusCheckName, StatusOverview,
+  AlertMonitorsView, BackendDependenciesView, ObserveHealthView, ServiceHealthView, StatusCheckName, StatusOverview,
 } from "@/features/status/lib/status-overview";
 import { formatDuration, formatKoreanTime } from "@/features/deploys/lib/deploy-format";
 import {
@@ -113,6 +113,35 @@ function HealthCard({ name, cell, words }: { name: StatusCheckName; cell: Status
   return <Card name={name} tone={healthTone(cell.value, words)}><HealthWord health={cell.value} words={words} /></Card>;
 }
 
+/** 관측 서버 카드의 두 줄 — 밀린 건수와 최근 로그 시각(KST, 조회 시각보다 앞이면 얼마 전인지). 값이 없으면 "—". 판정에는 쓰지 않는다. */
+function ObserveProgress({ health, checkedAt }: { health: ObserveHealthView; checkedAt: string }) {
+  const now = Date.parse(checkedAt);
+  const lastLog = health.lastLogAt === null ? Number.NaN : Date.parse(health.lastLogAt);
+  return (
+    <div className={styles.health}>
+      <p>밀린 건수 {health.backlog === null ? <span className={styles.none}>—</span> : `${health.backlog}건`}</p>
+      <p className={styles.time}>
+        최근 로그 시각(KST) {health.lastLogAt === null ? <span className={styles.none}>—</span> : (
+          <>
+            <KoreanTime value={health.lastLogAt} />
+            {Number.isFinite(lastLog) && Number.isFinite(now) && now > lastLog && <span className={styles.ago}> ({formatDuration(now - lastLog)} 전)</span>}
+          </>
+        )}
+      </p>
+    </div>
+  );
+}
+
+function ObserveHealthCard({ cell, checkedAt }: { cell: StatusOverview["observeHealth"]; checkedAt: string }) {
+  if (!cell.ok) return <Card name="observeHealth" tone="unknown"><FailureLine name="observeHealth" failure={cell} /></Card>;
+  return (
+    <Card name="observeHealth" tone={healthTone(cell.value, OBSERVE_HEALTH_WORDS)}>
+      <HealthWord health={cell.value} words={OBSERVE_HEALTH_WORDS} />
+      <ObserveProgress health={cell.value} checkedAt={checkedAt} />
+    </Card>
+  );
+}
+
 function MonitorTable({ view, checkedAt }: { view: AlertMonitorsView; checkedAt: string }) {
   const now = Date.parse(checkedAt);
   return (
@@ -210,7 +239,7 @@ export function StatusScreen({ overview, checkedAt }: StatusScreenProps) {
   const cards: Record<StatusCheckName, ReactNode> = {
     alertMonitors: <MonitorsCard cell={overview.alertMonitors} checkedAt={checkedAt} />,
     alertHealth: <HealthCard name="alertHealth" cell={overview.alertHealth} words={ALERT_HEALTH_WORDS} />,
-    observeHealth: <HealthCard name="observeHealth" cell={overview.observeHealth} words={OBSERVE_HEALTH_WORDS} />,
+    observeHealth: <ObserveHealthCard cell={overview.observeHealth} checkedAt={checkedAt} />,
     backendDependencies: <DependenciesCard cell={overview.backendDependencies} />,
     deployMasterHealth: <HealthCard name="deployMasterHealth" cell={overview.deployMasterHealth} words={DEPLOY_MASTER_HEALTH_WORDS} />,
   };
