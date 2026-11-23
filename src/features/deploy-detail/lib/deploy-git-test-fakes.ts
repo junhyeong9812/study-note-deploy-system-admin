@@ -1,6 +1,8 @@
 /** 테스트 전용 — 배포 master 의 git 조회 응답 꼴(ci-cd internal/agent/git_read.go 의 GitCommit · GitCommitRange · GitFileChange · GitCommitDetail,
  * 봉투 internal/shared/envelope.go)을 본뜬 가짜. 주소 · 비밀값은 upstream-test-fakes 의 문서용 가짜.
- * 화면에 넘기지 않아야 하는 칸에는 UPSTREAM_RAW_MARKER 를 넣는다. */
+ * 화면에 넘기지 않아야 하는 칸에는 UPSTREAM_RAW_MARKER 를 넣는다.
+ * patch 는 실제 master · agent 응답의 꼴을 따른다 — 언제나 `\n` 으로 끝난다(마지막 줄이 `\ No newline at end of file` 이어도 그 뒤에 `\n`).
+ * 끝의 줄바꿈 하나는 줄로 세지 않는다(머리줄 포함 n 줄 patch = n 줄). */
 import { UPSTREAM_RAW_MARKER, jsonBody, textResponse } from "@/shared/lib/upstream-test-fakes";
 
 /** master 의 커밋 하나 요약(GitCommit). */
@@ -30,7 +32,7 @@ export function gitFileJson(path: string, overrides: Record<string, unknown> = {
     additions: 1,
     deletions: 1,
     binary: false,
-    patch: "@@ -1 +1 @@\n-old\n+new",
+    patch: "@@ -1 +1 @@\n-old\n+new\n",
     patch_truncated: false,
     ...overrides,
   };
@@ -56,9 +58,14 @@ export function masterRouteMissing(): Response {
   return textResponse("404 page not found\n", 404, "text/plain; charset=utf-8");
 }
 
-/** n 줄짜리 patch(`\n` 으로 이은 n 줄 — 첫 줄은 구간 머리). */
+/** n 줄짜리 patch(첫 줄은 구간 머리 — 실제 꼴대로 각 줄이 `\n` 으로 끝난다: n 줄 + 끝 줄바꿈). */
 export function gitPatchWithLines(count: number): string {
   const lines = ["@@ -1,1 +1,1 @@"];
   for (let index = 1; index < count; index += 1) lines.push(`+line ${index}`);
-  return lines.slice(0, count).join("\n");
+  return `${lines.slice(0, count).join("\n")}\n`;
+}
+
+/** patch 의 줄(끝의 줄바꿈 하나는 줄로 세지 않는다). */
+export function patchLines(patch: string): string[] {
+  return (patch.endsWith("\n") ? patch.slice(0, -1) : patch).split("\n");
 }

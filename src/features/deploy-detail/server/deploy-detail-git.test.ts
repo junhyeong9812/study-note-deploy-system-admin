@@ -142,7 +142,7 @@ describe("출처 — 커밋 목록 · diff 는 master, PR 만 GitHub", () => {
     });
     expect(body.data.commit.value.sha).toBe(SHA_MIDDLE);
     expect(body.data.commit.value.files).toEqual([
-      { filename: "src/a.ts", previousFilename: null, status: "modified", additions: 1, deletions: 1, patch: { kind: "text", text: "@@ -1 +1 @@\n-old\n+new", truncated: false, totalLines: 3 } },
+      { filename: "src/a.ts", previousFilename: null, status: "modified", additions: 1, deletions: 1, patch: { kind: "text", text: "@@ -1 +1 @@\n-old\n+new\n", truncated: false, totalLines: 3 } },   // 끝 줄바꿈은 줄로 세지 않는다
     ]);
     expect(body.data.pullRequest.value).toMatchObject({ number: 12, title: "PR 12" });
     expectNoForbiddenText(body);
@@ -239,13 +239,13 @@ describe("relation · 더 있음", () => {
   it("truncated · range_complete:false · body_truncated · files_truncated · patch_truncated 를 칸으로 낸다", async () => {
     commitsHandler = () => masterGitSuccess(gitCommitRangeJson([gitCommitJson(SHA_B, { body: "긴 본문", body_truncated: true })], { truncated: true, range_complete: false }));
     commitHandler = (url) => masterGitSuccess(gitCommitDetailJson(url.searchParams.get("sha") ?? "", [
-      gitFileJson("big.ts", { patch: "@@ -1 +1 @@\n+x", patch_truncated: true }),
+      gitFileJson("big.ts", { patch: "@@ -1 +1 @@\n+x\n", patch_truncated: true }),
     ], { files_truncated: true }));
     const body = await detailBody(`?service=backend&selected=selected-1&commit=${SHA_B}`);
     expect(body.data.commits.value).toMatchObject({ hasMoreCommits: true, rangeComplete: false });
     expect(body.data.commits.value.commits[0]).toMatchObject({ message: `commit ${SHA_B.slice(0, 7)}\n\n긴 본문`, messageTruncated: true });
     expect(body.data.commit.value.hasMoreFiles).toBe(true);
-    expect(body.data.commit.value.files[0].patch).toEqual({ kind: "text", text: "@@ -1 +1 @@\n+x", truncated: true, totalLines: null });
+    expect(body.data.commit.value.files[0].patch).toEqual({ kind: "text", text: "@@ -1 +1 @@\n+x\n", truncated: true, totalLines: null });
   });
 });
 
@@ -275,14 +275,38 @@ describe("master git 실패 — 200 · 그 칸만 고정 이유 · 다른 구역
     expectNoForbiddenText(body, [UPSTREAM_RAW_MARKER, "/srv/deploy", FAKE_DEPLOY_SECRET, "deploy-master.example.test"]);
   });
 
-  it("커밋 목록 실패 + B 도 실패 → commits · commit 칸 = 범위의 실패(범위 실패 문구만), PR 은 그대로", async () => {
-    commitsHandler = () => masterGitFailure(503, "repository_changing");
-    commitHandler = () => masterGitFailure(404, "commit_not_found");
+  it("커밋 목록 실패 + B 도 실패 → commits 칸은 성공 꼴에 두 실패(범위 404 · B 429), commit=B 는 B 의 실패, PR 은 그대로", async () => {
+    commitsHandler = () => masterGitFailure(404, "commit_not_found");
+    commitHandler = () => masterGitFailure(429, "too_many_requests");
     const body = await detailBody(`?service=backend&selected=selected-1&commit=${SHA_B}`);
-    expect(body.data.commits).toMatchObject({ ok: false, reason: "history_changing", status: 503 });
-    expect(body.data.commit).toMatchObject({ ok: false, reason: "history_changing", status: 503 });
+    expect(body.data.commits.ok).toBe(true);
+    expect(body.data.commits.value).toMatchObject({
+      relation: null, commits: [], hasMoreCommits: false, rangeComplete: false, htmlUrl: COMPARE_URL,
+      rangeFailure: { ok: false, reason: "not_in_history", status: 404 }, headFailure: { ok: false, reason: "rate_limited", status: 429 },
+    });
+    expect(body.data.commit).toMatchObject({ ok: false, reason: "rate_limited", status: 429 });
     expect(body.data.pullRequest.ok).toBe(true);
     expect(masterCommitCalls()).toHaveLength(1);
+    expectNoForbiddenText(body, [UPSTREAM_RAW_MARKER, "/srv/deploy", FAKE_DEPLOY_SECRET, "deploy-master.example.test"]);
+  });
+
+  it("커밋 목록 실패 + B 도 실패 + B 밖의 commit → 422 invalid_input(commit), 그 커밋은 부르지 않는다", async () => {
+    commitsHandler = () => masterGitFailure(404, "commit_not_found");
+    commitHandler = () => masterGitFailure(429, "too_many_requests");
+    const response = await callDetail(`?service=backend&selected=selected-1&commit=${SHA_MIDDLE}`);
+    expect(response.status).toBe(422);
+    expect(await response.json()).toEqual({ success: false, error: { code: "invalid_input", field: "commit" } });
+    expect(masterCommitCalls().some(([input]) => new URL(input).searchParams.get("sha") === SHA_MIDDLE)).toBe(false);
+  });
+
+  it("커밋 목록 실패 + B 도 실패 → 앱 로그에 cell=commits 로 두 실패가 각각 1줄(범위 not_in_history 404 · B rate_limited 429)", async () => {
+    commitsHandler = () => masterGitFailure(404, "commit_not_found");
+    commitHandler = () => masterGitFailure(429, "too_many_requests");
+    await callDetail("?service=backend&selected=selected-1");
+    const commitLines = consoleLines.filter((line) => line.includes("cell=commits"));
+    expect(commitLines.filter((line) => line.includes("upstream=not_in_history") && line.includes("status=404"))).toHaveLength(1);
+    expect(commitLines.filter((line) => line.includes("upstream=rate_limited") && line.includes("status=429"))).toHaveLength(1);
+    expectNoForbiddenText(consoleLines.join("\n"), [UPSTREAM_RAW_MARKER, FAKE_DEPLOY_SECRET, "deploy-master.example.test", "/srv/deploy"]);
   });
 
   it.each([

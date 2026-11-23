@@ -66,7 +66,7 @@ function defaultCommitsHandler(): Response {
 
 /** master git — 커밋 하나. */
 function defaultCommitHandler(url: URL): Response {
-  return masterGitSuccess(gitCommitDetailJson(url.searchParams.get("sha") ?? "", [gitFileJson("src/a.ts", { patch: "@@ -1,2 +1,2 @@\n context\n-old line\n+new line" })]));
+  return masterGitSuccess(gitCommitDetailJson(url.searchParams.get("sha") ?? "", [gitFileJson("src/a.ts", { patch: "@@ -1,2 +1,2 @@\n context\n-old line\n+new line\n" })]));
 }
 
 /** GitHub — PR 만. */
@@ -251,7 +251,7 @@ describe("PR · GitHub 실패 · 상한 · 바이너리 · 글자 그대로", ()
 
   it("상한 — 커밋 · 파일 · patch 가 넘으면 '더 있음 — GitHub 에서 보기'(새 창, noopener noreferrer)", async () => {
     const commits = [gitCommitJson(SHA_B), ...Array.from({ length: 101 }, (_, index) => gitCommitJson(fakeSha(100 + index)))];   // B 쪽이 먼저
-    const files = Array.from({ length: 101 }, (_, index) => gitFileJson(`file-${index}.ts`, { patch: index === 0 ? gitPatchWithLines(501) : "@@ -1 +1 @@\n-a\n+b" }));
+    const files = Array.from({ length: 101 }, (_, index) => gitFileJson(`file-${index}.ts`, { patch: index === 0 ? gitPatchWithLines(501) : "@@ -1 +1 @@\n-a\n+b\n" }));
     commitsHandler = () => masterGitSuccess(gitCommitRangeJson(commits));
     commitHandler = () => masterGitSuccess(gitCommitDetailJson(SHA_B, files));
     const html = await render({ ...SELECTED, commit: SHA_B });
@@ -272,7 +272,7 @@ describe("PR · GitHub 실패 · 상한 · 바이너리 · 글자 그대로", ()
   it("PR 본문 · 커밋 메시지 · diff 의 <script> 는 글자로 나온다(이스케이프, 마크다운 해석 없음)", async () => {
     githubHandler = () => githubResponse([githubPullRequest(7, { body: "<script>alert(1)</script>\n**굵게**" })]);
     commitHandler = () => masterGitSuccess(gitCommitDetailJson(SHA_B, [
-      gitFileJson("a.html", { patch: "@@ -1 +1 @@\n-<b>x</b>\n+<script>evil()</script>" }),
+      gitFileJson("a.html", { patch: "@@ -1 +1 @@\n-<b>x</b>\n+<script>evil()</script>\n" }),
     ], { subject: "<img src=x onerror=alert(1)>" }));
     const html = await render({ ...SELECTED, commit: SHA_B });
     expect(html).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");

@@ -12,7 +12,8 @@
  *     - relation not_ancestor · unknown → getCommit(서비스, B) 한 번 → { relation 그대로, commits:[B], hasMoreCommits:false, rangeComplete 그대로, htmlUrl: 비교 주소,
  *       rangeFailure:null, headFailure:null }. B 조회가 실패하면 { …, commits:[], headFailure: 그 실패 } — 안내(relation)는 남는다.
  *     - 범위 조회 자체가 실패 → getCommit(서비스, B) 한 번 → 성공이면 { relation:null, commits:[B], hasMoreCommits:false, rangeComplete:false,
- *       htmlUrl: 비교 주소, rangeFailure: 범위의 실패, headFailure:null }. B 도 실패면 commits 칸 = 범위의 실패 그대로(범위 실패 문구만).
+ *       htmlUrl: 비교 주소, rangeFailure: 범위의 실패, headFailure:null }. B 도 실패면(명세 §12.11) { relation:null, commits:[], hasMoreCommits:false,
+ *       rangeComplete:false, htmlUrl: 비교 주소, rangeFailure: 범위의 실패, headFailure: B 의 실패 } — 두 실패를 모두 보인다.
  *     - 이때 commit=B 는 고를 수 있다(이미 받은 B — 다시 부르지 않는다). B 조회가 실패했는데 commit=B 면 commit = 그 실패(commits 칸이 실패면 그 실패).
  *       B 밖의 commit 은 invalid_input(commit).
  *   · no_previous: getCommit(서비스, B) 하나 → { relation:null, commits:[B 의 요약], hasMoreCommits:false, rangeComplete:true, htmlUrl: B 의 커밋 주소 }
@@ -344,11 +345,15 @@ describe("실패는 칸의 결과로 — 한 출처가 실패해도 다른 구�
     expect(okValue(view.pullRequest!)?.number).toBe(12);
   });
 
-  it("커밋 목록 실패 + B 도 실패 → commits 칸 = 범위의 실패 그대로(범위 실패 문구만), PR 은 그대로", async () => {
-    const rangeFailure = upstreamFailure("history_changing", { status: 503 });
-    const dependencies = fakes({ range: rangeFailure, commit: () => upstreamFailure("not_in_history", { status: 404 }) });
+  it("커밋 목록 실패 + B 도 실패 → commits 칸은 성공 꼴 · 빈 목록 · rangeFailure 와 headFailure 를 둘 다(서로 다른 이유), PR 은 그대로", async () => {
+    const rangeFailure = upstreamFailure("not_in_history", { status: 404 });
+    const headFailure = upstreamFailure("rate_limited", { status: 429 });
+    const dependencies = fakes({ range: rangeFailure, commit: () => headFailure });
     const view = viewOf(await build(dependencies, query()));
-    expect(view.commits).toEqual(rangeFailure);
+    expect(okValue(view.commits!)).toEqual({
+      relation: null, commits: [], hasMoreCommits: false, rangeComplete: false, htmlUrl: COMPARE_URL, rangeFailure, headFailure,
+    });
+    expect(dependencies.deployGit.getCommit).toHaveBeenCalledTimes(1);
     expect(okValue(view.pullRequest!)?.number).toBe(12);
   });
 
@@ -359,11 +364,17 @@ describe("실패는 칸의 결과로 — 한 출처가 실패해도 다른 구�
     expect(dependencies.deployGit.getCommit).toHaveBeenCalledTimes(1);
   });
 
-  it("커밋 목록 실패 + B 도 실패 + commit=B → commit 도 범위의 실패, 더 부르지 않는다", async () => {
-    const dependencies = fakes({ range: upstreamFailure("history_changing", { status: 503 }), commit: () => upstreamFailure("not_in_history", { status: 404 }) });
+  it("커밋 목록 실패 + B 도 실패 + commit=B → commit 칸 = B 의 실패(범위의 실패가 아니다), 더 부르지 않는다", async () => {
+    const dependencies = fakes({ range: upstreamFailure("not_in_history", { status: 404 }), commit: () => upstreamFailure("rate_limited", { status: 429 }) });
     const view = viewOf(await build(dependencies, query({ commitSha: SHA_B })));
-    expectFailure(view.commit!, "history_changing", 503);
+    expectFailure(view.commit!, "rate_limited", 429);
     expect(dependencies.deployGit.getCommit).toHaveBeenCalledTimes(1);
+  });
+
+  it("커밋 목록 실패 + B 도 실패 + B 밖의 commit → invalid_input(commit), 그 커밋은 부르지 않는다", async () => {
+    const dependencies = fakes({ range: upstreamFailure("not_in_history", { status: 404 }), commit: () => upstreamFailure("rate_limited", { status: 429 }) });
+    expect(await build(dependencies, query({ commitSha: SHA_MIDDLE }))).toEqual({ kind: "invalid_input", field: "commit" });
+    expect(dependencies.deployGit.getCommit).not.toHaveBeenCalledWith("backend", SHA_MIDDLE);
   });
 
   it("커밋 목록 실패 + B 밖의 commit → invalid_input(commit), 그 커밋은 부르지 않는다", async () => {

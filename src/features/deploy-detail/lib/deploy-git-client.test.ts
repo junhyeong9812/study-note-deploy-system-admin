@@ -7,7 +7,7 @@ import {
   GIT_FILE_PATCH_LINE_LIMIT, createCachedDeployGitClient, createDeployGitClient, type DeployGitClient,
 } from "@/features/deploy-detail/lib/deploy-git-client";
 import {
-  gitCommitDetailJson, gitCommitJson, gitCommitRangeJson, gitFileJson, gitPatchWithLines, masterGitFailure, masterGitSuccess, masterRouteMissing,
+  gitCommitDetailJson, gitCommitJson, gitCommitRangeJson, gitFileJson, gitPatchWithLines, masterGitFailure, masterGitSuccess, masterRouteMissing, patchLines,
 } from "@/features/deploy-detail/lib/deploy-git-test-fakes";
 import { fakeSha } from "@/features/deploy-detail/lib/github-test-fakes";
 import { UPSTREAM_FAILURE_MESSAGES, type UpstreamResult } from "@/shared/lib/upstream-result";
@@ -224,23 +224,23 @@ describe("커밋 목록 상한 — 100개(경계)", () => {
 describe("커밋 하나 — 파일 · patch", () => {
   it("정상 — 요약 + 파일(경로 · 이전 경로 · status · 줄 수 · 바이너리 · patch · 잘림 · 전체 줄 수)만, 그 밖 칸은 버린다", async () => {
     const data = gitCommitDetailJson(SHA_B, [
-      gitFileJson("src/a.ts", { patch: "@@ -1,2 +1,2 @@\n context\n-old\n+new", extra: UPSTREAM_RAW_MARKER }),
+      gitFileJson("src/a.ts", { patch: "@@ -1,2 +1,2 @@\n context\n-old\n+new\n", extra: UPSTREAM_RAW_MARKER }),
       gitFileJson("src/new-name.ts", { previous_path: "src/old-name.ts", status: "renamed", additions: 0, deletions: 0, patch: null }),
       gitFileJson("image.png", { status: "added", binary: true, additions: 0, deletions: 0, patch: null }),
-      gitFileJson("gone.ts", { status: "deleted", additions: 0, deletions: 3, patch: "@@ -1,3 +0,0 @@\n-a\n-b\n-c" }),
+      gitFileJson("gone.ts", { status: "deleted", additions: 0, deletions: 3, patch: "@@ -1,3 +0,0 @@\n-a\n-b\n-c\n" }),
     ], { subject: "fix: head", body: "본문", author_email: `${UPSTREAM_RAW_MARKER}@example.test` });
     const { client } = setup(detailHandler(data));
     expect(okValue(await client.getCommit("backend", SHA_B))).toEqual({
       sha: SHA_B, authorName: "Jun", authoredAt: "2026-11-22T01:00:00Z", subject: "fix: head", body: "본문", bodyTruncated: false,
       files: [
         { path: "src/a.ts", previousPath: null, status: "modified", additions: 1, deletions: 1, binary: false,
-          patch: "@@ -1,2 +1,2 @@\n context\n-old\n+new", patchTruncated: false, patchTotalLines: 4 },
+          patch: "@@ -1,2 +1,2 @@\n context\n-old\n+new\n", patchTruncated: false, patchTotalLines: 4 },   // 끝 줄바꿈은 줄이 아니다
         { path: "src/new-name.ts", previousPath: "src/old-name.ts", status: "renamed", additions: 0, deletions: 0, binary: false,
           patch: null, patchTruncated: false, patchTotalLines: null },
         { path: "image.png", previousPath: null, status: "added", additions: 0, deletions: 0, binary: true,
           patch: null, patchTruncated: false, patchTotalLines: null },
         { path: "gone.ts", previousPath: null, status: "deleted", additions: 0, deletions: 3, binary: false,
-          patch: "@@ -1,3 +0,0 @@\n-a\n-b\n-c", patchTruncated: false, patchTotalLines: 4 },
+          patch: "@@ -1,3 +0,0 @@\n-a\n-b\n-c\n", patchTruncated: false, patchTotalLines: 4 },
       ],
       filesTruncated: false,
     });
@@ -272,7 +272,7 @@ describe("커밋 하나 — 파일 · patch", () => {
     ])));
     const [big, emptied] = okValue(await client.getCommit("backend", SHA_B)).files;
     expect(big).toMatchObject({ patchTruncated: true, patchTotalLines: null });
-    expect(big.patch?.split("\n")).toHaveLength(500);
+    expect(patchLines(big.patch ?? "")).toHaveLength(500);
     expect(emptied).toMatchObject({ patchTruncated: true, patchTotalLines: null });
   });
 
@@ -328,9 +328,27 @@ describe("커밋 하나 상한 — 파일 100개 · patch 500줄(경계, 넘는 
   it("patch 501줄(master 가 자르지 않았다고 함) — 앞 500줄 · patchTruncated:true · 전체 줄 수 501", async () => {
     const patch = gitPatchWithLines(501);
     const { client } = setup(detailHandler(gitCommitDetailJson(SHA_B, [gitFileJson("a.ts", { patch })])));
-    expect(okValue(await client.getCommit("backend", SHA_B)).files[0]).toMatchObject({
-      patch: patch.split("\n").slice(0, 500).join("\n"), patchTruncated: true, patchTotalLines: 501,
-    });
+    const [file] = okValue(await client.getCommit("backend", SHA_B)).files;
+    expect(file).toMatchObject({ patchTruncated: true, patchTotalLines: 501 });
+    expect(patchLines(file.patch ?? "")).toEqual(patchLines(patch).slice(0, 500));
+  });
+
+  it("끝 줄바꿈은 줄로 세지 않는다 — 머리줄 포함 4줄 + 끝 줄바꿈 = 4줄(글자는 그대로)", async () => {
+    const patch = "@@ -1,2 +1,2 @@\n context\n-old\n+new\n";
+    const { client } = setup(detailHandler(gitCommitDetailJson(SHA_B, [gitFileJson("a.ts", { patch })])));
+    expect(okValue(await client.getCommit("backend", SHA_B)).files[0]).toMatchObject({ patch, patchTruncated: false, patchTotalLines: 4 });
+  });
+
+  it("'\\ No newline at end of file' 로 끝나는 patch(그 뒤에도 끝 줄바꿈) — 알림 줄까지 세고 끝 줄바꿈은 세지 않는다", async () => {
+    const patch = "@@ -1 +1 @@\n-old\n+new\n\\ No newline at end of file\n";
+    const { client } = setup(detailHandler(gitCommitDetailJson(SHA_B, [gitFileJson("a.ts", { patch })])));
+    expect(okValue(await client.getCommit("backend", SHA_B)).files[0]).toMatchObject({ patch, patchTruncated: false, patchTotalLines: 4 });
+  });
+
+  it("499줄 + 알림 줄 = 정확히 500줄(+ 끝 줄바꿈) — 잘리지 않음", async () => {
+    const patch = `${gitPatchWithLines(499)}\\ No newline at end of file\n`;
+    const { client } = setup(detailHandler(gitCommitDetailJson(SHA_B, [gitFileJson("a.ts", { patch })])));
+    expect(okValue(await client.getCommit("backend", SHA_B)).files[0]).toMatchObject({ patch, patchTruncated: false, patchTotalLines: 500 });
   });
 });
 
