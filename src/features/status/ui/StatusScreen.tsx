@@ -120,7 +120,7 @@ function ObserveProgress({ health, checkedAt }: { health: ObserveHealthView; che
   return (
     <div className={styles.health}>
       <p>밀린 건수 {health.backlog === null ? <span className={styles.none}>—</span> : `${health.backlog}건`}</p>
-      <p className={styles.time}>
+      <p>
         최근 로그 시각(KST) {health.lastLogAt === null ? <span className={styles.none}>—</span> : (
           <>
             <KoreanTime value={health.lastLogAt} />
