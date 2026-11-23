@@ -780,3 +780,174 @@ describe("병렬 · 호출마다 5초 · 재시도 없음(가짜 타이머)", ()
 function callsOf(fetch: TraceFetch, origin: string) {
   return fetch.mock.calls.filter(([input]) => new URL(input).origin === origin);
 }
+
+/** 고른 줄(T) + 그보다 늦은 newerCount 줄 + 이른 olderCount 줄 — 간격 step, 모두 창 안이어야 한다. */
+function linesAroundSelected(selected: FakeLogLine, newerCount: number, olderCount: number, step: number, overrides: Partial<FakeLogLine> = {}): FakeLogLine[] {
+  const newer = Array.from({ length: newerCount }, (_, index) =>
+    fakeLogLine({ milliseconds: T + (index + 1) * step, sequence: 0, level: "info", message: `뒤 줄 ${index + 1}`, ...overrides }));
+  const older = Array.from({ length: olderCount }, (_, index) =>
+    fakeLogLine({ milliseconds: T - (index + 1) * step, sequence: 0, level: "info", message: `앞 줄 ${index + 1}`, ...overrides }));
+  return [...newer, selected, ...older];
+}
+
+describe("고른 줄은 반드시 목록에 있다 — 최신 500줄 밖이면 고른 줄에서 끝나는 500줄(명세 §11.2 세부 11-23 · R4-1b)", () => {
+  it("가짜 관측 서버의 before 는 계약대로 '그 id 보다 앞선 줄'만(엄격) · 최신순 · 뒤쪽 조건은 없다", async () => {
+    const store = createFakeObserveLogs(linesAroundSelected(SELECTED_LINE, 3, 3, SECOND));
+    const response = store.handler(new URL(`${FAKE_OBSERVE_URL}/logs?request_id=${SELECTED_REQUEST_ID}&from=${isoMilliseconds(T - HOUR)}&to=${isoMilliseconds(T + HOUR)}&before=${SELECTED_LOG_ID}&limit=500`),
+      { headers: { "X-Observe-Secret": FAKE_OBSERVE_SECRET } }) as Response;
+    const body = await response.json() as { data: { logs: { id: string }[] } };
+    expect(body.data.logs.map((row) => row.id)).toEqual([`${T - SECOND}-0`, `${T - 2 * SECOND}-0`, `${T - 3 * SECOND}-0`]);
+    const inclusive = store.handler(new URL(`${FAKE_OBSERVE_URL}/logs?request_id=${SELECTED_REQUEST_ID}&from=${isoMilliseconds(T - HOUR)}&to=${isoMilliseconds(T + HOUR)}&before=${T}-3&limit=500`),
+      { headers: { "X-Observe-Secret": FAKE_OBSERVE_SECRET } }) as Response;
+    const inclusiveBody = await inclusive.json() as { data: { logs: { id: string }[] } };
+    expect(inclusiveBody.data.logs[0].id).toBe(SELECTED_LOG_ID);
+  });
+
+  it("정상(잘리지 않음) — hasOlder false · hasNewer false · hasMore false", async () => {
+    const related = okValue(viewOf((await run()).outcome).relatedLogs);
+    expect(related.hasMore).toBe(false);
+    expect(related.hasOlder).toBe(false);
+    expect(related.hasNewer).toBe(false);
+  });
+
+  it("501줄(고른 줄이 가장 새것) — hasOlder true · hasNewer false · 추가 호출 없음(연관 2회)", async () => {
+    const { outcome, observeStore } = await run({ lines: requestLines(501) });
+    const related = okValue(viewOf(outcome).relatedLogs);
+    expect(related.hasMore).toBe(true);
+    expect(related.hasOlder).toBe(true);
+    expect(related.hasNewer).toBe(false);
+    expect(relatedCalls(observeStore.calls)).toHaveLength(2);
+  });
+
+  it("뒤 100줄 · 앞 500줄(고른 줄이 최신 500줄 안) — 지금 규칙 그대로: 첫 응답 + 확인 1회, hasOlder true · hasNewer false", async () => {
+    const { outcome, observeStore } = await run({ lines: linesAroundSelected(SELECTED_LINE, 100, 500, SECOND) });
+    const related = okValue(viewOf(outcome).relatedLogs);
+    expect(related.lines).toHaveLength(500);
+    expect(related.lines.filter((line) => line.selected).map((line) => line.id)).toEqual([SELECTED_LOG_ID]);
+    expect(related.lines[related.lines.length - 1].message).toBe("뒤 줄 100");
+    expect(related.hasOlder).toBe(true);
+    expect(related.hasNewer).toBe(false);
+    expect(related.hasMore).toBe(true);
+    const calls = relatedCalls(observeStore.calls);
+    expect(calls).toHaveLength(2);
+    expect(calls[1]).toMatchObject({ before: `${T - 399 * SECOND}-0`, limit: "1" });
+  });
+
+  it("뒤 600줄 · 앞 600줄 — 첫 응답 → 고른 줄에서 끝나는 500줄(before = 바로 다음 커서, 첫 응답의 from · to) → 확인 1회(그 응답의 nextBefore)", async () => {
+    const { observeStore } = await run({ lines: linesAroundSelected(SELECTED_LINE, 600, 600, SECOND) });
+    expect(relatedCalls(observeStore.calls)).toEqual([
+      { request_id: SELECTED_REQUEST_ID, from: isoMilliseconds(T - HOUR), to: isoMilliseconds(T + HOUR), limit: "500" },
+      { request_id: SELECTED_REQUEST_ID, before: `${T}-3`, from: javaInstantText(T - HOUR), to: javaInstantText(T + HOUR), limit: "500" },
+      { request_id: SELECTED_REQUEST_ID, before: `${T - 499 * SECOND}-0`, from: javaInstantText(T - HOUR), to: javaInstantText(T + HOUR), limit: "1" },
+    ]);
+  });
+
+  it("뒤 600줄 · 앞 600줄 — 고른 줄 + 앞선 499줄을 시간순으로 · 고른 줄이 마지막 · hasNewer true · hasOlder true", async () => {
+    const view = viewOf((await run({ lines: linesAroundSelected(SELECTED_LINE, 600, 600, SECOND) })).outcome);
+    const related = okValue(view.relatedLogs);
+    expect(related.scope).toBe("request");
+    expect(related.from).toBe(isoMilliseconds(T - HOUR));
+    expect(related.to).toBe(isoMilliseconds(T + HOUR));
+    expect(related.lines).toHaveLength(500);
+    expect(related.lines[0]).toStrictEqual({ ...logEntryView(fakeLogLine({ milliseconds: T - 499 * SECOND, sequence: 0, level: "info", message: "앞 줄 499" })), selected: false, gapMilliseconds: null });
+    expect(related.lines[499]).toStrictEqual({ ...logEntryView(SELECTED_LINE), selected: true, gapMilliseconds: SECOND });
+    expect(related.lines.filter((line) => line.selected)).toHaveLength(1);
+    expect(related.lines.some((line) => line.message.startsWith("뒤 줄"))).toBe(false);
+    expect(related.hasNewer).toBe(true);
+    expect(related.hasOlder).toBe(true);
+    expect(related.hasMore).toBe(true);
+    expect(okValue(view.requestSummary!)).toEqual({
+      services: ["backend"], firstAt: javaInstantText(T - 499 * SECOND), lastAt: javaInstantText(T), durationMilliseconds: 499 * SECOND,
+      lineCount: 500, hasMore: true, highestLevel: "error", firstMessage: "앞 줄 499",
+    });
+  });
+
+  it("뒤 500줄 · 앞 499줄 — 다시 받은 500줄이 꽉 찼으니 확인 1회(0줄) → hasOlder false · hasNewer true", async () => {
+    const { outcome, observeStore } = await run({ lines: linesAroundSelected(SELECTED_LINE, 500, 499, SECOND) });
+    const related = okValue(viewOf(outcome).relatedLogs);
+    expect(related.lines).toHaveLength(500);
+    expect(related.lines[0].message).toBe("앞 줄 499");
+    expect(related.lines[499].selected).toBe(true);
+    expect(related.hasOlder).toBe(false);
+    expect(related.hasNewer).toBe(true);
+    expect(related.hasMore).toBe(true);
+    expect(relatedCalls(observeStore.calls)).toHaveLength(3);
+  });
+
+  it("뒤 500줄 · 앞 0줄(고른 줄이 가장 오래됨) — 다시 받은 응답은 고른 줄 하나, 꽉 차지 않았으니 확인 없음(연관 2회) · hasOlder false · hasNewer true", async () => {
+    const { outcome, observeStore } = await run({ lines: linesAroundSelected(SELECTED_LINE, 500, 0, SECOND) });
+    const view = viewOf(outcome);
+    const related = okValue(view.relatedLogs);
+    expect(related.lines).toStrictEqual([{ ...logEntryView(SELECTED_LINE), selected: true, gapMilliseconds: null }]);
+    expect(related.hasOlder).toBe(false);
+    expect(related.hasNewer).toBe(true);
+    expect(related.hasMore).toBe(true);
+    expect(relatedCalls(observeStore.calls)).toHaveLength(2);
+    expect(okValue(view.requestSummary!)).toMatchObject({ lineCount: 1, hasMore: true, firstMessage: "boom", durationMilliseconds: 0 });
+  });
+
+  it("다시 받는 호출이 실패하면 연관 로그 · 요약은 그 실패(고른 줄 없는 최신 500줄을 내지 않는다) · 고른 로그 · 4 구역은 값", async () => {
+    const { outcome } = await run({
+      lines: linesAroundSelected(SELECTED_LINE, 600, 600, SECOND),
+      observe: (fallback) => (url, init) => (url.searchParams.get("request_id") !== null && url.searchParams.get("before") === `${T}-3`
+        ? textResponse(leakyErrorBody(), 503)
+        : fallback(url, init)),
+    });
+    const view = viewOf(outcome);
+    expect(okValue(view.selected)).toStrictEqual(logEntryView(SELECTED_LINE));
+    expectFailure(view.relatedLogs, "unavailable", 503);
+    expectFailure(view.requestSummary!, "unavailable", 503);
+    expect(view.serverState.levelCounts.ok).toBe(true);
+    expect(view.serverState.deployments.ok).toBe(true);
+    expect(view.serverState.incidents.ok).toBe(true);
+    expectNoForbiddenText(view);
+  });
+
+  it("다시 받은 뒤의 확인 호출이 실패해도 연관 로그 · 요약은 그 실패(조용히 hasOlder false 로 두지 않는다)", async () => {
+    const { outcome } = await run({
+      lines: linesAroundSelected(SELECTED_LINE, 600, 600, SECOND),
+      observe: (fallback) => (url, init) => (url.searchParams.get("request_id") !== null && url.searchParams.get("before") === `${T - 499 * SECOND}-0`
+        ? textResponse(leakyErrorBody(), 504)
+        : fallback(url, init)),
+    });
+    const view = viewOf(outcome);
+    expect(view.selected.ok).toBe(true);
+    expectFailure(view.relatedLogs, "server_timeout", 504);
+    expectFailure(view.requestSummary!, "server_timeout", 504);
+  });
+
+  describe("요청 ID 가 없는 로그(같은 서비스 ±30초)도 같은 규칙", () => {
+    const selectedWithoutRequest = fakeLogLine({ requestId: "", service: "observe", level: "warning", message: "수집 지연" });
+    const serviceLines = linesAroundSelected(selectedWithoutRequest, 500, 10, 50, { requestId: "", service: "observe" });
+
+    it("뒤 500줄 · 앞 10줄 — service 조건으로 다시 받는다 · 고른 줄이 마지막 · hasNewer true · hasOlder false · 요약 없음", async () => {
+      const { outcome, observeStore } = await run({ lines: serviceLines });
+      const view = viewOf(outcome);
+      expect(view.requestSummary).toBeNull();
+      const related = okValue(view.relatedLogs);
+      expect(related.scope).toBe("service");
+      expect(related.lines).toHaveLength(11);
+      expect(related.lines[0].message).toBe("앞 줄 10");
+      expect(related.lines[10]).toMatchObject({ id: SELECTED_LOG_ID, selected: true, message: "수집 지연" });
+      expect(related.hasNewer).toBe(true);
+      expect(related.hasOlder).toBe(false);
+      expect(related.hasMore).toBe(true);
+      expect(relatedCalls(observeStore.calls)).toEqual([
+        { service: "observe", from: isoMilliseconds(T - 30 * SECOND), to: isoMilliseconds(T + 30 * SECOND), limit: "500" },
+        { service: "observe", before: `${T}-3`, from: javaInstantText(T - 30 * SECOND), to: javaInstantText(T + 30 * SECOND), limit: "500" },
+      ]);
+    });
+
+    it("다시 받는 호출이 실패하면 연관 로그는 그 실패", async () => {
+      const { outcome } = await run({
+        lines: serviceLines,
+        observe: (fallback) => (url, init) => (url.searchParams.get("service") !== null && url.searchParams.get("before") === `${T}-3`
+          ? textResponse(leakyErrorBody(), 500)
+          : fallback(url, init)),
+      });
+      const view = viewOf(outcome);
+      expect(view.selected.ok).toBe(true);
+      expectFailure(view.relatedLogs, "bad_status", 500);
+    });
+  });
+});

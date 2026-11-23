@@ -14,8 +14,14 @@
  *   - 없으면(scope "service"): searchLogs({ service: selected.service, from: T-30초, to: T+30초, limit: 500 })
  *   - 첫 응답의 nextBefore 가 null 이 아니면(500줄을 꽉 채움) 확인 1회: 같은 조건에 before = nextBefore, from · to = **첫 응답의** from · to, limit 1
  *     → 1줄 이상이면 hasMore true(501줄 이상), 0줄이면 false(정확히 500줄). 확인이 실패하면 relatedLogs 는 그 실패(조용히 false 로 두지 않는다).
- *   - 관측 서버의 limit 상한(LogController.kt:147 MAX_LIMIT 500)이 RELATED_LOG_MAXIMUM_LINES 와 같으므로 이어 보기는 하지 않는다 — 연관 로그 호출은 최대 2회.
+ *   - 관측 서버의 limit 상한(LogController.kt:147 MAX_LIMIT 500)이 RELATED_LOG_MAXIMUM_LINES 와 같으므로 이어 보기는 하지 않는다.
  *   - 관측 서버는 최신순으로 주므로 남는 500줄은 창 안의 **최신** 500줄이다. 화면에는 시간순(옛것부터 — 받은 순서를 뒤집는다)으로 낸다.
+ *   - **고른 줄은 반드시 목록에 있다**(명세 §11.2 세부 11-23). 첫 응답이 500줄을 채웠는데(nextBefore 가 null 이 아님) 고른 줄(id 글자 같음)이 그 안에 없으면
+ *     첫 응답의 확인 호출은 하지 않고, 고른 줄에서 끝나는 500줄을 다시 받는다:
+ *       같은 조건에 before = cursorJustAfter(고른 id), from · to = **첫 응답의** from · to, limit 500 → 이 응답을 연관 로그로 쓴다(hasNewer true).
+ *     이 응답의 nextBefore 가 null 이 아니면 확인 1회: before = 그 nextBefore, from · to = **이 응답의** from · to, limit 1 → 1줄 이상이면 hasOlder true.
+ *     다시 받는 호출 · 그 확인이 실패하면 relatedLogs 는 그 실패(조용히 고른 줄 없는 목록을 내지 않는다). 연관 로그 호출은 최대 3회.
+ *   - 고른 줄이 첫 응답 안에 있으면 위의 확인 규칙 그대로(추가 호출 없음) — hasNewer false · hasOlder = 확인 결과. 요청 ID 가 없는 로그(scope service)도 같다.
  * 칸의 결과:
  *   - selected: a 의 결과(관측 실패면 그 이유).
  *   - relatedLogs: a 가 실패면 a 와 같은 실패, 아니면 2단계 결과.
@@ -64,8 +70,14 @@ export interface RelatedLogs {
   to: string;
   /** 시간순(옛것부터), 최대 500줄 */
   lines: TraceLine[];
-  /** 창 안에 500줄보다 많다(남긴 것은 최신 500줄) */
+  /** 창 안에 보이는 줄 밖의 줄이 있다(어느 쪽이든) = hasOlder || hasNewer */
   hasMore: boolean;
+  /** 보이는 가장 이른 줄보다 앞선 줄이 창 안에 더 있다.
+   * 계약 선언(R4-1b) — 구현이 언제나 채우면 필수(`boolean`)로 바꾼다. */
+  hasOlder?: boolean;
+  /** 보이는 가장 늦은 줄보다 뒤의 줄이 창 안에 더 있다(고른 줄이 최신 500줄 밖이라 고른 줄에서 끝나는 500줄을 보일 때).
+   * 계약 선언(R4-1b) — 구현이 언제나 채우면 필수(`boolean`)로 바꾼다. */
+  hasNewer?: boolean;
 }
 
 export interface RequestSummary {

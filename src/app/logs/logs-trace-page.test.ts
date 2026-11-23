@@ -377,3 +377,111 @@ describe("메시지는 글자 그대로 · 세션", () => {
     expect(html).not.toContain("connection refused");
   });
 });
+
+/** 구역별 HTML — 이 요청 요약 · 연관 로그 · 줄 수 칸 */
+function summarySectionOf(panel: string): string {
+  const start = panel.indexOf('id="log-trace-request-summary"');
+  expect(start, "이 요청 요약 구역이 없다").toBeGreaterThan(-1);
+  return panel.slice(start, panel.indexOf('id="log-trace-related"'));
+}
+
+function relatedSectionOf(panel: string): string {
+  return panel.slice(panel.indexOf('id="log-trace-related"'), panel.indexOf('id="log-trace-server-state"'));
+}
+
+function levelCountsBlockOf(panel: string): string {
+  const start = panel.indexOf("앞뒤 5분 서비스별 warning · error");
+  expect(start, "줄 수 칸이 없다").toBeGreaterThan(-1);
+  return panel.slice(start, panel.indexOf("앞뒤 30분의 배포"));
+}
+
+/** 화면 글자 계약(R4-1b · R4-1 · R4-2) */
+const NEWER_EXIST_TEXT = "더 새로운 줄이 있음";
+const OLDER_EXIST_TEXT = "더 오래된 줄이 있음";
+const visibleBasisText = (lineCount: number) => `보이는 ${lineCount}줄 기준`;
+const MISSING_SERVICE_TEXT = "표에 없는 서비스가 있을 수 있습니다";
+
+/** 고른 줄(T) + 뒤 newerCount 줄 + 앞 olderCount 줄(1초 간격, 같은 요청 ID) */
+function aroundSelected(newerCount: number, olderCount: number): FakeLogLine[] {
+  return [
+    ...Array.from({ length: newerCount }, (_, index) => fakeLogLine({ milliseconds: T + (index + 1) * 1000, sequence: 0, level: "info", message: `뒤 줄 ${index + 1}` })),
+    SELECTED_LINE,
+    ...Array.from({ length: olderCount }, (_, index) => fakeLogLine({ milliseconds: T - (index + 1) * 1000, sequence: 0, level: "info", message: `앞 줄 ${index + 1}` })),
+  ];
+}
+
+describe("고른 줄은 반드시 목록에 · 잘린 쪽을 사실대로(R4-1b) · 요약은 보이는 줄 기준(R4-1)", () => {
+  it("뒤 600 · 앞 600 → 고른 줄이 연관 목록에 강조 · '더 새로운 줄이 있음' · '더 오래된 줄이 있음' · '최신 500줄만'이 아니다 · 요약 '보이는 500줄 기준'", async () => {
+    useLines(aroundSelected(600, 600));
+    const panel = panelOf(await render({ ...LIST_RANGE, selected: SELECTED_LOG_ID }));
+    const related = relatedSectionOf(panel);
+    expect(related.match(/aria-current="true"/g) ?? [], "고른 줄이 연관 목록에 없다").toHaveLength(1);
+    expect(related).toMatch(new RegExp(`<a[^>]*aria-current="true"[^>]*${traceLabel("backend", "error")}`));
+    expect(related).not.toContain("고른 로그가 이 목록에 없습니다");
+    expect(related).toContain("500줄 이상");
+    expect(related).toContain(NEWER_EXIST_TEXT);
+    expect(related).toContain(OLDER_EXIST_TEXT);
+    expect(related).not.toContain("최신 500줄만 보입니다");
+    expect(related).toContain("앞 줄 499");
+    expect(related).not.toContain("뒤 줄 1<");
+    const summary = summarySectionOf(panel);
+    expect(summary).toContain(visibleBasisText(500));
+    expect(summary).toContain("<dd>500줄 이상</dd>");
+  });
+
+  it("뒤 500 · 앞 0(고른 줄이 가장 오래됨) → 고른 줄 하나가 강조 · '더 새로운 줄이 있음'만 · 요약 '보이는 1줄 기준'", async () => {
+    useLines(aroundSelected(500, 0));
+    const panel = panelOf(await render({ ...LIST_RANGE, selected: SELECTED_LOG_ID }));
+    const related = relatedSectionOf(panel);
+    expect(related.match(/aria-current="true"/g) ?? [], "고른 줄이 연관 목록에 없다").toHaveLength(1);
+    expect(related).not.toContain("고른 로그가 이 목록에 없습니다");
+    expect(related).toContain(NEWER_EXIST_TEXT);
+    expect(related).not.toContain(OLDER_EXIST_TEXT);
+    expect(related).not.toContain("최신 1줄만 보입니다");
+    expect(summarySectionOf(panel)).toContain(visibleBasisText(1));
+  });
+
+  it("501줄(고른 줄이 가장 새것) → '더 오래된 줄이 있음'만(더 새로운 줄 없음) · 기존 '최신 500줄만' 안내 유지 · 요약 '보이는 500줄 기준'", async () => {
+    useLines(aroundSelected(0, 500));
+    const panel = panelOf(await render({ ...LIST_RANGE, selected: SELECTED_LOG_ID }));
+    const related = relatedSectionOf(panel);
+    expect(related).toContain("더 있음 — 최신 500줄만 보입니다");
+    expect(related).toContain(OLDER_EXIST_TEXT);
+    expect(related).not.toContain(NEWER_EXIST_TEXT);
+    expect(summarySectionOf(panel)).toContain(visibleBasisText(500));
+  });
+
+  it("잘리지 않았으면 → 잘림 안내 · '보이는 N줄 기준' 모두 없다", async () => {
+    const panel = panelOf(await render({ ...LIST_RANGE, selected: SELECTED_LOG_ID }));
+    const related = relatedSectionOf(panel);
+    expect(related).not.toContain(NEWER_EXIST_TEXT);
+    expect(related).not.toContain(OLDER_EXIST_TEXT);
+    expect(summarySectionOf(panel)).not.toContain("줄 기준");
+    expect(panel).not.toContain("줄 기준");
+  });
+
+  it("'보이는 N줄 기준'은 요약 구역 안에만(연관 로그 구역에 대신 두지 않는다)", async () => {
+    useLines(aroundSelected(0, 500));
+    const panel = panelOf(await render({ ...LIST_RANGE, selected: SELECTED_LOG_ID }));
+    expect(summarySectionOf(panel)).toContain(visibleBasisText(500));
+    expect(relatedSectionOf(panel)).not.toContain(visibleBasisText(500));
+  });
+});
+
+describe("수준별 건수가 조회 상한에 닿으면 '표에 없는 서비스가 있을 수 있음'(R4-2)", () => {
+  const atLimit = (level: "warning" | "error") => Array.from({ length: 600 }, (_, index) =>
+    fakeLogLine({ milliseconds: T - (index + 1) * 100, sequence: 7, service: "front", level, requestId: "" }));
+
+  it.each(["warning", "error"] as const)("%s 가 500줄을 채우면 줄 수 칸에 기존 상한 안내와 함께 나온다", async (level) => {
+    useLines([...DEFAULT_LINES, ...atLimit(level)]);
+    const block = levelCountsBlockOf(panelOf(await render({ ...LIST_RANGE, selected: SELECTED_LOG_ID })));
+    expect(block).toContain("조회 상한(500줄)에 닿았습니다");
+    expect(block).toContain(MISSING_SERVICE_TEXT);
+  });
+
+  it("상한에 닿지 않았으면 나오지 않는다", async () => {
+    const block = levelCountsBlockOf(panelOf(await render({ ...LIST_RANGE, selected: SELECTED_LOG_ID })));
+    expect(block).not.toContain("조회 상한");
+    expect(block).not.toContain("표에 없는 서비스");
+  });
+});
