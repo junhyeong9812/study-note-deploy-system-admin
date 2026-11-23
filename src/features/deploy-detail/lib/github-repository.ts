@@ -23,3 +23,17 @@ export function githubRepositoryFor(service: string): GitHubRepository | null {
   if (!Object.hasOwn(GITHUB_REPOSITORY_NAMES, service)) return null;
   return { owner: GITHUB_REPOSITORY_OWNER, name: GITHUB_REPOSITORY_NAMES[service as DeployService] };
 }
+
+/** 공개 저장소의 웹 주소(화면의 "GitHub 에서 보기" 링크 — API 를 부르지 않는다). 순수.
+ * - 비교: `https://github.com/{owner}/{name}/compare/{base}...{head}`
+ * - 커밋 하나: `https://github.com/{owner}/{name}/commit/{sha}`
+ * SHA 는 받은 글자 그대로 넣는다(부르는 쪽이 16진수로 검사한 값만 준다). */
+export function githubCompareUrl(repository: GitHubRepository, baseSha: string, headSha: string): string {
+  void repository; void baseSha; void headSha;
+  throw new Error("not implemented");
+}
+
+export function githubCommitUrl(repository: GitHubRepository, sha: string): string {
+  void repository; void sha;
+  throw new Error("not implemented");
+}

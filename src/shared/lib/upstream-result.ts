@@ -13,7 +13,10 @@ export const UPSTREAM_TIMEOUT_MILLISECONDS = 5_000;
  * - unauthorized(401) · invalid_request(422) · unavailable(503) · server_timeout(504) · bad_status(그 밖의 2xx 아님, 3xx 포함).
  * - unparseable: 2xx 인데 본문이 JSON 이 아니거나 계약과 다른 꼴(칸 빠짐 · 형이 다름) — 원문은 넘기지 않는다.
  * - rate_limited: 호출 한도 초과(GitHub — 403 · 429 와 한도 머리글). not_found: 대상이 없다(GitHub — 없는 커밋 · 저장소, 404 · 422).
- *   (배포 상세 task 07 에서 더했다 — 위 열 가지의 뜻과 failureForHttpStatus 의 대응은 그대로다.) */
+ *   (배포 상세 task 07 에서 더했다 — 위 열 가지의 뜻과 failureForHttpStatus 의 대응은 그대로다.)
+ * - not_in_history: master git 조회의 404 `commit_not_found` · `parent_unavailable` — 그 커밋(또는 부모)이 서버의 얕은 git 이력에 없다(화면은 GitHub 링크로 넘긴다).
+ * - history_changing: master git 조회의 503 `repository_changing` — 배포의 fetch 가 조회 도중 이력을 바꾸는 중.
+ *   (배포 상세 출처 교체 task 05 에서 더했다 — 명세 §12.2 · 12.7 · 12.9. failureForHttpStatus 의 대응은 그대로다.) */
 export type UpstreamFailureReason =
   | "not_configured"
   | "invalid_input"
@@ -26,7 +29,9 @@ export type UpstreamFailureReason =
   | "bad_status"
   | "unparseable"
   | "rate_limited"
-  | "not_found";
+  | "not_found"
+  | "not_in_history"
+  | "history_changing";
 
 export interface UpstreamFailure {
   ok: false;
@@ -55,6 +60,8 @@ export const UPSTREAM_FAILURE_MESSAGES: Readonly<Record<UpstreamFailureReason, s
   unparseable: "해석 불가",
   rate_limited: "한도 초과",
   not_found: "찾을 수 없음",
+  not_in_history: "이 서버의 git 이력에 없음(최근 50개 밖일 수 있음)",
+  history_changing: "배포가 이력을 바꾸는 중 — 잠시 뒤 새로 고침",
 };
 
 /** Next 의 searchParams 와 같은 꼴 — 같은 이름이 여러 번 오면 배열(어드민 입력 검증은 배열을 거절한다). */
