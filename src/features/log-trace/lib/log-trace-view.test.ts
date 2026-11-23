@@ -340,14 +340,14 @@ describe("연관 로그 — 같은 요청 ID, ±1시간, 시간순, 고른 줄 �
     expect(view.serverState.incidents.ok).toBe(true);
   });
 
-  it("연관 로그가 0줄(그 사이 지워짐)이면 lines [] · 요약은 not_found", async () => {
+  it("연관 로그가 0줄(그 사이 지워짐)이면 연관 로그 · 요약은 not_found", async () => {
     const { outcome } = await run({
       observe: (fallback) => (url, init) => (url.searchParams.get("request_id") !== null
         ? jsonBody({ success: true, data: { logs: [], next_before: "", from: javaInstantText(T - HOUR), to: javaInstantText(T + HOUR) } })
         : fallback(url, init)),
     });
     const view = viewOf(outcome);
-    expect(okValue(view.relatedLogs).lines).toEqual([]);
+    expectFailure(view.relatedLogs, "not_found");
     expectFailure(view.requestSummary!, "not_found");
   });
 
@@ -932,6 +932,24 @@ describe("고른 줄은 반드시 목록에 있다 — 최신 500줄 밖이면 �
     expectFailure(view.relatedLogs, "not_found");
     expectFailure(view.requestSummary!, "not_found");
     expect(relatedCalls(observeStore.calls)).toHaveLength(2);
+    expect(view.serverState.levelCounts.ok).toBe(true);
+  });
+
+  it("첫 연관 응답이 500줄 미만인데 고른 줄이 빠졌으면(확인 직후 지워짐) 연관 로그 · 요약은 not_found — 다시 받지 않는다", async () => {
+    const { outcome, observeStore } = await run({
+      // 첫 연관 호출만 고른 줄을 뺀 응답으로(before 를 고른 id 로 — 엄격이라 고른 줄은 빠지고 500줄 미만)
+      observe: (fallback) => (url, init) => {
+        if (url.searchParams.get("request_id") === null || url.searchParams.get("before") !== null) return fallback(url, init);
+        const withoutSelected = new URL(url);
+        withoutSelected.searchParams.set("before", SELECTED_LOG_ID);
+        return fallback(withoutSelected, init);
+      },
+    });
+    const view = viewOf(outcome);
+    expect(okValue(view.selected)).toStrictEqual(logEntryView(SELECTED_LINE));
+    expectFailure(view.relatedLogs, "not_found");
+    expectFailure(view.requestSummary!, "not_found");
+    expect(relatedCalls(observeStore.calls)).toHaveLength(1);
     expect(view.serverState.levelCounts.ok).toBe(true);
   });
 

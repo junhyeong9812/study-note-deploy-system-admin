@@ -21,7 +21,8 @@
  *       같은 조건에 before = cursorJustAfter(고른 id), from · to = **첫 응답의** from · to, limit 500 → 이 응답을 연관 로그로 쓴다(hasNewer true).
  *     이 응답의 nextBefore 가 null 이 아니면 확인 1회: before = 그 nextBefore, from · to = **이 응답의** from · to, limit 1 → 1줄 이상이면 hasOlder true.
  *     다시 받는 호출 · 그 확인이 실패하면 relatedLogs 는 그 실패(조용히 고른 줄 없는 목록을 내지 않는다). 연관 로그 호출은 최대 3회.
- *     다시 받은 응답에도 고른 줄이 없으면(그 사이 지워짐 등) relatedLogs · requestSummary 는 not_found(고른 줄 없는 목록을 내지 않는다).
+ *   - 어느 경로로 받았든(첫 응답 · 다시 받은 응답, 0줄 포함) 최종 목록에 고른 줄이 없으면(확인 뒤 그 사이 지워짐 등) relatedLogs · requestSummary 는
+ *     not_found — 고른 줄 없는 목록을 내지 않고, 확인 호출도 하지 않는다.
  *   - 고른 줄이 첫 응답 안에 있으면 위의 확인 규칙 그대로(추가 호출 없음) — hasNewer false · hasOlder = 확인 결과. 요청 ID 가 없는 로그(scope service)도 같다.
  * 칸의 결과:
  *   - selected: a 의 결과(관측 실패면 그 이유).
@@ -223,11 +224,11 @@ async function loadRelatedLogs(logs: LogClient, selected: LogEntryView, at: numb
       ...relatedQuery, before: cursorJustAfter(selected.id), from: first.value.from, to: first.value.to,
     });
     if (!endingAtSelected.ok) return endingAtSelected;
-    // 그 사이 고른 줄이 지워졌으면 고른 줄 없는 목록을 내지 않는다
-    if (!endingAtSelected.value.logs.some((entry) => entry.id === selected.id)) return upstreamFailure("not_found");
     shown = endingAtSelected.value;
     hasNewer = true;
   }
+  // 어느 경로로 받았든 고른 줄이 없으면(확인 뒤 그 사이 지워짐 등 — 0줄 포함) 고른 줄 없는 목록을 내지 않는다
+  if (!shown.logs.some((entry) => entry.id === selected.id)) return upstreamFailure("not_found");
   const older = await hasLinesBefore(logs, relatedQuery, shown);
   if (!older.ok) return older;
   const hasOlder = older.value;
