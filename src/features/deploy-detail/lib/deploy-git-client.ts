@@ -20,8 +20,9 @@
  * 상한(master 가 이미 자르지만 넘는 응답을 그대로 믿지 않는다 — 넘으면 자르고 알린다, 조용히 자르지 않는다):
  * - 커밋 GIT_COMMIT_LIST_LIMIT(100)개: master 순서(B 쪽이 먼저)의 **앞 100개**(B 에 가까운 쪽)를 남기고 truncated:true.
  * - 파일 GIT_COMMIT_FILE_LIMIT(100)개: 앞 100개 · filesTruncated:true.
- * - 파일 하나의 patch GIT_FILE_PATCH_LINE_LIMIT(500)줄: `\n` 으로 나눈 줄이 500 을 넘으면 앞 500줄 · patchTruncated:true · patchTotalLines = 받은 줄 수.
- * patchTotalLines: master 가 patch_truncated 면 null(전체 줄 수를 모른다), patch 가 null 이면 null, 그 밖은 받은 patch 의 줄 수(`\n` 으로 나눈 수).
+ * - 파일 하나의 patch GIT_FILE_PATCH_LINE_LIMIT(500)줄: 줄(patchLines — 끝의 `\n` 하나는 줄이 아니다)이 500 을 넘으면 앞 500줄(끝에 `\n`) · patchTruncated:true · patchTotalLines = 받은 줄 수.
+ *   500줄 이하면 patch 글자를 바꾸지 않는다.
+ * patchTotalLines: master 가 patch_truncated 면 null(전체 줄 수를 모른다), patch 가 null 이면 null, 그 밖은 받은 patch 의 줄 수(patchLines 의 수).
  * 글자(subject · body · patch · path)는 받은 그대로(해석 · 변환 · 다듬기 없음).
  *
  * 응답 상태 → 실패 이유(오류 봉투의 error.code 는 이유를 고르는 데만 쓰고 글자는 넘기지 않는다):
@@ -33,6 +34,7 @@
  * - 연결 실패 unreachable · 5초 timeout · 깨진 JSON unparseable(getUpstream 의 관례 그대로). */
 import type { FetchLike, TimeoutSignalFactory } from "@/features/auth/lib/types";
 import { isCommitSha } from "@/features/deploy-detail/lib/deploy-detail-query";
+import { patchLines } from "@/features/deploy-detail/lib/diff-lines";
 import { DEPLOY_SERVICES, type DeployService } from "@/features/deploys/lib/deploy-history-query";
 import { getUpstream, isNonNegativeInteger, isRecord, upstreamUrl, type UpstreamResponse } from "@/shared/lib/upstream-fetch";
 import { failureForHttpStatus, invalidInput, upstreamFailure, type UpstreamFailure, type UpstreamResult } from "@/shared/lib/upstream-result";
@@ -207,11 +209,11 @@ function parseFileChange(value: unknown): GitFileChange {
     binary: requireBoolean(row.binary),
   };
   if (receivedPatch === null) return { ...file, patch: null, patchTruncated: masterTruncated, patchTotalLines: null };
-  const lines = receivedPatch.split("\n");
+  const lines = patchLines(receivedPatch);   // 끝의 줄바꿈 하나는 줄이 아니다
   const cut = lines.length > GIT_FILE_PATCH_LINE_LIMIT;
   return {
     ...file,
-    patch: cut ? lines.slice(0, GIT_FILE_PATCH_LINE_LIMIT).join("\n") : receivedPatch,
+    patch: cut ? `${lines.slice(0, GIT_FILE_PATCH_LINE_LIMIT).join("\n")}\n` : receivedPatch,
     patchTruncated: masterTruncated || cut,
     patchTotalLines: masterTruncated ? null : lines.length,
   };

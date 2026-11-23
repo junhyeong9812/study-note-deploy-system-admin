@@ -13,7 +13,7 @@ import type {
 import type { DeployRange } from "@/features/deploy-detail/lib/deploy-range";
 import type { PullRequestSummary } from "@/features/deploy-detail/lib/github-client";
 import { githubCommitUrl, githubCompareUrl, type GitHubRepository } from "@/features/deploy-detail/lib/github-repository";
-import { diffLines, type DiffLineKind } from "@/features/deploy-detail/lib/diff-lines";
+import { diffLines, patchLines, type DiffLineKind } from "@/features/deploy-detail/lib/diff-lines";
 import type { UpstreamFailure } from "@/shared/lib/upstream-result";
 import styles from "@/features/deploy-detail/ui/DeployDetailPanel.module.css";
 
@@ -50,12 +50,15 @@ function GitHubProblem({ failure }: { failure: UpstreamFailure }) {
   );
 }
 
-/** master git 조회의 실패 — 고정 사유 · HTTP 상태. 서버의 git 이력 밖이면 GitHub 링크로 넘긴다(명세 12.2). */
-function GitProblem({ failure, githubUrl }: { failure: UpstreamFailure; githubUrl: string | null }) {
+/** master git 조회의 실패 — 고정 사유 · HTTP 상태. 서버의 git 이력 밖이면 GitHub 링크로 넘긴다(명세 12.2).
+ * compareUrl 이 있으면(범위 조회의 실패) 이유와 무관하게 "GitHub 에서 비교 보기"를 붙인다. */
+function GitProblem({ failure, githubUrl, compareUrl = null }: { failure: UpstreamFailure; githubUrl: string | null; compareUrl?: string | null }) {
   return (
     <p className={styles.problem} role="status">
       {failure.message}{failure.status !== undefined && <> · HTTP {failure.status}</>}
-      {failure.reason === "not_in_history" && githubUrl !== null && <> — <ExternalLink href={githubUrl}>GitHub 에서 보기</ExternalLink></>}
+      {compareUrl !== null
+        ? <> — <ExternalLink href={compareUrl}>GitHub 에서 비교 보기</ExternalLink></>
+        : failure.reason === "not_in_history" && githubUrl !== null && <> — <ExternalLink href={githubUrl}>GitHub 에서 보기</ExternalLink></>}
     </p>
   );
 }
@@ -167,7 +170,7 @@ function CommitListSection({ view, commits, commitHref }: {
       ) : (
         <>
           <RelationNote list={commits.value} />
-          {commits.value.rangeFailure !== null && <GitProblem failure={commits.value.rangeFailure} githubUrl={commits.value.htmlUrl} />}
+          {commits.value.rangeFailure !== null && <GitProblem failure={commits.value.rangeFailure} githubUrl={null} compareUrl={commits.value.htmlUrl} />}
           {commits.value.headFailure !== null && <GitProblem failure={commits.value.headFailure} githubUrl={headUrl} />}
           {commits.value.commits.length === 0 ? (
             commits.value.headFailure === null && <p className={styles.muted}>바뀐 커밋이 없습니다.</p>
@@ -214,7 +217,7 @@ function FileDiff({ file, commitUrl }: { file: CommitFileChange; commitUrl: stri
     return <p className={styles.muted}>{UNAVAILABLE_PATCH_TEXT[file.patch.reason]}</p>;
   }
   const patch = file.patch;
-  const shownLines = patch.text.split("\n").length;
+  const shownLines = patchLines(patch.text).length;
   return (
     <>
       <div className={styles.diffScroller} role="region" aria-label={`${file.filename} diff`} tabIndex={0}>

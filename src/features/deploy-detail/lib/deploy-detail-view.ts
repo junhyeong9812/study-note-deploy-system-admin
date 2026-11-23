@@ -8,13 +8,13 @@
  * 5. commits(CommitListView):
  *    - range: listCommits(서비스, A, B). relation ancestor → 커밋을 오래된 것 먼저로(master 는 B 먼저) · hasMoreCommits = truncated · 비교 주소.
  *      범위로 B 를 보일 수 없으면 B 하나로 물러선다(12.11) — not_ancestor · unknown 이면 getCommit(B) 를 붙이고(실패면 빈 목록 + headFailure),
- *      범위 조회가 실패하면 getCommit(B) 를 붙이고 rangeFailure 에 그 실패(B 도 실패면 commits 칸 = 범위의 실패).
+ *      범위 조회가 실패하면 getCommit(B) 를 붙이고 rangeFailure 에 그 실패(B 도 실패면 빈 목록 + rangeFailure · headFailure 둘 다).
  *    - no_previous: getCommit(B) 하나(실패면 commits 칸 = 그 실패). htmlUrl = B 의 커밋 주소.
  *    - same_commit: 부르지 않는다 → 빈 목록 · htmlUrl null.
  * 6. commit(query.commitSha 가 있을 때만, 없으면 null):
  *    - commits 칸이 실패면 commit 도 같은 실패(목록을 확인할 수 없으므로 부르지 않는다).
  *    - commits 칸의 목록에 든 SHA 와 대소문자 무관 **완전 일치**가 없으면 { kind: "invalid_input", field: "commit" }(임의 커밋 조회 통로 차단)
- *      — 단 B 하나로 물러섰는데 B 조회가 실패했고 commit 이 B 면 commit = 그 실패.
+ *      — 단 B 하나로 물러섰는데 B 조회가 실패했고 commit 이 B 면 commit = B 의 실패(다시 부르지 않는다).
  *    - 있으면 이미 받은 B 를 쓰거나 getCommit(서비스, 목록의 SHA).
  * 한 칸이 실패해도 다른 칸과 deployment 는 그대로 낸다. */
 import type { DeployHistoryClient, DeploymentSummary } from "@/features/deploys/lib/deploy-history-client";
@@ -81,7 +81,7 @@ export interface CommitListView {
   htmlUrl: string | null;
   /** 범위 조회의 실패 — B 하나를 대신 보일 때 */
   rangeFailure: UpstreamFailure | null;
-  /** 대신 부른 B 조회의 실패(relation 이 not_ancestor · unknown 일 때) */
+  /** 대신 부른 B 조회의 실패(relation 이 not_ancestor · unknown 이거나 범위 조회가 실패했을 때) */
   headFailure: UpstreamFailure | null;
 }
 
@@ -198,7 +198,9 @@ async function loadCommits(deployGit: DeployGitClient, service: DeployService, r
     if (!head.ok) return { commits: listView({ relation, commits: [], rangeComplete, htmlUrl: compareUrl, headFailure: head }), headDetail: null, headFailure: head };
     return { commits: listView({ relation, commits: [summaryOf(head.value)], rangeComplete, htmlUrl: compareUrl }), headDetail: head.value, headFailure: null };
   }
-  if (!head.ok) return { commits: listed, headDetail: null, headFailure: null };   // 범위 실패 문구만
+  if (!head.ok) {   // 두 실패를 모두 보인다(12.11) — commit=B 면 B 의 실패
+    return { commits: listView({ commits: [], rangeComplete: false, htmlUrl: compareUrl, rangeFailure: listed, headFailure: head }), headDetail: null, headFailure: head };
+  }
   return {
     commits: listView({ commits: [summaryOf(head.value)], rangeComplete: false, htmlUrl: compareUrl, rangeFailure: listed }),
     headDetail: head.value, headFailure: null,
