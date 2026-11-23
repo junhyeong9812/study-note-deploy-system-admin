@@ -1,4 +1,4 @@
-/** 어드민의 화면 넷 — 내비게이션과 홈 메뉴가 같은 목록을 쓴다. 아직 만들지 않은 화면은 path 가 null(링크를 걸지 않고 "준비 중"). */
+/** 어드민의 화면 넷 — 내비게이션과 홈 메뉴가 같은 목록을 쓴다. 지금은 넷 모두 화면이 있다(path 가 있다). path 가 null 이면 아직 만들지 않은 화면(링크를 걸지 않고 "준비 중") — 새 화면을 목록에 먼저 올릴 때 쓴다. */
 export type AdminScreenKey = "deploys" | "logs" | "status" | "login-attempts";
 
 export interface AdminScreen {

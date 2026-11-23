@@ -2,7 +2,7 @@
 
 운영자 한 명이 배포 이력 · 로그 · 서비스 상태 · 로그인 시도 기록을 읽기 전용으로 보는 어드민 화면(Next.js 15 App Router).
 어드민 백엔드는 따로 두지 않는다 — 이 앱의 서버 쪽 코드가 master · 관측 · 알림 · backend 서버를 직접 부른다.
-지금 있는 것: 로그인(`/login`) · 로그인 뒤 홈(`/`, 메뉴 자리) · `POST /api/auth/login` · `POST /api/auth/logout` · `GET /api/health`.
+지금 있는 것: 로그인(`/login`) · 로그인 뒤 홈(`/`, 화면 넷의 메뉴) · 화면 넷(`/deploys` · `/logs` · `/status` · `/login-attempts`) · `POST /api/auth/login` · `POST /api/auth/logout` · `GET /api/health` · 화면 넷과 두 상세의 데이터 경로(아래 "구성").
 
 ## 구성
 
@@ -10,9 +10,9 @@
 - `src/features/auth/server/require-session.ts` — 두 번째 겹. 보호 화면은 `requireSession()`(없으면 `/login`), 데이터 경로는 `requireApiSession()`(없으면 401)을 **직접** 호출한다. 새 화면·경로·다른 서버를 부르는 서버 쪽 함수도 반드시 호출한다.
 - `src/features/auth/lib/` — 세션(HMAC-SHA256, 12시간, 연장 없음) · 자격(argon2id, ID 가 틀려도 더미 해시로 같은 검증) · Origin(설정값과 글자까지 같음) · 속도 제한(IP 마다 60초 10회, 자리별 메모리) · 관측 서버 판정 · 임시 제한(관측 서버 장애 시 3회 → 15분) · 대기열(상한 500, 복귀 뒤 `replayed:true`) · 잠금 알림.
 - `src/features/auth/server/login-service.ts` — 속도 제한 · 임시 제한 · 대기열을 프로세스 안에 하나만 둔다(`globalThis`).
-- 화면 넷의 데이터 계층 `src/features/{deploys,logs,status,login-attempts}/` — `lib/`(순수: 입력 검증 · 다른 서버 클라이언트 · 응답에서 화면에 필요한 칸만 고르기, 설정·Next 를 읽지 않는다) + `server/`(진입 함수 — `requireSession()`/`requireApiSession()` 을 **직접** 부른 뒤에만 설정을 읽고 다른 서버를 부른다) + `ui/`(서버 컴포넌트 — 받은 값만 그린다. server · `*-client` · 설정을 값으로 임포트하지 않는다). `src/app` 의 화면 · `GET /api/{deploys,logs,status,login-attempts}` 는 진입 함수만 부른다(소스 검사 `src/app/screen-data-imports.test.ts`).
+- 화면 넷과 두 상세(배포 상세 · 연관 로그)의 데이터 계층 `src/features/{deploys,logs,status,login-attempts,deploy-detail,log-trace}/` — `lib/`(순수: 입력 검증 · 다른 서버 클라이언트 · 응답에서 화면에 필요한 칸만 고르기, 설정·Next 를 읽지 않는다) + `server/`(진입 함수 — `requireSession()`/`requireApiSession()` 을 **직접** 부른 뒤에만 설정을 읽고 다른 서버를 부른다) + `ui/`(서버 컴포넌트 — 받은 값만 그린다. server · `*-client` · 설정을 값으로 임포트하지 않는다). `src/app` 의 화면 · `GET /api/{deploys,logs,status,login-attempts}` · `GET /api/deploys/detail` · `GET /api/logs/trace` 는 진입 함수만 부른다(화면 넷의 기능 폴더는 소스 검사 `src/app/screen-data-imports.test.ts`).
   - 다른 서버 호출: 전부 GET · `redirect: "manual"` · 본문까지 5초 기한. 실패는 고정된 짧은 사유(`src/shared/lib/upstream-result.ts`)와 상태 코드만 — 오류 본문 원문 · 주소 · 예외 문구는 넘기지 않는다. 정상 응답 안의 사유 글자(감시 대상의 DOWN 사유 · backend 의존성 detail · 관측 서버 헬스의 failure)는 주소를 `(주소)` 로 가리고 120자로 자른다(`maskUpstreamReason`). 입력이 틀리면 데이터 경로는 422 `invalid_input`(다른 서버를 부르지 않는다), 다른 서버가 실패해도 200 에 그 칸의 실패로 보인다. 상태 화면의 다섯 호출은 병렬.
-  - 화면: 배포 이력(`/deploys` — 줄을 누르면 오른쪽에 배포 상세: 요약 · 직전 성공 배포→이번 배포의 커밋 목록 · PR · 커밋별 바뀐 파일과 diff. 선택은 주소의 `selected` · `selectedService` · `commit`)만 있다 — 로그 조회 · 상태 한눈에 · 로그인 시도 기록은 데이터 경로만 있고 화면은 다음 단계(내비게이션에 "준비 중"). 공통 틀 `src/features/admin-shell/ui/AdminShell.tsx`(내비게이션 · 로그아웃 · "임시 제한 중").
+  - 화면 넷: 배포 이력(`/deploys` — 줄을 누르면 오른쪽에 배포 상세(`deploy-detail`, `GET /api/deploys/detail`): 요약 · 직전 성공 배포→이번 배포의 커밋 목록 · PR · 커밋별 바뀐 파일과 diff. 선택은 주소의 `selected` · `selectedService` · `commit`) · 로그 조회(`/logs` — 줄을 누르면 오른쪽에 연관 로그(`log-trace`, `GET /api/logs/trace`): 고른 로그 · 이 요청 요약 · 같은 요청 ID 의 연관 로그 · 그때 서버 상태(수준별 건수 · 배포 · 알림). 선택은 주소의 `selected`) · 상태 한눈에(`/status`) · 로그인 시도 기록(`/login-attempts`). 공통 틀 `src/features/admin-shell/ui/AdminShell.tsx`(내비게이션 · 로그아웃 · "임시 제한 중").
 - `src/shared/config/server-config.ts` — 환경 변수를 읽는 유일한 곳(`server-only`).
 - `src/shared/lib/logger.ts` — `requestId:admin:message` 한 줄, stdout + Redis 스트림 `logs`(실패 무해). IP · 입력 ID · 비밀번호 · User-Agent 는 넘기지 않는다.
 

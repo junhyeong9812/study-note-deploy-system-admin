@@ -21,6 +21,7 @@
  *       같은 조건에 before = cursorJustAfter(고른 id), from · to = **첫 응답의** from · to, limit 500 → 이 응답을 연관 로그로 쓴다(hasNewer true).
  *     이 응답의 nextBefore 가 null 이 아니면 확인 1회: before = 그 nextBefore, from · to = **이 응답의** from · to, limit 1 → 1줄 이상이면 hasOlder true.
  *     다시 받는 호출 · 그 확인이 실패하면 relatedLogs 는 그 실패(조용히 고른 줄 없는 목록을 내지 않는다). 연관 로그 호출은 최대 3회.
+ *     다시 받은 응답에도 고른 줄이 없으면(그 사이 지워짐 등) relatedLogs · requestSummary 는 not_found(고른 줄 없는 목록을 내지 않는다).
  *   - 고른 줄이 첫 응답 안에 있으면 위의 확인 규칙 그대로(추가 호출 없음) — hasNewer false · hasOlder = 확인 결과. 요청 ID 가 없는 로그(scope service)도 같다.
  * 칸의 결과:
  *   - selected: a 의 결과(관측 실패면 그 이유).
@@ -72,12 +73,10 @@ export interface RelatedLogs {
   lines: TraceLine[];
   /** 창 안에 보이는 줄 밖의 줄이 있다(어느 쪽이든) = hasOlder || hasNewer */
   hasMore: boolean;
-  /** 보이는 가장 이른 줄보다 앞선 줄이 창 안에 더 있다.
-   * 계약 선언(R4-1b) — 구현이 언제나 채우면 필수(`boolean`)로 바꾼다. */
-  hasOlder?: boolean;
-  /** 보이는 가장 늦은 줄보다 뒤의 줄이 창 안에 더 있다(고른 줄이 최신 500줄 밖이라 고른 줄에서 끝나는 500줄을 보일 때).
-   * 계약 선언(R4-1b) — 구현이 언제나 채우면 필수(`boolean`)로 바꾼다. */
-  hasNewer?: boolean;
+  /** 보이는 가장 이른 줄보다 앞선 줄이 창 안에 더 있다. */
+  hasOlder: boolean;
+  /** 보이는 가장 늦은 줄보다 뒤의 줄이 창 안에 더 있다(고른 줄이 최신 500줄 밖이라 고른 줄에서 끝나는 500줄을 보일 때). */
+  hasNewer: boolean;
 }
 
 export interface RequestSummary {
@@ -195,7 +194,15 @@ async function locateSelected(logs: LogClient, query: LogTraceQuery): Promise<Up
   return found !== undefined && found.id === query.selectedLogId ? { ok: true, value: found } : "not_found";
 }
 
-/** 2단계 — 같은 요청 ID(±1시간) 또는 같은 서비스(±30초)의 최신 500줄 + 넘치는지 확인 1회. */
+/** 꽉 찬 응답(nextBefore 가 null 이 아님) 뒤에 줄이 더 있는지 확인 1회(limit 1, from · to = 그 응답의 값). 꽉 차지 않았으면 false. */
+async function hasLinesBefore(logs: LogClient, relatedQuery: LogQuery, page: LogPage): Promise<UpstreamResult<boolean>> {
+  if (page.nextBefore === null) return { ok: true, value: false };
+  const probe = await logs.searchLogs({ ...relatedQuery, before: page.nextBefore, from: page.from, to: page.to, limit: 1 });
+  if (!probe.ok) return probe;   // 조용히 false 로 두지 않는다
+  return { ok: true, value: probe.value.logs.length > 0 };
+}
+
+/** 2단계 — 같은 요청 ID(±1시간) 또는 같은 서비스(±30초)의 최신 500줄. 고른 줄이 그 안에 없으면 고른 줄에서 끝나는 500줄을 다시 받는다. */
 async function loadRelatedLogs(logs: LogClient, selected: LogEntryView, at: number): Promise<UpstreamResult<RelatedLogs>> {
   const scope: RelatedLogs["scope"] = selected.requestId !== "" ? "request" : "service";
   const window = scope === "request" ? RELATED_LOG_WINDOW_MILLISECONDS : SERVICE_LOG_WINDOW_MILLISECONDS;
@@ -208,21 +215,31 @@ async function loadRelatedLogs(logs: LogClient, selected: LogEntryView, at: numb
   };
   const first = await logs.searchLogs(relatedQuery);
   if (!first.ok) return first;
-  let hasMore = false;
-  if (first.value.nextBefore !== null) {
-    const probe = await logs.searchLogs({ ...relatedQuery, before: first.value.nextBefore, from: first.value.from, to: first.value.to, limit: 1 });
-    if (!probe.ok) return probe;   // 조용히 hasMore false 로 두지 않는다
-    hasMore = probe.value.logs.length > 0;
+  let shown: LogPage = first.value;
+  let hasNewer = false;
+  if (first.value.nextBefore !== null && !first.value.logs.some((entry) => entry.id === selected.id)) {
+    // 고른 줄이 최신 500줄 밖 — 고른 줄(포함)에서 끝나는 500줄
+    const endingAtSelected = await logs.searchLogs({
+      ...relatedQuery, before: cursorJustAfter(selected.id), from: first.value.from, to: first.value.to,
+    });
+    if (!endingAtSelected.ok) return endingAtSelected;
+    // 그 사이 고른 줄이 지워졌으면 고른 줄 없는 목록을 내지 않는다
+    if (!endingAtSelected.value.logs.some((entry) => entry.id === selected.id)) return upstreamFailure("not_found");
+    shown = endingAtSelected.value;
+    hasNewer = true;
   }
+  const older = await hasLinesBefore(logs, relatedQuery, shown);
+  if (!older.ok) return older;
+  const hasOlder = older.value;
   const lines: TraceLine[] = [];
   let previousMilliseconds: number | null = null;
-  for (const entry of [...first.value.logs].reverse()) {   // 관측 서버는 최신순 — 화면은 옛것부터
+  for (const entry of [...shown.logs].reverse()) {   // 관측 서버는 최신순 — 화면은 옛것부터
     const entryMilliseconds = parseIsoUtc(entry.at);
     if (entryMilliseconds === null) return upstreamFailure("unparseable");
     lines.push({ ...entry, selected: entry.id === selected.id, gapMilliseconds: previousMilliseconds === null ? null : entryMilliseconds - previousMilliseconds });
     previousMilliseconds = entryMilliseconds;
   }
-  return { ok: true, value: { scope, from, to, lines, hasMore } };
+  return { ok: true, value: { scope, from, to, lines, hasMore: hasOlder || hasNewer, hasOlder, hasNewer } };
 }
 
 function countLevels(warnings: UpstreamResult<LogPage>, errors: UpstreamResult<LogPage>, at: number): UpstreamResult<LevelCounts> {

@@ -113,15 +113,22 @@ function RequestSummarySection({ summary }: { summary: UpstreamResult<RequestSum
           ? <p className={styles.muted}>이 요청의 로그를 찾지 못했습니다(그 사이 보관 기간이 지났을 수 있음).</p>
           : <SourceProblem source="관측 서버" failure={summary} />
       ) : (
-        <dl className={styles.summary}>
-          <dt>거친 서비스</dt><dd>{summary.value.services.join(" → ")}</dd>
-          <dt>처음 ~ 마지막(KST)</dt>
-          <dd><KoreanTime value={summary.value.firstAt} milliseconds /> ~ <KoreanTime value={summary.value.lastAt} milliseconds /></dd>
-          <dt>걸린 시간</dt><dd>{formatElapsed(summary.value.durationMilliseconds)}</dd>
-          <dt>줄 수</dt><dd>{summary.value.hasMore ? `${summary.value.lineCount}줄 이상` : `${summary.value.lineCount}줄`}</dd>
-          <dt>가장 높은 수준</dt><dd><LevelBadge level={summary.value.highestLevel} /></dd>
-          <dt>이 요청의 첫 로그</dt><dd><pre className={styles.messageInline}>{summary.value.firstMessage}</pre></dd>
-        </dl>
+        <>
+          {summary.value.hasMore && (
+            <p className={styles.note} role="note">
+              {`줄이 잘렸습니다 — 처음 시각 · 걸린 시간 · 첫 로그 · 거친 서비스는 보이는 ${summary.value.lineCount}줄 기준입니다.`}
+            </p>
+          )}
+          <dl className={styles.summary}>
+            <dt>거친 서비스</dt><dd>{summary.value.services.join(" → ")}</dd>
+            <dt>처음 ~ 마지막(KST)</dt>
+            <dd><KoreanTime value={summary.value.firstAt} milliseconds /> ~ <KoreanTime value={summary.value.lastAt} milliseconds /></dd>
+            <dt>걸린 시간</dt><dd>{formatElapsed(summary.value.durationMilliseconds)}</dd>
+            <dt>줄 수</dt><dd>{summary.value.hasMore ? `${summary.value.lineCount}줄 이상` : `${summary.value.lineCount}줄`}</dd>
+            <dt>가장 높은 수준</dt><dd><LevelBadge level={summary.value.highestLevel} /></dd>
+            <dt>이 요청의 첫 로그</dt><dd><pre className={styles.messageInline}>{summary.value.firstMessage}</pre></dd>
+          </dl>
+        </>
       )}
     </Section>
   );
@@ -137,11 +144,14 @@ function RelatedLogsSection({ related, scope, selectHref }: {
       {!related.ok ? <SourceProblem source="관측 서버" failure={related} /> : (
         <>
           <RangeNote from={related.value.from} to={related.value.to} />
-          {related.value.hasMore && (
-            <p className={styles.note} role="note">더 있음 — 최신 {related.value.lines.length}줄만 보입니다(이 범위의 더 오래된 줄은 빠짐).</p>
-          )}
-          {related.value.lines.length > 0 && !related.value.lines.some((line) => line.selected) && (
-            <p className={styles.note} role="note">고른 로그가 이 목록에 없습니다(보이는 {related.value.lines.length}줄 밖).</p>
+          {related.value.hasNewer ? (
+            <p className={styles.note} role="note">
+              {`고른 로그에서 끝나는 ${related.value.lines.length}줄을 보입니다 — 더 새로운 줄이 있음`}{related.value.hasOlder && " · 더 오래된 줄이 있음"}(이 범위에서 보이는 줄 밖은 빠짐).
+            </p>
+          ) : related.value.hasOlder && (
+            <p className={styles.note} role="note">
+              {`더 있음 — 최신 ${related.value.lines.length}줄만 보입니다(더 오래된 줄이 있음 — 이 범위의 앞쪽은 빠짐).`}
+            </p>
           )}
           {related.value.lines.length === 0 ? <p className={styles.muted}>이 범위에 로그가 없습니다.</p> : (
             <ol className={styles.traceList}>
@@ -190,7 +200,7 @@ function LevelCountsBlock({ counts }: { counts: UpstreamResult<LevelCounts> }) {
           )}
           {(counts.value.warningAtLimit || counts.value.errorAtLimit) && (
             <p className={styles.note} role="note">
-              {[counts.value.warningAtLimit && "warning", counts.value.errorAtLimit && "error"].filter(Boolean).join(" · ")} 이 조회 상한(500줄)에 닿았습니다 — 실제는 더 많습니다.
+              {[counts.value.warningAtLimit && "warning", counts.value.errorAtLimit && "error"].filter(Boolean).join(" · ")} 이 조회 상한(500줄)에 닿았습니다 — 실제는 더 많고, 표에 없는 서비스가 있을 수 있습니다.
             </p>
           )}
         </>

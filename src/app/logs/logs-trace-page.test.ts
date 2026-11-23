@@ -271,13 +271,6 @@ describe("더 있음 — 500줄 상한", () => {
     expect(panel).toContain("<dd>500줄 이상</dd>");
     expect(panel).not.toContain("고른 로그가 이 목록에 없습니다");
   });
-
-  it("고른 줄이 보이는 500줄 밖이면 그 사실도 안내", async () => {
-    useLines(manyLines);
-    const panel = panelOf(await render({ ...LIST_RANGE, selected: logIdOf(manyLines[500]) }));
-    expect(panel).toContain("고른 로그가 이 목록에 없습니다");
-    expect(panel).not.toContain('aria-current="true"');
-  });
 });
 
 describe("구역별 실패 — 그 구역에만 '<출처>: <가린 이유>', 나머지는 그대로", () => {

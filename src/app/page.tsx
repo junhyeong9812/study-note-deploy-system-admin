@@ -1,4 +1,4 @@
-/** 홈 — 로그인 뒤 첫 화면. 공통 틀(내비게이션 · 로그아웃 · 임시 제한 표시) + 네 화면의 메뉴(아직 없는 화면은 "준비 중"). */
+/** 홈 — 로그인 뒤 첫 화면. 공통 틀(내비게이션 · 로그아웃 · 임시 제한 표시) + 네 화면의 메뉴(지금은 넷 모두 링크. path 가 null 인 화면이 생기면 "준비 중"). */
 import { AdminShell } from "@/features/admin-shell/ui/AdminShell";
 import { ADMIN_SCREENS } from "@/features/admin-shell/ui/admin-screens";
 import { requireSession } from "@/features/auth/server/require-session";

@@ -232,7 +232,7 @@ describe("연관 로그 — 같은 요청 ID, ±1시간, 시간순, 고른 줄 �
   it("옛것부터 · 다른 요청의 줄 없음 · 고른 줄만 selected · 첫 줄의 시간 차 null", async () => {
     const view = viewOf((await run()).outcome);
     expect(okValue(view.relatedLogs)).toStrictEqual({
-      scope: "request", from: isoMilliseconds(T - HOUR), to: isoMilliseconds(T + HOUR), hasMore: false,
+      scope: "request", from: isoMilliseconds(T - HOUR), to: isoMilliseconds(T + HOUR), hasMore: false, hasOlder: false, hasNewer: false,
       lines: [
         { ...logEntryView(REQUEST_LINES[0]), selected: false, gapMilliseconds: null },
         { ...logEntryView(REQUEST_LINES[1]), selected: false, gapMilliseconds: 500 },
@@ -914,6 +914,25 @@ describe("고른 줄은 반드시 목록에 있다 — 최신 500줄 밖이면 �
     expect(view.selected.ok).toBe(true);
     expectFailure(view.relatedLogs, "server_timeout", 504);
     expectFailure(view.requestSummary!, "server_timeout", 504);
+  });
+
+  it("다시 받은 응답에도 고른 줄이 없으면(그 사이 지워짐) 연관 로그 · 요약은 not_found — 고른 줄 없는 목록을 내지 않는다 · 확인 호출 없음", async () => {
+    const { outcome, observeStore } = await run({
+      lines: linesAroundSelected(SELECTED_LINE, 600, 600, SECOND),
+      // 다시 받는 호출만 고른 줄을 뺀 응답으로(before 를 고른 id 로 — 엄격이라 고른 줄은 빠진다)
+      observe: (fallback) => (url, init) => {
+        if (url.searchParams.get("request_id") === null || url.searchParams.get("before") !== `${T}-3`) return fallback(url, init);
+        const withoutSelected = new URL(url);
+        withoutSelected.searchParams.set("before", SELECTED_LOG_ID);
+        return fallback(withoutSelected, init);
+      },
+    });
+    const view = viewOf(outcome);
+    expect(okValue(view.selected)).toStrictEqual(logEntryView(SELECTED_LINE));
+    expectFailure(view.relatedLogs, "not_found");
+    expectFailure(view.requestSummary!, "not_found");
+    expect(relatedCalls(observeStore.calls)).toHaveLength(2);
+    expect(view.serverState.levelCounts.ok).toBe(true);
   });
 
   describe("요청 ID 가 없는 로그(같은 서비스 ±30초)도 같은 규칙", () => {
