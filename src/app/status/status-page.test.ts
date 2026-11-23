@@ -18,6 +18,7 @@ vi.mock("next/headers", () => ({
 vi.mock("next/navigation", () => ({ redirect: (location: string) => { throw new Error(`redirect:${location}`); } }));
 
 import StatusPage from "@/app/status/page";
+import { GET as statusDataRoute } from "@/app/api/status/route";
 import { issueSessionToken } from "@/features/auth/lib/session";
 import { FAKE_ORIGIN, FAKE_SIGNING_KEY } from "@/features/auth/lib/test-fakes";
 import type { StatusCheckName } from "@/features/status/lib/status-overview";
@@ -307,6 +308,90 @@ describe("상태 한눈에 — '문제'(비정상이라고 답함)와 '확인 �
     expect(summary).toContain("확인 중 1건 — 관측 서버(시작 중)");
     expect(summary).not.toContain("확인 못 함");
     expect(textOf(cardOf(html, "alertHealth"))).toContain("stalled 멈춤 — 활성인데 2분 넘게 감시 바퀴가 돌지 않음");
+  });
+});
+
+/** 관측 서버 카드의 밀린 건수 · 최근 로그 시각 — observe /health 의 lag · last_stored_at(CollectorHealth.kt:60,63). 값이 없으면 "—"(감시 대상 표의 빈 칸 관례).
+ * 판정(문제 · 확인 중 · 정상)은 상태 낱말로만 — 밀린 건수는 판정에 넣지 않는다(관측 서버도 넣지 않는다). */
+describe("상태 한눈에 — 관측 서버 카드의 밀린 건수 · 최근 로그 시각", () => {
+  /** "(<걸린 시간> 전)" — formatDuration 의 꼴(초 · 분 초 · 시간 분). */
+  const AGO = String.raw`\s*\((?:[\d.]+초|\d+분 \d+초|\d+시간 \d+분) 전\)`;
+
+  it("전부 정상 — '밀린 건수 0건' · '최근 로그 시각(KST) <KST 시각> (… 전)', 다른 카드에는 없다", async () => {
+    const html = await render();
+    const observe = textOf(cardOf(html, "observeHealth"));
+    expect(observe).toContain("밀린 건수 0건");
+    expect(observe).toMatch(new RegExp(String.raw`최근 로그 시각\(KST\) 2026-11-22 18:59:58${AGO}`));
+    for (const other of CELL_NAMES.filter((name) => name !== "observeHealth")) {
+      expect(textOf(cardOf(html, other))).not.toContain("밀린 건수");
+      expect(textOf(cardOf(html, other))).not.toContain("최근 로그 시각");
+    }
+  });
+
+  it("판정 고정 — ok + lag 9000 이어도 요약은 '전부 정상', 관측 카드도 정상(카드에는 '밀린 건수 9000건')", async () => {
+    overrides.observeHealth = () => jsonBody({ status: "ok", last_loop_at: "2026-11-22T10:00:00Z", last_stored_at: "2026-11-22T09:59:58Z", failure: "", unacknowledged: 0, lag: 9_000 });
+    const html = await render();
+    const summary = summaryOf(html);
+    expect(summary).toContain("전부 정상");
+    expect(summary).not.toMatch(/문제|확인 못 함|확인 중|밀린/);
+    const observe = textOf(cardOf(html, "observeHealth"));
+    expect(observe).toContain("밀린 건수 9000건");
+    expect(observe).toContain("ok 정상");
+    expect(observe).not.toContain("문제");
+  });
+
+  it("관측 서버가 '모름'으로 답함(lag -1 · last_stored_at \"\") → 두 줄 모두 '—'", async () => {
+    overrides.observeHealth = () => jsonBody({ status: "ok", last_loop_at: "2026-11-22T10:00:00Z", last_stored_at: "", failure: "", unacknowledged: 0, lag: -1 });
+    const observe = textOf(cardOf(await render(), "observeHealth"));
+    expect(observe).toContain("밀린 건수 —");
+    expect(observe).toContain("최근 로그 시각(KST) —");
+    expect(observe).not.toContain("-1");
+  });
+
+  it("두 칸이 없는 응답({status} 만) → 두 줄 모두 '—', 카드는 정상", async () => {
+    overrides.observeHealth = () => jsonBody({ status: "ok" });
+    const html = await render();
+    const observe = textOf(cardOf(html, "observeHealth"));
+    expect(observe).toContain("밀린 건수 —");
+    expect(observe).toContain("최근 로그 시각(KST) —");
+    expect(summaryOf(html)).toContain("전부 정상");
+  });
+
+  it("비정상 낱말(failing, 503)에서도 두 줄을 보인다 — 판정은 여전히 '관측 서버(수집 실패)'", async () => {
+    overrides.observeHealth = () => jsonBody({ status: "failing", failure: "database SQLException", last_stored_at: "2026-11-22T09:00:00Z", lag: 5 }, 503);
+    const html = await render();
+    const observe = textOf(cardOf(html, "observeHealth"));
+    expect(observe).toContain("밀린 건수 5건");
+    expect(observe).toMatch(new RegExp(String.raw`최근 로그 시각\(KST\) 2026-11-22 18:00:00${AGO}`));
+    expect(summaryOf(html)).toContain("문제 1건 — 관측 서버(수집 실패)");
+  });
+
+  it("최근 로그 시각이 조회 시각보다 뒤면 '… 전'을 붙이지 않는다(시각만)", async () => {
+    overrides.observeHealth = () => jsonBody({ status: "ok", failure: "", last_stored_at: "2999-01-01T00:00:00Z", lag: 0 });
+    const observe = textOf(cardOf(await render(), "observeHealth"));
+    expect(observe).toContain("최근 로그 시각(KST) 2999-01-01 09:00:00");
+    expect(observe).not.toMatch(/2999-01-01 09:00:00\s*\([^)]*전\)/);
+  });
+
+  it("관측 서버에 닿지 못하면 기존대로 '확인 못 함' + '관측 서버: 닿지 않음' — 두 줄은 없다", async () => {
+    overrides.observeHealth = () => Promise.reject(leakyNetworkError());
+    const html = await render();
+    const observe = textOf(cardOf(html, "observeHealth"));
+    expect(observe).toContain("확인 못 함");
+    expect(observe).toContain("관측 서버: 닿지 않음");
+    expect(observe).not.toContain("밀린 건수");
+    expect(observe).not.toContain("최근 로그 시각");
+  });
+
+  it("데이터 경로(GET /api/status) 응답에 backlog · lastLogAt 이 실린다", async () => {
+    overrides.observeHealth = () => jsonBody({ status: "ok", failure: "", last_stored_at: "2026-11-22T09:59:58Z", lag: 42 });
+    const response = await statusDataRoute(new Request(new URL("/api/status", FAKE_ORIGIN), { method: "GET", headers: { origin: FAKE_ORIGIN } }));
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.success).toBe(true);
+    expect(body.data.observeHealth.ok).toBe(true);
+    expect(body.data.observeHealth.value.backlog).toBe(42);
+    expect(body.data.observeHealth.value.lastLogAt).toBe("2026-11-22T09:59:58Z");
   });
 });
 

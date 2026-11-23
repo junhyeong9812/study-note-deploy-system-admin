@@ -56,7 +56,7 @@ const EXPECTED_HEALTHY_VALUES: { [Name in StatusCheckName]: unknown } = {
     lastRoundAt: "2026-11-22T10:00:00Z", undelivered: 2,
   },
   alertHealth: { status: "ok", healthy: true, failure: null },
-  observeHealth: { status: "ok", healthy: true, failure: null },
+  observeHealth: { status: "ok", healthy: true, failure: null, backlog: 0, lastLogAt: null },
   backendDependencies: { status: "DOWN", components: [
     { name: "elasticsearch", status: "UP", detail: null }, { name: "embedding", status: "DOWN", detail: `Connection refused: ${MASKED_ADDRESS}/health` },
     { name: "redis", status: "UP", detail: null },
@@ -135,7 +135,7 @@ describe("collectStatusOverview — 헬스의 503 은 실패가 아니라 상태
     const overview = await collectStatusOverview(options(routedFetch({
       observeHealth: () => jsonBody({ status: "failing", failure: "database SQLException", last_retention_failure: UPSTREAM_RAW_MARKER }, 503),
     })));
-    expect(okValue(overview.observeHealth)).toStrictEqual({ status: "failing", healthy: false, failure: "database SQLException" });
+    expect(okValue(overview.observeHealth)).toStrictEqual({ status: "failing", healthy: false, failure: "database SQLException", backlog: null, lastLogAt: null });
     expectNoForbiddenText(overview);
   });
 
@@ -144,7 +144,7 @@ describe("collectStatusOverview — 헬스의 503 은 실패가 아니라 상태
       observeHealth: () => jsonBody({ status: "unreachable", failure: `redis RedisConnectionFailureException ${FAKE_OBSERVE_URL}\n198.51.100.20:6379` }, 503),
     })));
     expect(okValue(overview.observeHealth)).toStrictEqual({
-      status: "unreachable", healthy: false, failure: `redis RedisConnectionFailureException ${MASKED_ADDRESS} ${MASKED_ADDRESS}`,
+      status: "unreachable", healthy: false, failure: `redis RedisConnectionFailureException ${MASKED_ADDRESS} ${MASKED_ADDRESS}`, backlog: null, lastLogAt: null,
     });
     expectNoForbiddenText(overview);
     expect(JSON.stringify(overview)).not.toContain("198.51.100.20");
@@ -161,7 +161,7 @@ describe("collectStatusOverview — 헬스의 503 은 실패가 아니라 상태
 
   it.each(["unreachable", "starting", "stalled"])("observe 503 %s → healthy:false", async (status) => {
     const overview = await collectStatusOverview(options(routedFetch({ observeHealth: () => jsonBody({ status }, 503) })));
-    expect(okValue(overview.observeHealth)).toStrictEqual({ status, healthy: false, failure: null });
+    expect(okValue(overview.observeHealth)).toStrictEqual({ status, healthy: false, failure: null, backlog: null, lastLogAt: null });
   });
 
   it("alert 503 stalled → healthy:false · 200 standby · starting → healthy:false", async () => {
@@ -191,6 +191,97 @@ describe("collectStatusOverview — 헬스의 503 은 실패가 아니라 상태
   it("master 의 200 이 봉투가 아니면 unparseable", async () => {
     const overview = await collectStatusOverview(options(routedFetch({ deployMasterHealth: () => jsonBody({ status: "ok" }) })));
     expectFailure(overview.deployMasterHealth, "unparseable");
+  });
+});
+
+/** 관측 서버 헬스의 밀린 건수(lag)와 최근 로그 시각(last_stored_at) — observe collect/CollectorHealth.kt:57-71(상태 낱말과 무관하게 늘 본문에 있다),
+ * README "헬스" 표: lag 는 읽지 못하면 -1 · last_stored_at 은 없거나 닿지 못하면 "". 두 칸은 판정에 쓰지 않는다. */
+describe("collectStatusOverview — 관측 서버의 밀린 건수 · 최근 로그 시각", () => {
+  const OBSERVE_LAST_STORED_AT = "2026-11-22T09:59:58.123Z";
+
+  it("200 ok + lag · last_stored_at → backlog · lastLogAt 그대로(시각은 받은 글자 그대로), 나머지 칸은 정상", async () => {
+    const overview = await collectStatusOverview(options(routedFetch({
+      observeHealth: () => jsonBody({ status: "ok", last_loop_at: "2026-11-22T10:00:00Z", last_stored_at: OBSERVE_LAST_STORED_AT, failure: "", unacknowledged: 3, lag: 9_000 }),
+    })));
+    expect(okValue(overview.observeHealth)).toStrictEqual({ status: "ok", healthy: true, failure: null, backlog: 9_000, lastLogAt: OBSERVE_LAST_STORED_AT });
+    expectHealthyExcept(overview, ["observeHealth"]);
+  });
+
+  it("503 의 상태 낱말에서도 두 칸을 넘긴다(failing · lag 12)", async () => {
+    const overview = await collectStatusOverview(options(routedFetch({
+      observeHealth: () => jsonBody({ status: "failing", failure: "database SQLException", last_stored_at: OBSERVE_LAST_STORED_AT, lag: 12 }, 503),
+    })));
+    expect(okValue(overview.observeHealth)).toStrictEqual({
+      status: "failing", healthy: false, failure: "database SQLException", backlog: 12, lastLogAt: OBSERVE_LAST_STORED_AT,
+    });
+  });
+
+  it.each(["starting", "stalled", "unreachable"])("503 %s 에서도 두 칸을 넘긴다", async (status) => {
+    const overview = await collectStatusOverview(options(routedFetch({
+      observeHealth: () => jsonBody({ status, failure: "", last_stored_at: OBSERVE_LAST_STORED_AT, lag: 7 }, 503),
+    })));
+    expect(okValue(overview.observeHealth)).toMatchObject({ status, healthy: false, backlog: 7, lastLogAt: OBSERVE_LAST_STORED_AT });
+  });
+
+  it("lag 0 은 실제 값 0(null 이 아니다)", async () => {
+    const overview = await collectStatusOverview(options(routedFetch({
+      observeHealth: () => jsonBody({ status: "ok", failure: "", last_stored_at: OBSERVE_LAST_STORED_AT, lag: 0 }),
+    })));
+    expect(okValue(overview.observeHealth).backlog).toBe(0);
+  });
+
+  it("관측 서버의 '모름' 표시(lag -1 · last_stored_at \"\") → 둘 다 null, 칸은 정상", async () => {
+    const overview = await collectStatusOverview(options(routedFetch({
+      observeHealth: () => jsonBody({ status: "ok", failure: "", last_stored_at: "", lag: -1 }),
+    })));
+    expect(okValue(overview.observeHealth)).toStrictEqual({ status: "ok", healthy: true, failure: null, backlog: null, lastLogAt: null });
+  });
+
+  it("두 칸이 없으면(구버전 관측 서버 · {status} 만) → 둘 다 null, 칸은 정상", async () => {
+    const overview = await collectStatusOverview(options(routedFetch({ observeHealth: () => jsonBody({ status: "ok" }) })));
+    expect(okValue(overview.observeHealth)).toStrictEqual({ status: "ok", healthy: true, failure: null, backlog: null, lastLogAt: null });
+  });
+
+  const wrongBacklogs: [string, unknown][] = [
+    ["-2", -2], ["소수 1.5", 1.5], ["글자 \"12\"", "12"], ["null", null], ["true", true], ["NaN 글자", "NaN"],
+  ];
+  it.each(wrongBacklogs)("lag 가 %s 이면 200 → unparseable(나머지 칸은 정상)", async (_label, lag) => {
+    const overview = await collectStatusOverview(options(routedFetch({
+      observeHealth: () => jsonBody({ status: "ok", failure: "", last_stored_at: OBSERVE_LAST_STORED_AT, lag }),
+    })));
+    expectFailure(overview.observeHealth, "unparseable");
+    expectHealthyExcept(overview, ["observeHealth"]);
+  });
+  it.each(wrongBacklogs)("lag 가 %s 이면 503 → unavailable(503)", async (_label, lag) => {
+    const overview = await collectStatusOverview(options(routedFetch({
+      observeHealth: () => jsonBody({ status: "failing", failure: "database SQLException", last_stored_at: OBSERVE_LAST_STORED_AT, lag }, 503),
+    })));
+    expectFailure(overview.observeHealth, "unavailable", 503);
+  });
+
+  const wrongLastStoredAts: [string, unknown][] = [
+    ["숫자", 1_763_805_598_123], ["시각 꼴이 아닌 글자", "어제쯤"], ["null", null], ["true", true], ["객체", { at: OBSERVE_LAST_STORED_AT }],
+  ];
+  it.each(wrongLastStoredAts)("last_stored_at 이 %s 이면 200 → unparseable(나머지 칸은 정상)", async (_label, lastStoredAt) => {
+    const overview = await collectStatusOverview(options(routedFetch({
+      observeHealth: () => jsonBody({ status: "ok", failure: "", last_stored_at: lastStoredAt, lag: 0 }),
+    })));
+    expectFailure(overview.observeHealth, "unparseable");
+    expectHealthyExcept(overview, ["observeHealth"]);
+  });
+  it.each(wrongLastStoredAts)("last_stored_at 이 %s 이면 503 → unavailable(503)", async (_label, lastStoredAt) => {
+    const overview = await collectStatusOverview(options(routedFetch({
+      observeHealth: () => jsonBody({ status: "stalled", failure: "", last_stored_at: lastStoredAt, lag: 0 }, 503),
+    })));
+    expectFailure(overview.observeHealth, "unavailable", 503);
+  });
+
+  it("알림 서버 · 배포 서버 헬스 칸에는 두 칸이 생기지 않는다", async () => {
+    const overview = await collectStatusOverview(options(routedFetch({
+      alertHealth: () => jsonBody({ status: "ok", last_round_at: "2026-11-22T10:00:00Z", active: true, lag: 5, last_stored_at: OBSERVE_LAST_STORED_AT }),
+    })));
+    expect(okValue(overview.alertHealth)).toStrictEqual({ status: "ok", healthy: true, failure: null });
+    expect(okValue(overview.deployMasterHealth)).toStrictEqual({ status: "ok", healthy: true, failure: null });
   });
 });
 

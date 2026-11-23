@@ -35,6 +35,16 @@ export interface ServiceHealthView {
   failure: string | null;
 }
 
+/** 관측 서버 헬스 한 칸 — 상태 낱말 · 가린 사유에 더해 밀린 건수와 최근 로그 시각(observe collect/CollectorHealth.kt:60,63).
+ * 두 칸은 판정에 쓰지 않는다(관측 서버도 판정에 넣지 않는다 — 밀림은 진행 상황). 상태 낱말과 무관하게 본문에 있다.
+ * 칸이 없으면(구버전 관측 서버) null. 칸이 있는데 형이 틀리면 칸 전체가 실패 — 200 은 unparseable, 503 은 unavailable(503). */
+export interface ObserveHealthView extends ServiceHealthView {
+  /** `lag` — 그룹에 아직 전달되지 않은 밀린 건수. -1(관측 서버가 셀 수 없음) · 칸 없음 = null, 0 은 실제 값. -1 이상의 정수만 받는다. */
+  backlog: number | null;
+  /** `last_stored_at` — DB 의 가장 최근 로그 시각(받은 글자 그대로). ""(없음 · 닿지 못함) · 칸 없음 = null. Date.parse 가 NaN 이면 틀린 형. */
+  lastLogAt: string | null;
+}
+
 export interface AlertMonitorView {
   name: string;
   status: (typeof MONITOR_STATUSES)[number];
@@ -66,7 +76,7 @@ export interface BackendDependenciesView {
 export interface StatusOverview {
   alertMonitors: UpstreamResult<AlertMonitorsView>;
   alertHealth: UpstreamResult<ServiceHealthView>;
-  observeHealth: UpstreamResult<ServiceHealthView>;
+  observeHealth: UpstreamResult<ObserveHealthView>;
   backendDependencies: UpstreamResult<BackendDependenciesView>;
   deployMasterHealth: UpstreamResult<ServiceHealthView>;
 }
@@ -169,7 +179,9 @@ export function collectStatusOverview(options: StatusOverviewOptions): Promise<S
   // 다섯 호출을 한꺼번에 시작한다(각자 5초)
   const alertMonitors = call(options.alertUrl, "/monitors", alertSecretHeaders, (response) => successOnly(response, parseMonitors));
   const alertHealth = call(options.alertUrl, "/health", {}, (response) => healthCell(response, ALERT_HEALTH_STATUSES, false));
-  const observeHealth = call(options.observeUrl, "/health", {}, (response) => healthCell(response, OBSERVE_HEALTH_STATUSES, true));
+  // 구현 전 자리: backlog · lastLogAt 을 아직 읽지 않는다(계약 선언만 — status-overview.test.ts 의 관측 서버 칸 사례가 빨강)
+  const observeHealth = call(options.observeUrl, "/health", {},
+    (response) => healthCell(response, OBSERVE_HEALTH_STATUSES, true) as UpstreamResult<ObserveHealthView>);
   const backendDependencies = call(options.backendUrl, "/api/health/dependencies", {}, (response) => successOnly(response, parseDependencies));
   const deployMasterHealth = call(options.deployMasterUrl, "/health", {}, (response) => successOnly(response, parseMasterHealth));
   return Promise.all([alertMonitors, alertHealth, observeHealth, backendDependencies, deployMasterHealth])
