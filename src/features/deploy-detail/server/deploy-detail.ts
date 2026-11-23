@@ -1,8 +1,10 @@
-/** 배포 상세의 서버 쪽 진입 — 세션 검증을 **직접** 부른 뒤에만 입력을 해석하고 설정을 읽고 master · GitHub 를 부른다(명세 ② 세부 "인증 경계의 구현 형태" · §10.2).
- * 설정: DEPLOY_MASTER_URL · DEPLOY_SECRET(없으면 deployment = not_configured, 호출 없음) · GITHUB_TOKEN(선택 — 비면 Authorization 없이 부른다).
+/** 배포 상세의 서버 쪽 진입 — 세션 검증을 **직접** 부른 뒤에만 입력을 해석하고 설정을 읽고 master · GitHub 를 부른다(명세 ② 세부 "인증 경계의 구현 형태" · §10.2 · §10.3).
+ * 커밋 목록 · diff 는 master git 조회(`/deploys/git/commits` · `/deploys/git/commit`), PR 만 GitHub.
+ * 설정: DEPLOY_MASTER_URL · DEPLOY_SECRET(배포 이력과 git 조회가 함께 쓴다 — 없으면 deployment = not_configured, 호출 없음) · GITHUB_TOKEN(선택 — 비면 Authorization 없이 부른다).
  * GitHub 기준 주소 = GITHUB_API_BASE_URL(코드 상수). 네트워크 = 부를 때의 전역 fetch, 시계 = Date.now.
- * GitHub 캐시(createCachedGitHubClient)는 이 모듈에 하나 — 요청 사이에 이어진다(재시작하면 비워짐).
- * 실패한 칸은 앱 로그 1줄(upstreamFailureLogLine — 이유 낱말 · 상태 코드만, 토큰 · 주소 · 원문 없음).
+ * 캐시는 이 모듈에 하나씩 — master git 조회(createCachedDeployGitClient)와 GitHub PR(createCachedGitHubClient). 요청 사이에 이어진다(재시작하면 비워짐).
+ * 실패한 칸은 앱 로그 1줄(upstreamFailureLogLine — 이유 낱말 · 상태 코드만, 토큰 · 주소 · 원문 없음). B 하나로 물러선 커밋 목록의
+ * rangeFailure · headFailure 도 cell=commits 로 남긴다.
  * 응답(언제나 no-store):
  * - 세션 없음 → 401(requireApiSession — master · GitHub 를 부르지 않는다)
  * - 입력 거절 · 목록 밖 commit → 422 `{success:false,error:{code:"invalid_input",field}}`(입력 거절은 master · GitHub 를 부르지 않는다)
@@ -12,6 +14,7 @@ import "server-only";
 import { requireApiSession, requireSession } from "@/features/auth/server/require-session";
 import { parseDeployDetailQuery, type DeployDetailQuery } from "@/features/deploy-detail/lib/deploy-detail-query";
 import { buildDeployDetail, type DeployDetailOutcome } from "@/features/deploy-detail/lib/deploy-detail-view";
+import { createCachedDeployGitClient, createDeployGitClient, type DeployGitClient } from "@/features/deploy-detail/lib/deploy-git-client";
 import { createCachedGitHubClient } from "@/features/deploy-detail/lib/github-cache";
 import { GITHUB_API_BASE_URL, createGitHubClient, type GitHubClient } from "@/features/deploy-detail/lib/github-client";
 import { createDeployHistoryClient } from "@/features/deploys/lib/deploy-history-client";
@@ -21,7 +24,7 @@ import { searchParamsInputFromUrl } from "@/shared/lib/query-input";
 import { errorResponse } from "@/shared/lib/responses";
 import { screenDataResponse, upstreamFailureLogLine } from "@/shared/lib/screen-responses";
 import { isHttpBaseUrl } from "@/shared/lib/upstream-fetch";
-import { upstreamFailure, type SearchParamsInput } from "@/shared/lib/upstream-result";
+import { upstreamFailure, type SearchParamsInput, type UpstreamResult } from "@/shared/lib/upstream-result";
 
 /** 부를 때마다 설정의 토큰과 전역 fetch 로 GitHub 를 부르는 클라이언트(캐시 안쪽). */
 const currentGitHubClient = (): GitHubClient => createGitHubClient({
@@ -29,15 +32,30 @@ const currentGitHubClient = (): GitHubClient => createGitHubClient({
 });
 
 const githubCache = createCachedGitHubClient({
-  compareCommits: (repository, baseSha, headSha) => currentGitHubClient().compareCommits(repository, baseSha, headSha),
-  getCommit: (repository, sha) => currentGitHubClient().getCommit(repository, sha),
   listPullRequestsForCommit: (repository, sha) => currentGitHubClient().listPullRequestsForCommit(repository, sha),
 }, { clock: () => Date.now() });
+
+/** 부를 때마다 설정의 master 주소 · 비밀값과 전역 fetch 로 master git 조회를 부르는 클라이언트(캐시 안쪽). */
+const currentDeployGitClient = (): DeployGitClient => {
+  const config = readServerConfig();
+  return createDeployGitClient({ baseUrl: config.deployMasterUrl, secret: config.deploySecret, fetch: (input, init) => fetch(input, init) });
+};
+
+const deployGitCache = createCachedDeployGitClient({
+  listCommits: (service, fromSha, toSha) => currentDeployGitClient().listCommits(service, fromSha, toSha),
+  getCommit: (service, sha) => currentDeployGitClient().getCommit(service, sha),
+});
 
 function logFailedCells(outcome: DeployDetailOutcome) {
   if (outcome.kind !== "view") return;
   const { view } = outcome;
-  for (const [cell, result] of [["deployment", view.deployment], ["pullRequest", view.pullRequest], ["commits", view.commits], ["commit", view.commit]] as const) {
+  const fallbackFailures = view.commits !== null && view.commits.ok ? [view.commits.value.rangeFailure, view.commits.value.headFailure] : [];
+  const cells: [string, UpstreamResult<unknown> | null][] = [
+    ["deployment", view.deployment], ["pullRequest", view.pullRequest], ["commits", view.commits],
+    ...fallbackFailures.map((failure): [string, UpstreamResult<unknown> | null] => ["commits", failure]),
+    ["commit", view.commit],
+  ];
+  for (const [cell, result] of cells) {
     if (result === null) continue;
     const logLine = upstreamFailureLogLine("deploy-detail", cell, result);
     if (logLine !== null) void log("screen-deploy-detail", logLine, "warning");
@@ -52,7 +70,7 @@ async function buildOutcome(query: DeployDetailQuery): Promise<DeployDetailOutco
     outcome = { kind: "view", view: { query, deployment: upstreamFailure("not_configured"), range: null, repository: null, pullRequest: null, commits: null, commit: null } };
   } else {
     const deployHistory = createDeployHistoryClient({ baseUrl: config.deployMasterUrl, secret: config.deploySecret, fetch: (input, init) => fetch(input, init) });
-    outcome = await buildDeployDetail({ deployHistory, github: githubCache }, query);
+    outcome = await buildDeployDetail({ deployHistory, deployGit: deployGitCache, github: githubCache }, query);
   }
   logFailedCells(outcome);
   return outcome;

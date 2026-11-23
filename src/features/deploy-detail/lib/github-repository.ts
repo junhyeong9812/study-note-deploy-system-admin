@@ -29,11 +29,9 @@ export function githubRepositoryFor(service: string): GitHubRepository | null {
  * - 커밋 하나: `https://github.com/{owner}/{name}/commit/{sha}`
  * SHA 는 받은 글자 그대로 넣는다(부르는 쪽이 16진수로 검사한 값만 준다). */
 export function githubCompareUrl(repository: GitHubRepository, baseSha: string, headSha: string): string {
-  void repository; void baseSha; void headSha;
-  throw new Error("not implemented");
+  return `https://github.com/${repository.owner}/${repository.name}/compare/${baseSha}...${headSha}`;
 }
 
 export function githubCommitUrl(repository: GitHubRepository, sha: string): string {
-  void repository; void sha;
-  throw new Error("not implemented");
+  return `https://github.com/${repository.owner}/${repository.name}/commit/${sha}`;
 }

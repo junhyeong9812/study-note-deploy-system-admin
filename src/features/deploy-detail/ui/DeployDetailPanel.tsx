@@ -1,14 +1,18 @@
-/** 배포 상세(서버 컴포넌트) — 배포 요약 · 범위(A→B) · PR · 커밋 목록 · 고른 커밋의 바뀐 파일과 diff. 명세 §10.2.
- * 받은 값(진입 함수가 칸을 고른 결과)만 그린다 — 다른 서버를 부르지 않고, 서버 모듈 · 클라이언트 · 설정을 임포트하지 않는다.
+/** 배포 상세(서버 컴포넌트) — 배포 요약 · 범위(A→B) · PR · 커밋 목록 · 고른 커밋의 바뀐 파일과 diff. 명세 §10.2 · §12.2 어드민 항 · 12.7~12.9 · 12.11.
+ * 커밋 목록 · diff 는 master git 조회의 결과(실패에 "GitHub:" 를 붙이지 않는다), PR 만 GitHub 의 결과다.
+ * 받은 값(진입 함수가 칸을 고른 결과)만 그린다 — 다른 서버를 부르지 않고, 서버 모듈 · 클라이언트 · 설정을 임포트하지 않는다(GitHub 웹 주소는 링크로만 만든다).
  * 커밋 고르기 · 닫기는 링크(GET), 파일 접고 펴기는 <details> — 브라우저 스크립트 없이 동작한다.
  * PR 본문 · 커밋 메시지 · diff 는 React 의 글자 출력으로만 그린다(HTML · 마크다운으로 해석하지 않는다). */
 import type { ReactNode } from "react";
 import type { DeploymentSummary } from "@/features/deploys/lib/deploy-history-client";
 import { formatKoreanTime, shortPrefix } from "@/features/deploys/lib/deploy-format";
 import { Duration, FailedStage, StateBadge } from "@/features/deploys/ui/DeployHistoryTable";
-import type { CommitListView, DeployDetailOutcome, DeployDetailView } from "@/features/deploy-detail/lib/deploy-detail-view";
+import type {
+  CommitDetail, CommitFileChange, CommitListView, DeployDetailOutcome, DeployDetailView, FileChangeStatus,
+} from "@/features/deploy-detail/lib/deploy-detail-view";
 import type { DeployRange } from "@/features/deploy-detail/lib/deploy-range";
-import type { CommitDetail, CommitFileChange, FileChangeStatus, PullRequestSummary } from "@/features/deploy-detail/lib/github-client";
+import type { PullRequestSummary } from "@/features/deploy-detail/lib/github-client";
+import { githubCommitUrl, githubCompareUrl, type GitHubRepository } from "@/features/deploy-detail/lib/github-repository";
 import { diffLines, type DiffLineKind } from "@/features/deploy-detail/lib/diff-lines";
 import type { UpstreamFailure } from "@/shared/lib/upstream-result";
 import styles from "@/features/deploy-detail/ui/DeployDetailPanel.module.css";
@@ -27,9 +31,7 @@ export interface DeployDetailPanelProps {
 
 const FIELD_LABELS: Readonly<Record<string, string>> = { service: "서비스", selected: "요청 ID", commit: "커밋" };
 
-const FILE_STATUS_LABELS: Readonly<Record<FileChangeStatus, string>> = {
-  added: "추가", removed: "삭제", modified: "수정", renamed: "이름 바뀜", copied: "복사", changed: "바뀜", unchanged: "그대로",
-};
+const FILE_STATUS_LABELS: Readonly<Record<FileChangeStatus, string>> = { added: "추가", removed: "삭제", modified: "수정", renamed: "이름 바뀜" };
 
 const DIFF_SIGNS: Readonly<Record<DiffLineKind, string>> = { addition: "+", deletion: "−", hunk: "", context: "", note: "" };
 const DIFF_LINE_CLASS: Readonly<Record<DiffLineKind, string>> = {
@@ -44,6 +46,16 @@ function GitHubProblem({ failure }: { failure: UpstreamFailure }) {
   return (
     <p className={styles.problem} role="status">
       GitHub: {failure.message}{failure.status !== undefined && <> · HTTP {failure.status}</>}
+    </p>
+  );
+}
+
+/** master git 조회의 실패 — 고정 사유 · HTTP 상태. 서버의 git 이력 밖이면 GitHub 링크로 넘긴다(명세 12.2). */
+function GitProblem({ failure, githubUrl }: { failure: UpstreamFailure; githubUrl: string | null }) {
+  return (
+    <p className={styles.problem} role="status">
+      {failure.message}{failure.status !== undefined && <> · HTTP {failure.status}</>}
+      {failure.reason === "not_in_history" && githubUrl !== null && <> — <ExternalLink href={githubUrl}>GitHub 에서 보기</ExternalLink></>}
     </p>
   );
 }
@@ -74,23 +86,22 @@ function DeploymentSummaryList({ deployment }: { deployment: DeploymentSummary }
 function RangeLine({ range, commits }: { range: DeployRange; commits: DeployDetailView["commits"] }) {
   if (range.status === "no_previous") return <p className={styles.range}>이전 성공 배포 없음 — 이번 커밋만</p>;
   if (range.status === "same_commit") return <p className={styles.range}>변경 없음(같은 커밋 재배포)</p>;
-  const list = commits !== null && commits.ok ? commits.value : null;
+  const list = commits !== null && commits.ok && commits.value.relation === "ancestor" ? commits.value : null;
   return (
     <div className={styles.range}>
       <p>
         직전 성공 배포 <ShortSha sha={range.baseCommitSha ?? ""} /> → 이번 배포 <ShortSha sha={range.headCommitSha} />
-        {list !== null && <>, 커밋 {list.totalCommits}개</>}
+        {list !== null && <>, 커밋 {list.commits.length}개{list.hasMoreCommits || !list.rangeComplete ? " 이상" : ""}</>}
       </p>
-      {list !== null && list.diverged && (
-        <p className={styles.warning} role="note">
-          <span aria-hidden="true">⚠ </span>갈라진 이력 — 직전 성공 배포의 커밋이 이번 커밋의 조상이 아닙니다(강제 푸시 등). GitHub 비교 결과를 그대로 보여 줍니다.
-        </p>
-      )}
-      {list !== null && list.comparisonStatus === "behind" && (
-        <p className={styles.warning} role="note">이번 커밋이 직전 성공 배포의 커밋보다 앞선(오래된) 커밋입니다 — 되돌리는 배포.</p>
-      )}
     </div>
   );
+}
+
+/** 커밋 목록 칸이 실패했을 때의 GitHub 주소 — 범위면 비교, A 없음이면 B 의 커밋. */
+function rangeGitHubUrl(range: DeployRange, repository: GitHubRepository | null): string | null {
+  if (repository === null || range.status === "same_commit") return null;
+  if (range.status === "no_previous" || range.baseCommitSha === null) return githubCommitUrl(repository, range.headCommitSha);
+  return githubCompareUrl(repository, range.baseCommitSha, range.headCommitSha);
 }
 
 function PullRequestSection({ pullRequest }: { pullRequest: DeployDetailView["pullRequest"] }) {
@@ -125,36 +136,63 @@ function PullRequestBody({ pullRequest }: { pullRequest: PullRequestSummary }) {
   );
 }
 
-function CommitListSection({ commits, selectedSha, commitHref }: { commits: UpstreamFailure | { ok: true; value: CommitListView }; selectedSha: string | null; commitHref: (sha: string) => string }) {
+/** relation 안내(명세 12.7 · 12.8) — 범위를 낼 수 없는 까닭과 GitHub 비교 링크. */
+function RelationNote({ list }: { list: CommitListView }) {
+  if (list.htmlUrl === null) return null;
+  if (list.relation === "not_ancestor") {
+    return <p className={styles.warning} role="note">직전 배포가 이 커밋의 조상이 아님 — <ExternalLink href={list.htmlUrl}>GitHub 에서 비교 보기</ExternalLink></p>;
+  }
+  if (list.relation === "unknown") {
+    return (
+      <p className={styles.warning} role="note">
+        이 서버의 git 이력으로는 알 수 없음(최근 50개 밖일 수 있음) — <ExternalLink href={list.htmlUrl}>GitHub 에서 비교 보기</ExternalLink>
+      </p>
+    );
+  }
+  return null;
+}
+
+function CommitListSection({ view, commits, commitHref }: {
+  view: DeployDetailView; commits: UpstreamFailure | { ok: true; value: CommitListView }; commitHref: (sha: string) => string;
+}) {
+  const selectedSha = view.query.commitSha;
+  const headUrl = view.repository !== null && view.range !== null ? githubCommitUrl(view.repository, view.range.headCommitSha) : null;
   return (
     <section className={styles.section} aria-labelledby="deploy-detail-commits">
       <h3 id="deploy-detail-commits" className={styles.sectionTitle}>
-        커밋{commits.ok && <span className={styles.muted}> {commits.value.totalCommits}개</span>}
+        커밋{commits.ok && <span className={styles.muted}> {commits.value.commits.length}개</span>}
       </h3>
       {!commits.ok ? (
-        <GitHubProblem failure={commits} />
-      ) : commits.value.commits.length === 0 ? (
-        <p className={styles.muted}>바뀐 커밋이 없습니다.</p>
+        <GitProblem failure={commits} githubUrl={view.range === null ? null : rangeGitHubUrl(view.range, view.repository)} />
       ) : (
         <>
-          <ol className={styles.commitList}>
-            {commits.value.commits.map((commit) => {
-              const current = selectedSha !== null && commit.sha.toLowerCase() === selectedSha.toLowerCase();
-              return (
-                <li key={commit.sha}>
-                  <a className={styles.commitLink} href={commitHref(commit.sha)} aria-current={current ? "true" : undefined}>
-                    <ShortSha sha={commit.sha} />
-                    <span className={styles.commitTitle}>{commit.title}</span>
-                    <span className={styles.commitTime}><Time value={commit.authoredAt} /></span>
-                  </a>
-                </li>
-              );
-            })}
-          </ol>
-          {commits.value.hasMoreCommits && commits.value.htmlUrl !== null && (
+          <RelationNote list={commits.value} />
+          {commits.value.rangeFailure !== null && <GitProblem failure={commits.value.rangeFailure} githubUrl={commits.value.htmlUrl} />}
+          {commits.value.headFailure !== null && <GitProblem failure={commits.value.headFailure} githubUrl={headUrl} />}
+          {commits.value.commits.length === 0 ? (
+            commits.value.headFailure === null && <p className={styles.muted}>바뀐 커밋이 없습니다.</p>
+          ) : (
+            <ol className={styles.commitList}>
+              {commits.value.commits.map((commit) => {
+                const current = selectedSha !== null && commit.sha.toLowerCase() === selectedSha.toLowerCase();
+                return (
+                  <li key={commit.sha}>
+                    <a className={styles.commitLink} href={commitHref(commit.sha)} aria-current={current ? "true" : undefined}>
+                      <ShortSha sha={commit.sha} />
+                      <span className={styles.commitTitle}>{commit.title}</span>
+                      <span className={styles.commitTime}><Time value={commit.authoredAt} /></span>
+                    </a>
+                  </li>
+                );
+              })}
+            </ol>
+          )}
+          {commits.value.relation === "ancestor" && commits.value.htmlUrl !== null && (commits.value.hasMoreCommits || !commits.value.rangeComplete) && (
             <p className={styles.more}>
-              더 있음 — 전체 {commits.value.totalCommits}개 중 최근 {commits.value.commits.length}개만 보입니다.{" "}
-              <ExternalLink href={commits.value.htmlUrl}>GitHub 에서 보기</ExternalLink>
+              {commits.value.hasMoreCommits
+                ? <>더 있음 — 이번 배포에 가까운 {commits.value.commits.length}개만 보입니다.</>
+                : <>더 있음 — 이 서버의 git 이력이 여기서 끊겼습니다(최근 50개 밖일 수 있음).</>}{" "}
+              <ExternalLink href={commits.value.htmlUrl}>GitHub 에서 비교 보기</ExternalLink>
             </p>
           )}
         </>
@@ -163,9 +201,20 @@ function CommitListSection({ commits, selectedSha, commitHref }: { commits: Upst
   );
 }
 
+const UNAVAILABLE_PATCH_TEXT = {
+  binary: "미리 볼 수 없음(바이너리)",
+  empty: "내용 바뀜 없음(이름만 바뀜 · 빈 파일 등)",
+} as const;
+
 function FileDiff({ file, commitUrl }: { file: CommitFileChange; commitUrl: string }) {
-  if (file.patch.kind === "unavailable") return <p className={styles.muted}>미리 볼 수 없음(바이너리이거나 너무 큼)</p>;
+  if (file.patch.kind === "unavailable") {
+    if (file.patch.reason === "omitted") {
+      return <p className={styles.more}>더 있음 — 이 파일의 diff 는 크기 상한으로 생략되었습니다. <ExternalLink href={commitUrl}>GitHub 에서 보기</ExternalLink></p>;
+    }
+    return <p className={styles.muted}>{UNAVAILABLE_PATCH_TEXT[file.patch.reason]}</p>;
+  }
   const patch = file.patch;
+  const shownLines = patch.text.split("\n").length;
   return (
     <>
       <div className={styles.diffScroller} role="region" aria-label={`${file.filename} diff`} tabIndex={0}>
@@ -184,7 +233,9 @@ function FileDiff({ file, commitUrl }: { file: CommitFileChange; commitUrl: stri
       </div>
       {patch.truncated && (
         <p className={styles.more}>
-          더 있음 — 전체 {patch.totalLines}줄 중 앞 {patch.text.split("\n").length}줄만 보입니다.{" "}
+          {patch.totalLines !== null
+            ? <>더 있음 — 전체 {patch.totalLines}줄 중 앞 {shownLines}줄만 보입니다.</>
+            : <>더 있음 — 앞 {shownLines}줄만 보입니다.</>}{" "}
           <ExternalLink href={commitUrl}>GitHub 에서 보기</ExternalLink>
         </p>
       )}
@@ -192,7 +243,8 @@ function FileDiff({ file, commitUrl }: { file: CommitFileChange; commitUrl: stri
   );
 }
 
-function CommitFilesSection({ commit }: { commit: DeployDetailView["commit"] }) {
+function CommitFilesSection({ view }: { view: DeployDetailView }) {
+  const { commit } = view;
   if (commit === null) {
     return (
       <section className={styles.section} aria-labelledby="deploy-detail-files">
@@ -205,11 +257,19 @@ function CommitFilesSection({ commit }: { commit: DeployDetailView["commit"] }) 
     return (
       <section className={styles.section} aria-labelledby="deploy-detail-files">
         <h3 id="deploy-detail-files" className={styles.sectionTitle}>바뀐 파일</h3>
-        <GitHubProblem failure={commit} />
+        <GitProblem failure={commit} githubUrl={chosenCommitUrl(view)} />
       </section>
     );
   }
   return <CommitFiles commit={commit.value} />;
+}
+
+/** 고른 커밋의 GitHub 주소 — 목록의 전체 SHA(없으면 받은 글자). */
+function chosenCommitUrl(view: DeployDetailView): string | null {
+  if (view.repository === null || view.query.commitSha === null) return null;
+  const chosenSha = view.query.commitSha.toLowerCase();
+  const listed = view.commits !== null && view.commits.ok ? view.commits.value.commits.find((summary) => summary.sha.toLowerCase() === chosenSha) : undefined;
+  return githubCommitUrl(view.repository, listed?.sha ?? chosenSha);
 }
 
 function CommitFiles({ commit }: { commit: CommitDetail }) {
@@ -223,6 +283,9 @@ function CommitFiles({ commit }: { commit: CommitDetail }) {
         {commit.authorName ?? "작성자 없음"} · <Time value={commit.authoredAt} /> · <ExternalLink href={commit.htmlUrl}>GitHub 에서 보기</ExternalLink>
       </p>
       <div className={styles.text}>{commit.message}</div>
+      {commit.messageTruncated && (
+        <p className={styles.more}>더 있음 — 메시지 뒷부분이 잘렸습니다. <ExternalLink href={commit.htmlUrl}>GitHub 에서 보기</ExternalLink></p>
+      )}
       {commit.files.length === 0 && <p className={styles.muted}>바뀐 파일이 없습니다.</p>}
       <ul className={styles.fileList}>
         {commit.files.map((file) => (
@@ -282,8 +345,8 @@ function DetailBody({ outcome, commitHref }: { outcome: DeployDetailOutcome; com
       <DeploymentSummaryList deployment={view.deployment.value} />
       {view.range !== null && <RangeLine range={view.range} commits={view.commits} />}
       <PullRequestSection pullRequest={view.pullRequest} />
-      {view.commits !== null && <CommitListSection commits={view.commits} selectedSha={view.query.commitSha} commitHref={commitHref} />}
-      <CommitFilesSection commit={view.commit} />
+      {view.commits !== null && <CommitListSection view={view} commits={view.commits} commitHref={commitHref} />}
+      <CommitFilesSection view={view} />
     </>
   );
 }

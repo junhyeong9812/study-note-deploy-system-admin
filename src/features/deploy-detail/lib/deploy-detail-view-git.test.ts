@@ -40,6 +40,8 @@ import { expectFailure, okValue } from "@/shared/lib/upstream-test-fakes";
 const SHA_A = fakeSha(1);
 const SHA_B = fakeSha(2);
 const SHA_MIDDLE = fakeSha(3);
+/** 글자가 섞인 SHA — 대문자로 바꾸면 실제로 달라진다(fakeSha 는 숫자뿐이라 대소문자 사례에 못 쓴다). */
+const SHA_WITH_LETTERS = "ab".repeat(20);
 const REPOSITORY = { owner: "junhyeong9812", name: "study-note-deploy-system-backend" };
 const COMPARE_URL = `${REPOSITORY_WEB}/compare/${SHA_A}...${SHA_B}`;
 
@@ -151,12 +153,12 @@ describe("출처 — 커밋 목록 · diff 는 master git, PR 만 GitHub", () =>
   });
 
   it("commit 이 목록에 있으면 deployGit.getCommit(서비스, 목록의 SHA) — 대소문자 무관 완전 일치, GitHub 커밋 조회 0회", async () => {
-    const dependencies = fakes();
-    const view = viewOf(await build(dependencies, query({ commitSha: SHA_MIDDLE.toUpperCase() })));
+    const dependencies = fakes({ range: { ok: true, value: gitRange([gitCommit(SHA_B), gitCommit(SHA_WITH_LETTERS)]) } });
+    const view = viewOf(await build(dependencies, query({ commitSha: SHA_WITH_LETTERS.toUpperCase() })));
     expect(dependencies.deployGit.getCommit).toHaveBeenCalledTimes(1);
-    expect(dependencies.deployGit.getCommit).toHaveBeenCalledWith("backend", SHA_MIDDLE);
+    expect(dependencies.deployGit.getCommit).toHaveBeenCalledWith("backend", SHA_WITH_LETTERS);
     expect(okValue(view.commit!)).toEqual({
-      ...summary(SHA_MIDDLE), hasMoreFiles: false,
+      ...summary(SHA_WITH_LETTERS), hasMoreFiles: false,
       files: [{ filename: "a.ts", previousFilename: null, status: "modified", additions: 1, deletions: 1, patch: { kind: "text", text: "@@ -1 +1 @@\n-a\n+b", truncated: false, totalLines: 3 } }],
     });
     expectNoGitHubCommitCalls(dependencies);
@@ -196,9 +198,12 @@ describe("relation — not_ancestor · unknown · 더 있음", () => {
   });
 
   it.each(["not_ancestor", "unknown"] as const)("%s + commit=B → B 의 파일 · diff(이미 받은 B — getCommit 한 번)", async (relation) => {
-    const dependencies = fakes({ range: { ok: true, value: gitRange([], { relation, rangeComplete: relation !== "unknown" }) } });
-    const view = viewOf(await build(dependencies, query({ commitSha: SHA_B.toUpperCase() })));
-    expect(okValue(view.commit!).sha).toBe(SHA_B);
+    const dependencies = fakes({
+      deployments: { ok: true, value: [deployment("selected", SHA_WITH_LETTERS), deployment("previous", SHA_A)] },
+      range: { ok: true, value: gitRange([], { relation, rangeComplete: relation !== "unknown" }) },
+    });
+    const view = viewOf(await build(dependencies, query({ commitSha: SHA_WITH_LETTERS.toUpperCase() })));
+    expect(okValue(view.commit!).sha).toBe(SHA_WITH_LETTERS);
     expect(okValue(view.commit!).files).toHaveLength(1);
     expect(dependencies.deployGit.getCommit).toHaveBeenCalledTimes(1);
   });

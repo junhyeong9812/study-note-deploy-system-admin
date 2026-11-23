@@ -20,6 +20,10 @@ import {
 const SHA_A = fakeSha(1);
 const SHA_B = fakeSha(2);
 const SHA_MIDDLE = fakeSha(3);
+/** 글자가 섞인 SHA — 대문자로 바꾸면 실제로 달라진다(fakeSha 는 숫자뿐이라 대소문자 사례에 못 쓴다). */
+const SHA_WITH_LETTERS = "ab".repeat(20);
+const SHA_WITH_LETTERS_OTHER = "cd".repeat(20);
+const SHA_WITH_LETTERS_THIRD = "ef".repeat(20);
 
 function defaultHandler(url: URL): Response {
   if (url.pathname === DEPLOY_GIT_COMMITS_PATH) return masterGitSuccess(gitCommitRangeJson([gitCommitJson(SHA_B), gitCommitJson(SHA_MIDDLE)]));
@@ -78,12 +82,12 @@ describe("요청 — 경로 · 인자 · 머리글 · 읽기 전용", () => {
 
   it("SHA 는 소문자로 바꿔 보낸다(master 는 소문자 16진수만 받는다)", async () => {
     const { fetch, client } = setup();
-    await client.listCommits("backend", SHA_A.toUpperCase(), SHA_B.toUpperCase());
-    await client.getCommit("backend", SHA_MIDDLE.toUpperCase());
+    await client.listCommits("backend", SHA_WITH_LETTERS.toUpperCase(), SHA_WITH_LETTERS_OTHER.toUpperCase());
+    await client.getCommit("backend", SHA_WITH_LETTERS_THIRD.toUpperCase());
     const [listUrl, commitUrl] = fetch.mock.calls.map(([input]) => new URL(input));
-    expect(listUrl.searchParams.get("from")).toBe(SHA_A);
-    expect(listUrl.searchParams.get("to")).toBe(SHA_B);
-    expect(commitUrl.searchParams.get("sha")).toBe(SHA_MIDDLE);
+    expect(listUrl.searchParams.get("from")).toBe(SHA_WITH_LETTERS);
+    expect(listUrl.searchParams.get("to")).toBe(SHA_WITH_LETTERS_OTHER);
+    expect(commitUrl.searchParams.get("sha")).toBe(SHA_WITH_LETTERS_THIRD);
   });
 
   it("제한 시간 신호를 5000ms 로 만들어 넘긴다", async () => {
@@ -167,7 +171,7 @@ describe("커밋 목록 — 필요한 칸만 · master 순서 · relation 세 �
     ["truncated 없음", { commits: [], range_complete: true, relation: "ancestor" }],
     ["range_complete 가 글자", gitCommitRangeJson([], { range_complete: "true" })],
     ["커밋 sha 가 짧음(전체 SHA 아님)", gitCommitRangeJson([gitCommitJson(SHA_B.slice(0, 12))])],
-    ["커밋 sha 가 대문자", gitCommitRangeJson([gitCommitJson(SHA_B.toUpperCase())])],
+    ["커밋 sha 가 대문자", gitCommitRangeJson([gitCommitJson(SHA_WITH_LETTERS.toUpperCase())])],
     ["커밋 sha 가 16진수 아님", gitCommitRangeJson([gitCommitJson("z".repeat(40))])],
     ["subject 없음", gitCommitRangeJson([{ ...gitCommitJson(SHA_B), subject: undefined }])],
     ["author_name 이 null", gitCommitRangeJson([gitCommitJson(SHA_B, { author_name: null })])],

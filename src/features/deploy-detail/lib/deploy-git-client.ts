@@ -32,8 +32,10 @@
  *   502 bad_status(`agent_unreachable` · `agent_unauthorized` · `unexpected_response`) · 500 bad_status(`git_failed`).
  * - 연결 실패 unreachable · 5초 timeout · 깨진 JSON unparseable(getUpstream 의 관례 그대로). */
 import type { FetchLike, TimeoutSignalFactory } from "@/features/auth/lib/types";
-import type { DeployService } from "@/features/deploys/lib/deploy-history-query";
-import type { UpstreamResult } from "@/shared/lib/upstream-result";
+import { isCommitSha } from "@/features/deploy-detail/lib/deploy-detail-query";
+import { DEPLOY_SERVICES, type DeployService } from "@/features/deploys/lib/deploy-history-query";
+import { getUpstream, isNonNegativeInteger, isRecord, upstreamUrl, type UpstreamResponse } from "@/shared/lib/upstream-fetch";
+import { failureForHttpStatus, invalidInput, upstreamFailure, type UpstreamFailure, type UpstreamResult } from "@/shared/lib/upstream-result";
 
 export const DEPLOY_GIT_COMMITS_PATH = "/deploys/git/commits";
 export const DEPLOY_GIT_COMMIT_PATH = "/deploys/git/commit";
@@ -114,9 +116,167 @@ export interface DeployGitClient {
   getCommit(service: DeployService, sha: string): Promise<UpstreamResult<GitCommitDetail>>;
 }
 
+/** 전체 SHA — 소문자 16진수 40자(SHA-1) 또는 64자(SHA-256). */
+const FULL_COMMIT_SHA_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+
+/** 이유를 고르는 데만 쓰는 오류 코드(글자는 넘기지 않는다). */
+const NOT_IN_HISTORY_CODES: readonly string[] = ["commit_not_found", "parent_unavailable"];
+const HISTORY_CHANGING_CODE = "repository_changing";
+
+/** 해석 중 꼴이 다를 때 던진다 — 응답 하나의 해석을 통째로 unparseable 로 바꾼다(원문은 담지 않는다). */
+class UnexpectedShape extends Error {}
+
+function requireRecord(value: unknown): Record<string, unknown> {
+  if (!isRecord(value)) throw new UnexpectedShape();
+  return value;
+}
+
+function requireText(value: unknown): string {
+  if (typeof value !== "string") throw new UnexpectedShape();
+  return value;
+}
+
+/** null 이면 null, 글자면 그대로, 그 밖(칸 없음 포함)은 꼴이 다름. */
+function requireTextOrNull(value: unknown): string | null {
+  if (value === null) return null;
+  return requireText(value);
+}
+
+function requireBoolean(value: unknown): boolean {
+  if (typeof value !== "boolean") throw new UnexpectedShape();
+  return value;
+}
+
+function requireCount(value: unknown): number {
+  if (!isNonNegativeInteger(value)) throw new UnexpectedShape();
+  return value;
+}
+
+function requireArray(value: unknown): unknown[] {
+  if (!Array.isArray(value)) throw new UnexpectedShape();
+  return value;
+}
+
+function requireOneOf<Value extends string>(value: unknown, allowed: readonly Value[]): Value {
+  if (typeof value !== "string" || !(allowed as readonly string[]).includes(value)) throw new UnexpectedShape();
+  return value as Value;
+}
+
+function requireFullSha(value: unknown): string {
+  const sha = requireText(value);
+  if (!FULL_COMMIT_SHA_PATTERN.test(sha)) throw new UnexpectedShape();
+  return sha;
+}
+
+/** 커밋 요약의 칸만 고른다(작성자 이메일 등 그 밖 칸은 버린다). */
+function parseCommit(value: unknown): GitCommit {
+  const row = requireRecord(value);
+  return {
+    sha: requireFullSha(row.sha),
+    authorName: requireText(row.author_name),
+    authoredAt: requireText(row.authored_at),
+    subject: requireText(row.subject),
+    body: requireText(row.body),
+    bodyTruncated: requireBoolean(row.body_truncated),
+  };
+}
+
+function parseCommitRange(data: Record<string, unknown>): GitCommitRange {
+  const received = requireArray(data.commits).map(parseCommit);
+  const relation = requireOneOf(data.relation, GIT_RELATIONS);
+  if (relation !== "ancestor" && received.length > 0) throw new UnexpectedShape();   // 계약: not_ancestor · unknown 은 빈 목록
+  const commits = received.slice(0, GIT_COMMIT_LIST_LIMIT);   // B 쪽(앞)을 남긴다
+  return {
+    commits,
+    truncated: requireBoolean(data.truncated) || received.length > commits.length,
+    rangeComplete: requireBoolean(data.range_complete),
+    relation,
+  };
+}
+
+function parseFileChange(value: unknown): GitFileChange {
+  const row = requireRecord(value);
+  const receivedPatch = requireTextOrNull(row.patch);
+  const masterTruncated = requireBoolean(row.patch_truncated);
+  const file = {
+    path: requireText(row.path),
+    previousPath: requireTextOrNull(row.previous_path),
+    status: requireOneOf(row.status, GIT_FILE_STATUSES),
+    additions: requireCount(row.additions),
+    deletions: requireCount(row.deletions),
+    binary: requireBoolean(row.binary),
+  };
+  if (receivedPatch === null) return { ...file, patch: null, patchTruncated: masterTruncated, patchTotalLines: null };
+  const lines = receivedPatch.split("\n");
+  const cut = lines.length > GIT_FILE_PATCH_LINE_LIMIT;
+  return {
+    ...file,
+    patch: cut ? lines.slice(0, GIT_FILE_PATCH_LINE_LIMIT).join("\n") : receivedPatch,
+    patchTruncated: masterTruncated || cut,
+    patchTotalLines: masterTruncated ? null : lines.length,
+  };
+}
+
+function parseCommitDetail(data: Record<string, unknown>, requestedSha: string): GitCommitDetail {
+  const commit = parseCommit(data);
+  const received = requireArray(data.files).map(parseFileChange);
+  const files = received.slice(0, GIT_COMMIT_FILE_LIMIT);
+  if (!commit.sha.startsWith(requestedSha)) throw new UnexpectedShape();   // 요청한 커밋이 아니다
+  return { ...commit, files, filesTruncated: requireBoolean(data.files_truncated) || received.length > files.length };
+}
+
+/** 오류 봉투의 error.code — 이유를 고르는 데만 쓴다. 없거나 글자가 아니면 null. */
+function errorCodeOf(response: UpstreamResponse): string | null {
+  if (!response.parsed || !isRecord(response.json) || !isRecord(response.json.error)) return null;
+  const code = response.json.error.code;
+  return typeof code === "string" ? code : null;
+}
+
+/** 2xx 가 아닌 응답 → 실패 이유(머리 주석의 표). */
+function failureForMasterGitResponse(response: UpstreamResponse): UpstreamFailure {
+  const { status } = response;
+  const code = errorCodeOf(response);
+  if (status === 404 && code !== null && NOT_IN_HISTORY_CODES.includes(code)) return upstreamFailure("not_in_history", { status });
+  if (status === 503 && code === HISTORY_CHANGING_CODE) return upstreamFailure("history_changing", { status });
+  if (status === 429) return upstreamFailure("rate_limited", { status });
+  return failureForHttpStatus(status);
+}
+
+function isDeployService(service: string): service is DeployService {
+  return (DEPLOY_SERVICES as readonly string[]).includes(service);
+}
+
 export function createDeployGitClient(options: DeployGitClientOptions): DeployGitClient {
-  void options;
-  throw new Error("not implemented");
+  async function get<Value>(path: string, parameters: [string, string][], parse: (data: Record<string, unknown>) => Value): Promise<UpstreamResult<Value>> {
+    const response = await getUpstream(upstreamUrl(options.baseUrl, path, parameters), {
+      fetch: options.fetch, timeoutSignal: options.timeoutSignal, headers: { "X-Deploy-Secret": options.secret },
+    });
+    if (!response.ok) return response;
+    if (response.status < 200 || response.status >= 300) return failureForMasterGitResponse(response);
+    if (!response.parsed || !isRecord(response.json) || response.json.success !== true || !isRecord(response.json.data)) {
+      return upstreamFailure("unparseable");
+    }
+    try {
+      return { ok: true, value: parse(response.json.data) };
+    } catch (error) {
+      if (error instanceof UnexpectedShape) return upstreamFailure("unparseable");
+      throw error;
+    }
+  }
+
+  return {
+    async listCommits(service, fromSha, toSha) {
+      if (!isDeployService(service)) return invalidInput("service");
+      if (!isCommitSha(fromSha) || !isCommitSha(toSha)) return invalidInput("sha");
+      return get(DEPLOY_GIT_COMMITS_PATH, [["service", service], ["from", fromSha.toLowerCase()], ["to", toSha.toLowerCase()]], parseCommitRange);
+    },
+    async getCommit(service, sha) {
+      if (!isDeployService(service)) return invalidInput("service");
+      if (!isCommitSha(sha)) return invalidInput("sha");
+      const requestedSha = sha.toLowerCase();
+      return get(DEPLOY_GIT_COMMIT_PATH, [["service", service], ["sha", requestedSha]], (data) => parseCommitDetail(data, requestedSha));
+    },
+  };
 }
 
 /** 캐시의 항목 수 상한(넘으면 오래된 것부터 버린다 — 재시작하면 비워짐). */
@@ -133,6 +293,34 @@ export interface DeployGitCacheOptions {
  *   not_ancestor · unknown · rangeComplete:false · truncated · 실패는 저장하지 않는다 — 이력이 바뀌면(다음 배포의 fetch) 답이 달라진다.
  * - 항목 수가 maximumEntries 를 넘으면 가장 오래 전에 넣은 것부터 버린다(두 경로가 한 상한을 함께 쓴다). */
 export function createCachedDeployGitClient(client: DeployGitClient, options: DeployGitCacheOptions = {}): DeployGitClient {
-  void client; void options;
-  throw new Error("not implemented");
+  const maximumEntries = options.maximumEntries ?? DEPLOY_GIT_CACHE_MAXIMUM_ENTRIES;
+  /** Map 은 넣은 순서를 지키므로 첫 항목이 가장 오래된 것이다. */
+  const entries = new Map<string, unknown>();
+
+  function remember(key: string, value: unknown) {
+    entries.delete(key);
+    entries.set(key, value);
+    while (entries.size > maximumEntries) {
+      const oldestKey = entries.keys().next().value as string;
+      entries.delete(oldestKey);
+    }
+  }
+
+  return {
+    async listCommits(service, fromSha, toSha) {
+      const key = `commits:${service}:${fromSha}:${toSha}`;
+      if (entries.has(key)) return { ok: true, value: entries.get(key) as GitCommitRange };
+      const result = await client.listCommits(service, fromSha, toSha);
+      // 이력이 바뀌면(다음 배포의 fetch) 답이 달라지는 것은 두지 않는다
+      if (result.ok && result.value.relation === "ancestor" && result.value.rangeComplete && !result.value.truncated) remember(key, result.value);
+      return result;
+    },
+    async getCommit(service, sha) {
+      const key = `commit:${service}:${sha}`;
+      if (entries.has(key)) return { ok: true, value: entries.get(key) as GitCommitDetail };
+      const result = await client.getCommit(service, sha);
+      if (result.ok) remember(key, result.value);   // 실패는 저장하지 않는다
+      return result;
+    },
+  };
 }

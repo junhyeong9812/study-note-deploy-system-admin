@@ -1,6 +1,6 @@
-/** 배포 이력 화면의 배포 상세(명세 §10.2) — 실제 렌더(서버 컴포넌트 → HTML). 진입 함수와 전역 fetch(가짜 master · 가짜 GitHub)를 거친다.
- * 선택 없음 · 분할 · 닫기 · 커밋 링크 주소 · 범위 세 상태 · 갈라진 이력 · PR 없음 · GitHub 실패 구역 · 상한 "더 있음" · patch 없음 ·
- * 글자 그대로(이스케이프) · 세션 없음을 본다. 진입 모듈의 GitHub 캐시가 사례 사이에 이어지지 않게 사례마다 모듈을 새로 읽는다. */
+/** 배포 이력 화면의 배포 상세(명세 §10.2 · §10.3) — 실제 렌더(서버 컴포넌트 → HTML). 진입 함수와 전역 fetch(가짜 master — 배포 이력 · git 조회, 가짜 GitHub — PR)를 거친다.
+ * 선택 없음 · 분할 · 닫기 · 커밋 링크 주소 · 범위 세 상태 · PR 없음 · GitHub 실패 구역 · 상한 "더 있음" · 바이너리 ·
+ * 글자 그대로(이스케이프) · 세션 없음을 본다(relation · 이력 밖 · 출처 교체는 deploys-detail-git-page.test). 진입 모듈의 캐시가 사례 사이에 이어지지 않게 사례마다 모듈을 새로 읽는다. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const state = vi.hoisted(() => ({ cookieValue: undefined as string | undefined }));
@@ -20,9 +20,9 @@ vi.mock("next/navigation", () => ({ redirect: (location: string) => { throw new 
 import { issueSessionToken } from "@/features/auth/lib/session";
 import { FAKE_ORIGIN, FAKE_SIGNING_KEY } from "@/features/auth/lib/test-fakes";
 import {
-  REPOSITORY_WEB, fakeSha, githubCommitObject, githubCommitWithFiles, githubComparison, githubFile, githubPullRequest, githubResponse,
-  patchWithLines, rateLimitedResponse,
-} from "@/features/deploy-detail/lib/github-test-fakes";
+  gitCommitDetailJson, gitCommitJson, gitCommitRangeJson, gitFileJson, gitPatchWithLines, masterGitSuccess,
+} from "@/features/deploy-detail/lib/deploy-git-test-fakes";
+import { REPOSITORY_WEB, fakeSha, githubPullRequest, githubResponse, rateLimitedResponse } from "@/features/deploy-detail/lib/github-test-fakes";
 import {
   FAKE_DEPLOY_MASTER_URL, FAKE_DEPLOY_SECRET, UPSTREAM_RAW_MARKER, createRoutedFetch, expectNoForbiddenText, jsonBody, type RoutedFetchHandler,
 } from "@/shared/lib/upstream-test-fakes";
@@ -49,25 +49,39 @@ const DEFAULT_ROWS: Row[] = [
 
 let rows: Row[] = DEFAULT_ROWS;
 let masterHandler: RoutedFetchHandler = defaultMasterHandler;
+let commitsHandler: RoutedFetchHandler = defaultCommitsHandler;
+let commitHandler: RoutedFetchHandler = defaultCommitHandler;
 let githubHandler: RoutedFetchHandler = defaultGithubHandler;
 
+/** master 배포 이력. */
 function defaultMasterHandler(url: URL): Response {
   const service = url.searchParams.get("service");
   return jsonBody({ success: true, data: { deployments: rows.filter((item) => service === null || item.service === service) } });
 }
 
+/** master git — 커밋 목록(B 쪽이 먼저). */
+function defaultCommitsHandler(): Response {
+  return masterGitSuccess(gitCommitRangeJson([gitCommitJson(SHA_B, { subject: "fix: head" }), gitCommitJson(SHA_MIDDLE, { subject: "feat: middle", body: "body" })]));
+}
+
+/** master git — 커밋 하나. */
+function defaultCommitHandler(url: URL): Response {
+  return masterGitSuccess(gitCommitDetailJson(url.searchParams.get("sha") ?? "", [gitFileJson("src/a.ts", { patch: "@@ -1,2 +1,2 @@\n context\n-old line\n+new line" })]));
+}
+
+/** GitHub — PR 만. */
 function defaultGithubHandler(url: URL): Response {
-  if (url.pathname.includes("/compare/")) {
-    return githubResponse(githubComparison(SHA_A, SHA_B, [githubCommitObject(SHA_MIDDLE, "feat: middle\n\nbody"), githubCommitObject(SHA_B, "fix: head")]));
-  }
   if (url.pathname.endsWith("/pulls")) return githubResponse([githubPullRequest(12, { title: "배포 상세 화면", body: "## 바뀐 것\n- 상세" })]);
-  const sha = url.pathname.split("/").pop()!;
-  return githubResponse(githubCommitWithFiles(sha, [githubFile("src/a.ts", { patch: "@@ -1,2 +1,2 @@\n context\n-old line\n+new line" })]));
+  throw new Error(`unexpected GitHub path ${url.pathname}`);
 }
 
 const networkFetch = createRoutedFetch((url, init) => {
   if (url.hostname === "api.github.com") return githubHandler(url, init);
-  if (url.origin === new URL(FAKE_DEPLOY_MASTER_URL).origin) return masterHandler(url, init);
+  if (url.origin === new URL(FAKE_DEPLOY_MASTER_URL).origin) {
+    if (url.pathname === "/deploys/git/commits") return commitsHandler(url, init);
+    if (url.pathname === "/deploys/git/commit") return commitHandler(url, init);
+    return masterHandler(url, init);
+  }
   throw new Error(`unexpected host ${url.hostname}`);
 });
 
@@ -84,8 +98,17 @@ function attributeHref(path: string): string {
   return `href="${path.replaceAll("&", "&amp;")}"`;
 }
 
+/** master 배포 이력 호출(git 조회 경로 제외). */
 function masterCalls() {
-  return networkFetch.mock.calls.filter(([input]) => new URL(input).origin === new URL(FAKE_DEPLOY_MASTER_URL).origin).map(([input]) => new URL(input));
+  return networkFetch.mock.calls
+    .map(([input]) => new URL(input))
+    .filter((url) => url.origin === new URL(FAKE_DEPLOY_MASTER_URL).origin && url.pathname === "/deploys");
+}
+
+function masterGitCalls() {
+  return networkFetch.mock.calls
+    .map(([input]) => new URL(input))
+    .filter((url) => url.origin === new URL(FAKE_DEPLOY_MASTER_URL).origin && url.pathname.startsWith("/deploys/git/"));
 }
 
 function githubCalls() {
@@ -106,6 +129,8 @@ beforeEach(() => {
   state.cookieValue = issueSessionToken(FAKE_SIGNING_KEY, Date.now() - 60_000);
   rows = DEFAULT_ROWS;
   masterHandler = defaultMasterHandler;
+  commitsHandler = defaultCommitsHandler;
+  commitHandler = defaultCommitHandler;
   githubHandler = defaultGithubHandler;
   networkFetch.mockClear();
   vi.stubGlobal("fetch", networkFetch);
@@ -118,12 +143,13 @@ afterEach(() => {
 });
 
 describe("선택 없음 · 선택 있음(분할)", () => {
-  it("선택 없음 — 상세 구역이 없고 GitHub 를 부르지 않는다, 줄마다 상세 링크(목록의 서비스 선택 유지 · 줄의 서비스)", async () => {
+  it("선택 없음 — 상세 구역이 없고 GitHub · master git 을 부르지 않는다, 줄마다 상세 링크(목록의 서비스 선택 유지 · 줄의 서비스)", async () => {
     const html = await render({ service: "backend" });
     expect(html).not.toContain('aria-label="배포 상세"');
     expect(html).toContain("<th scope=\"col\">요청 ID</th>");
     expect(html).toContain(attributeHref("/deploys?service=backend&selected=selected-1&selectedService=backend"));
     expect(githubCalls()).toHaveLength(0);
+    expect(masterGitCalls()).toHaveLength(0);
   });
 
   it("선택 있음 — 목록 | 상세, 고른 줄에 aria-current, 목록은 칸을 줄인다, 요약 · PR · 커밋 목록", async () => {
@@ -182,11 +208,11 @@ describe("범위 한 줄", () => {
     expect(html).toContain("커밋 2개");
   });
 
-  it("A 없음 — 이전 성공 배포 없음 — 이번 커밋만", async () => {
+  it("A 없음 — 이전 성공 배포 없음 — 이번 커밋만(범위 조회는 부르지 않는다)", async () => {
     rows = [row("selected-1", "backend", SHA_B)];
     const html = await render(SELECTED);
     expect(html).toContain("이전 성공 배포 없음 — 이번 커밋만");
-    expect(githubCalls().some(([input]) => new URL(input).pathname.includes("/compare/"))).toBe(false);
+    expect(masterGitCalls().some((url) => url.pathname === "/deploys/git/commits")).toBe(false);
   });
 
   it("A==B — 변경 없음(같은 커밋 재배포), 커밋이 없다", async () => {
@@ -195,18 +221,11 @@ describe("범위 한 줄", () => {
     expect(html).toContain("변경 없음(같은 커밋 재배포)");
     expect(html).toContain("바뀐 커밋이 없습니다.");
   });
-
-  it("갈라진 이력 표시", async () => {
-    githubHandler = (url) => (url.pathname.includes("/compare/")
-      ? githubResponse(githubComparison(SHA_A, SHA_B, [githubCommitObject(SHA_B)], { status: "diverged", behind_by: 2 }))
-      : defaultGithubHandler(url));
-    expect(await render(SELECTED)).toContain("갈라진 이력");
-  });
 });
 
-describe("PR · GitHub 실패 · 상한 · patch 없음 · 글자 그대로", () => {
+describe("PR · GitHub 실패 · 상한 · 바이너리 · 글자 그대로", () => {
   it("PR 없음 — '연결된 PR 없음'", async () => {
-    githubHandler = (url) => (url.pathname.endsWith("/pulls") ? githubResponse([]) : defaultGithubHandler(url));
+    githubHandler = () => githubResponse([]);
     expect(await render(SELECTED)).toContain("연결된 PR 없음");
   });
 
@@ -226,45 +245,35 @@ describe("PR · GitHub 실패 · 상한 · patch 없음 · 글자 그대로", ()
     expect(html).toContain("배포 상세를 불러오지 못했습니다");
     expect(html).toContain("서버 일시 장애");
     expect(githubCalls()).toHaveLength(0);
+    expect(masterGitCalls()).toHaveLength(0);
     expectNoForbiddenText(html);
   });
 
   it("상한 — 커밋 · 파일 · patch 가 넘으면 '더 있음 — GitHub 에서 보기'(새 창, noopener noreferrer)", async () => {
-    const commits = Array.from({ length: 101 }, (_, index) => githubCommitObject(fakeSha(100 + index)));
-    commits.push(githubCommitObject(SHA_B));
-    const files = Array.from({ length: 101 }, (_, index) => githubFile(`file-${index}.ts`, { patch: index === 0 ? patchWithLines(501) : "@@ -1 +1 @@\n-a\n+b" }));
-    githubHandler = (url) => {
-      if (url.pathname.includes("/compare/")) return githubResponse(githubComparison(SHA_A, SHA_B, commits));
-      if (url.pathname.endsWith(`/commits/${SHA_B}`)) return githubResponse(githubCommitWithFiles(SHA_B, files));
-      return defaultGithubHandler(url);
-    };
+    const commits = [gitCommitJson(SHA_B), ...Array.from({ length: 101 }, (_, index) => gitCommitJson(fakeSha(100 + index)))];   // B 쪽이 먼저
+    const files = Array.from({ length: 101 }, (_, index) => gitFileJson(`file-${index}.ts`, { patch: index === 0 ? gitPatchWithLines(501) : "@@ -1 +1 @@\n-a\n+b" }));
+    commitsHandler = () => masterGitSuccess(gitCommitRangeJson(commits));
+    commitHandler = () => masterGitSuccess(gitCommitDetailJson(SHA_B, files));
     const html = await render({ ...SELECTED, commit: SHA_B });
-    expect(html).toContain("전체 102개 중 최근 100개만");
+    expect(html).toContain("이번 배포에 가까운 100개만");
     expect(html).toContain("전체 501줄 중 앞 500줄만");
     expect(html).toContain("파일이 더 있음");
     expect(html).toContain(`href="${REPOSITORY_WEB}/compare/${SHA_A}...${SHA_B}" target="_blank" rel="noopener noreferrer"`);
     expect(html).toContain(`href="${REPOSITORY_WEB}/commit/${SHA_B}" target="_blank" rel="noopener noreferrer"`);
   });
 
-  it("patch 없는 파일 — '미리 볼 수 없음(바이너리이거나 너무 큼)'", async () => {
-    const binary = githubFile("image.png", { status: "added" });
-    delete (binary as Record<string, unknown>).patch;
-    githubHandler = (url) => (url.pathname.endsWith(`/commits/${SHA_B}`)
-      ? githubResponse(githubCommitWithFiles(SHA_B, [binary]))
-      : defaultGithubHandler(url));
+  it("바이너리 파일(patch 없음) — '미리 볼 수 없음(바이너리)'", async () => {
+    commitHandler = () => masterGitSuccess(gitCommitDetailJson(SHA_B, [gitFileJson("image.png", { status: "added", binary: true, patch: null })]));
     const html = await render({ ...SELECTED, commit: SHA_B });
     expect(html).toContain("image.png");
-    expect(html).toContain("미리 볼 수 없음(바이너리이거나 너무 큼)");
+    expect(html).toContain("미리 볼 수 없음(바이너리)");
   });
 
   it("PR 본문 · 커밋 메시지 · diff 의 <script> 는 글자로 나온다(이스케이프, 마크다운 해석 없음)", async () => {
-    githubHandler = (url) => {
-      if (url.pathname.endsWith("/pulls")) return githubResponse([githubPullRequest(7, { body: "<script>alert(1)</script>\n**굵게**" })]);
-      if (url.pathname.endsWith(`/commits/${SHA_B}`)) {
-        return githubResponse(githubCommitWithFiles(SHA_B, [githubFile("a.html", { patch: "@@ -1 +1 @@\n-<b>x</b>\n+<script>evil()</script>" })], "<img src=x onerror=alert(1)>"));
-      }
-      return defaultGithubHandler(url);
-    };
+    githubHandler = () => githubResponse([githubPullRequest(7, { body: "<script>alert(1)</script>\n**굵게**" })]);
+    commitHandler = () => masterGitSuccess(gitCommitDetailJson(SHA_B, [
+      gitFileJson("a.html", { patch: "@@ -1 +1 @@\n-<b>x</b>\n+<script>evil()</script>" }),
+    ], { subject: "<img src=x onerror=alert(1)>" }));
     const html = await render({ ...SELECTED, commit: SHA_B });
     expect(html).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
     expect(html).toContain("**굵게**");
@@ -277,12 +286,13 @@ describe("PR · GitHub 실패 · 상한 · patch 없음 · 글자 그대로", ()
 });
 
 describe("선택 조건 · 세션", () => {
-  it("목록 밖 commit — 상세 자리에 조건 안내, 그 커밋은 GitHub 에서 부르지 않는다", async () => {
+  it("목록 밖 commit — 상세 자리에 조건 안내, 그 커밋은 master 에서도 GitHub 에서도 부르지 않는다", async () => {
     const outside = fakeSha(99);
     const html = await render({ ...SELECTED, commit: outside });
     expect(html).toContain("선택 조건이 맞지 않습니다");
     expect(html).toContain('aria-label="배포 이력 표"');
     expect(githubCalls().some(([input]) => new URL(input).pathname.endsWith(`/commits/${outside}`))).toBe(false);
+    expect(masterGitCalls().some((url) => url.pathname === "/deploys/git/commit")).toBe(false);
   });
 
   it("목록에 없는 요청 ID — '선택한 배포를 찾을 수 없습니다'", async () => {

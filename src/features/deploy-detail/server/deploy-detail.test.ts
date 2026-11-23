@@ -1,5 +1,6 @@
-/** 배포 상세 데이터 경로 — GET /api/deploys/detail(Route Handler → server/ 진입). 명세 ② 인증 경계 · §10.2.
+/** 배포 상세 데이터 경로 — GET /api/deploys/detail(Route Handler → server/ 진입). 명세 ② 인증 경계 · §10.2 · §10.3.
  * 전역 fetch 를 가짜로 바꾼다(실제 master · GitHub 를 부르지 않는다 — GitHub 기준 주소 상수 api.github.com 도 가짜가 답한다).
+ * 커밋 목록 · diff 는 가짜 master 의 git 조회 경로가, PR 은 가짜 GitHub 가 답한다(출처 교체 자체는 deploy-detail-git.test 가 본다).
  * 진입 모듈의 캐시가 사례 사이에 이어지지 않게 사례마다 모듈을 새로 읽는다(vi.resetModules). */
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
@@ -22,8 +23,9 @@ vi.mock("next/navigation", () => ({ redirect: (location: string) => { throw new 
 import { SESSION_LIFETIME_MILLISECONDS, issueSessionToken } from "@/features/auth/lib/session";
 import { FAKE_ORIGIN, FAKE_SIGNING_KEY } from "@/features/auth/lib/test-fakes";
 import {
-  fakeSha, githubCommitObject, githubCommitWithFiles, githubComparison, githubFile, githubPullRequest, githubResponse, rateLimitedResponse,
-} from "@/features/deploy-detail/lib/github-test-fakes";
+  gitCommitDetailJson, gitCommitJson, gitCommitRangeJson, gitFileJson, masterGitSuccess,
+} from "@/features/deploy-detail/lib/deploy-git-test-fakes";
+import { fakeSha, githubPullRequest, githubResponse, rateLimitedResponse } from "@/features/deploy-detail/lib/github-test-fakes";
 import {
   FAKE_DEPLOY_MASTER_URL, FAKE_DEPLOY_SECRET, UPSTREAM_RAW_MARKER, createRoutedFetch, expectNoForbiddenText, headersOf, jsonBody,
   type RoutedFetchHandler,
@@ -43,14 +45,20 @@ const ROWS = [
     finished_at: "2026-11-22T01:05:00Z", ci_ms: 60000, cd_ms: 30000 },
 ];
 
-let masterHandler: RoutedFetchHandler = () => jsonBody({ success: true, data: { deployments: ROWS } });
+let masterHandler: RoutedFetchHandler = defaultMasterHandler;
 let githubHandler: RoutedFetchHandler = defaultGithubHandler;
 
+/** master — 배포 이력과 git 조회 두 경로. */
+function defaultMasterHandler(url: URL): Response {
+  if (url.pathname === "/deploys/git/commits") return masterGitSuccess(gitCommitRangeJson([gitCommitJson(SHA_B), gitCommitJson(SHA_MIDDLE)]));
+  if (url.pathname === "/deploys/git/commit") return masterGitSuccess(gitCommitDetailJson(url.searchParams.get("sha") ?? "", [gitFileJson("src/a.ts")]));
+  return jsonBody({ success: true, data: { deployments: ROWS } });
+}
+
+/** GitHub — PR 만. */
 function defaultGithubHandler(url: URL): Response {
-  if (url.pathname.includes("/compare/")) return githubResponse(githubComparison(SHA_A, SHA_B, [githubCommitObject(SHA_MIDDLE), githubCommitObject(SHA_B)]));
   if (url.pathname.endsWith("/pulls")) return githubResponse([githubPullRequest(12)]);
-  const sha = url.pathname.split("/").pop()!;
-  return githubResponse(githubCommitWithFiles(sha, [githubFile("src/a.ts")]));
+  throw new Error(`unexpected GitHub path ${url.pathname}`);
 }
 
 const networkFetch = createRoutedFetch((url, init) => {
@@ -69,6 +77,10 @@ function masterCalls() {
   return networkFetch.mock.calls.filter(([input]) => new URL(input).origin === new URL(FAKE_DEPLOY_MASTER_URL).origin);
 }
 
+function masterCallsTo(path: string) {
+  return masterCalls().filter(([input]) => new URL(input).pathname === path);
+}
+
 async function callDetail(search: string): Promise<Response> {
   const route = await import("@/app/api/deploys/detail/route");
   return route.GET(new Request(new URL(`${DETAIL_PATH}${search}`, FAKE_ORIGIN)));
@@ -84,7 +96,7 @@ beforeEach(() => {
   vi.stubEnv("GITHUB_TOKEN", "");
   vi.stubEnv("LOG_REDIS_URL", "");
   state.cookieValue = issueSessionToken(FAKE_SIGNING_KEY, Date.now() - 60_000);
-  masterHandler = () => jsonBody({ success: true, data: { deployments: ROWS } });
+  masterHandler = defaultMasterHandler;
   githubHandler = defaultGithubHandler;
   networkFetch.mockClear();
   vi.stubGlobal("fetch", networkFetch);
@@ -129,12 +141,13 @@ describe("입력 거절 → 422, 호출 0회", () => {
     expect(networkFetch).not.toHaveBeenCalled();
   });
 
-  it("목록 밖 commit → 422 invalid_input(commit), 그 커밋은 GitHub 에서 부르지 않는다", async () => {
+  it("목록 밖 commit → 422 invalid_input(commit), 그 커밋은 master 에서도 GitHub 에서도 부르지 않는다", async () => {
     const outside = fakeSha(99);
     const response = await callDetail(`?service=backend&selected=selected-1&commit=${outside}`);
     expect(response.status).toBe(422);
     expect(await response.json()).toEqual({ success: false, error: { code: "invalid_input", field: "commit" } });
     expect(githubCalls().some(([input]) => new URL(input).pathname.endsWith(`/commits/${outside}`))).toBe(false);
+    expect(masterCallsTo("/deploys/git/commit")).toHaveLength(0);
   });
 });
 
@@ -169,18 +182,15 @@ describe("정상 — 200 응답의 꼴", () => {
     expectNoForbiddenText(body);
   });
 
-  it("master 는 service · limit 200 · X-Deploy-Secret 로, GitHub 는 api.github.com 의 저장소 경로로 · 전부 GET", async () => {
+  it("master 는 service · limit 200 · X-Deploy-Secret 로, GitHub 는 api.github.com 의 저장소 경로(PR)로 · 전부 GET", async () => {
     await callDetail(`?service=backend&selected=selected-1&commit=${SHA_MIDDLE}`);
-    const [masterInput, masterInit] = masterCalls()[0];
+    const [masterInput, masterInit] = masterCallsTo("/deploys")[0];
     const masterUrl = new URL(masterInput);
-    expect(masterUrl.pathname).toBe("/deploys");
     expect(masterUrl.searchParams.get("service")).toBe("backend");
     expect(masterUrl.searchParams.get("limit")).toBe("200");
     expect(headersOf(masterInit).get("X-Deploy-Secret")).toBe(FAKE_DEPLOY_SECRET);
-    const paths = githubCalls().map(([input]) => new URL(input).pathname).sort();
-    expect(paths).toEqual([
-      `${REPOSITORY_PATH}/commits/${SHA_B}/pulls`, `${REPOSITORY_PATH}/commits/${SHA_MIDDLE}`, `${REPOSITORY_PATH}/compare/${SHA_A}...${SHA_B}`,
-    ].sort());
+    const paths = githubCalls().map(([input]) => new URL(input).pathname);
+    expect(paths).toEqual([`${REPOSITORY_PATH}/commits/${SHA_B}/pulls`]);
     for (const [input, init] of githubCalls()) {
       expect(new URL(input).origin).toBe("https://api.github.com");
       expect((init?.method ?? "GET").toUpperCase()).toBe("GET");
@@ -188,31 +198,22 @@ describe("정상 — 200 응답의 꼴", () => {
       expect(headersOf(init).has("X-Deploy-Secret")).toBe(false);
     }
   });
-
-  it("갈라진 이력은 표시 칸으로", async () => {
-    githubHandler = (url) => (url.pathname.includes("/compare/")
-      ? githubResponse(githubComparison(SHA_A, SHA_B, [githubCommitObject(SHA_B)], { status: "diverged", behind_by: 2 }))
-      : defaultGithubHandler(url));
-    const body = await (await callDetail("?service=backend&selected=selected-1")).json();
-    expect(body.data.commits.value.diverged).toBe(true);
-    expect(body.data.commits.value.comparisonStatus).toBe("diverged");
-  });
 });
 
-describe("GitHub 실패 — 배포 요약은 200 으로, GitHub 칸만 가린 이유", () => {
+describe("GitHub 실패 — 배포 요약은 200 으로, GitHub 칸(PR)만 가린 이유", () => {
   it.each([
     ["한도 초과", () => rateLimitedResponse(403), "rate_limited"],
     ["5xx", () => githubResponse(`${UPSTREAM_RAW_MARKER} ${GITHUB_TOKEN_VALUE}`, 502), "bad_status"],
     ["리다이렉트", () => new Response(null, { status: 301, headers: { location: "https://evil.example.test/" } }), "bad_status"],
     ["깨진 JSON", () => githubResponse(`{"x":"${UPSTREAM_RAW_MARKER}`), "unparseable"],
-  ])("%s → 200 · deployment ok · pullRequest · commits 는 %s(원문 없음)", async (_label, makeResponse, reason) => {
+  ])("%s → 200 · deployment ok · pullRequest 는 %s(원문 없음), 커밋 목록(master)은 그대로", async (_label, makeResponse, reason) => {
     githubHandler = () => makeResponse();
     const response = await callDetail("?service=backend&selected=selected-1");
     expect(response.status).toBe(200);
     const body = await response.json();
     expect(body.data.deployment.ok).toBe(true);
     expect(body.data.pullRequest).toMatchObject({ ok: false, reason });
-    expect(body.data.commits).toMatchObject({ ok: false, reason });
+    expect(body.data.commits.ok).toBe(true);
     expectNoForbiddenText(body, [UPSTREAM_RAW_MARKER, GITHUB_TOKEN_VALUE, "evil.example.test"]);
   });
 
@@ -267,13 +268,15 @@ describe("GITHUB_TOKEN — 선택 설정 · 값은 어디에도 나오지 않는
 });
 
 describe("캐시 — 요청 사이에 이어진다", () => {
-  it("같은 요청을 두 번 — 비교 · 커밋 · PR 은 한 번씩만 부른다(master 는 매번)", async () => {
+  it("같은 요청을 두 번 — 범위 · 커밋 · PR 은 한 번씩만 부른다(master 배포 이력은 매번)", async () => {
     await callDetail(`?service=backend&selected=selected-1&commit=${SHA_MIDDLE}`);
     const firstGithubCount = githubCalls().length;
-    expect(firstGithubCount).toBe(3);
+    expect(firstGithubCount).toBe(1);
     await callDetail(`?service=backend&selected=selected-1&commit=${SHA_MIDDLE}`);
     expect(githubCalls().length).toBe(firstGithubCount);
-    expect(masterCalls()).toHaveLength(2);
+    expect(masterCallsTo("/deploys")).toHaveLength(2);
+    expect(masterCallsTo("/deploys/git/commits")).toHaveLength(1);
+    expect(masterCallsTo("/deploys/git/commit")).toHaveLength(1);
   });
 
   it("실패한 GitHub 응답은 다음 요청이 다시 부른다", async () => {
@@ -283,7 +286,7 @@ describe("캐시 — 요청 사이에 이어진다", () => {
     githubHandler = defaultGithubHandler;
     const body = await (await callDetail("?service=backend&selected=selected-1")).json();
     expect(githubCalls().length).toBeGreaterThan(firstCount);
-    expect(body.data.commits.ok).toBe(true);
+    expect(body.data.pullRequest.ok).toBe(true);
   });
 });
 
@@ -336,7 +339,7 @@ describe("소스 검사 — 진입은 server-only · 세션 검증, lib 는 순�
       for (const match of source.matchAll(/^\s*import\s+(?!type\b)[^;]*?\s+from\s+["'](@\/features\/deploy-detail\/[^"']+)["']/gm)) {
         expect(match[1], file).toMatch(/^@\/features\/deploy-detail\/(server|ui)\//);
       }
-      expect(source, file).not.toMatch(/\bcreate(GitHub|CachedGitHub)Client\b|\bbuildDeployDetail\b/);
+      expect(source, file).not.toMatch(/\bcreate(GitHub|CachedGitHub|DeployGit|CachedDeployGit)Client\b|\bbuildDeployDetail\b/);
     }
   });
 
