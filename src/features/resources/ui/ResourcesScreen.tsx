@@ -2,10 +2,13 @@
  * 2단계(명세 §17): CPU · 메모리 · 디스크 그래프는 늘 보이고, 네트워크 · 디스크 입출력 · GPU 는 펼쳐 둔 서버(주소의 open)만 그린다 —
  * 안 펼친 서버는 "그래프 더 보기" 링크(누르면 그 서버가 open 에 더해진 주소). 펼침이 곧 주소라 자동 갱신 뒤에도 남고, 안 그린 그래프만큼 HTML 이 준다. 기간 고르기 링크.
  * 3단계: 컨테이너 표(재시작 반복 알림은 그 줄에), 이름을 누르면 그 컨테이너의 CPU · 메모리 그래프가 표 아래에 열린다(닫기 링크).
+ * 카드 배치(명세 §17 끝 줄): 지표마다 카드 하나 — 이름 → 수치(값 · 세부 · 그 자리의 임계값) → 그래프. CPU · 메모리 · 디스크 카드는 늘 그래프까지,
+ * 네트워크 · 디스크 입출력 · GPU 카드는 수치가 늘 보이고 그 서버를 펼쳤을 때만 카드 안에 그래프가 들어온다.
  * 자동 갱신은 스크립트 없이 `<meta http-equiv="refresh">` — 같은 주소를 다시 불러오므로 기간 · 끈 상태 · 펼친 그래프(주소의 값)가 그대로 남는다.
  * 받은 화면 모델(진입 함수가 모은 결과)만 그린다 — 다른 서버를 부르지 않고, 서버 모듈 · 클라이언트 · 설정을 임포트하지 않는다. 클라이언트 스크립트 없음.
  * 값이 없으면 모델의 글("없음" · "읽지 못함" · "확인하지 못함") 그대로 — 0 으로 보이지 않게. 한 구역이 실패해도 나머지는 그린다(실패는 고정 글자와 HTTP 상태만).
  * 울리는 임계값은 그 값 자리에 표식 + 글(심각도 · 규칙 · 언제부터) — 색만으로 전하지 않는다. 자리가 아직 없는 규칙(재시작 반복 · 모르는 규칙)은 묶음 끝의 목록에. */
+import type { ReactNode } from "react";
 import { formatKoreanTime } from "@/features/deploys/lib/deploy-format";
 import { formatAge, formatPercent } from "@/features/resources/lib/resource-format";
 import {
@@ -95,7 +98,7 @@ function ReadingValue({ reading }: { reading: MetricReading }) {
 
 function Reading({ label, reading }: { label: string; reading: MetricReading }) {
   return (
-    <div className={`${styles.reading} ${reading.firing !== null ? styles.readingFiring : ""}`}>
+    <div className={styles.reading}>
       <dt className={styles.readingLabel}>{label}</dt>
       <dd className={styles.readingValue}><ReadingValue reading={reading} /></dd>
     </div>
@@ -106,30 +109,22 @@ const GPU_STATE_TEXT: Readonly<Record<Exclude<GpusView["state"], "listed">, stri
   unread: RESOURCE_TEXT.gpuUnread, absent: RESOURCE_TEXT.gpuAbsent, unknown: RESOURCE_TEXT.unknown,
 };
 
-function GpuReading({ gpus }: { gpus: GpusView }) {
+/** 지표 카드 하나 — 이름 → 수치 → (있으면) 그래프. 그 카드의 수치에 임계값이 울리면 카드 테두리도 바뀐다(글 + 표식은 수치 옆). */
+function MetricCard({ server, title, firing, readings, children }: {
+  server: string; title: string; firing: boolean; readings: ReactNode; children?: ReactNode;
+}) {
   return (
-    <div className={`${styles.reading} ${styles.readingWide}`}>
-      <dt className={styles.readingLabel}>GPU</dt>
-      <dd className={styles.readingValue}>
-        {gpus.state !== "listed" ? <span className={styles.noValue}>{GPU_STATE_TEXT[gpus.state]}</span> : (
-          <ul className={styles.gpuList}>
-            {gpus.rows.map((gpu) => (
-              <li key={gpu.index}>
-                <span className={styles.gpuName}>GPU {gpu.index}</span>
-                사용률 <ReadingValue reading={gpu.utilization} /> · 메모리 <ReadingValue reading={gpu.memory} /> · 온도{" "}
-                <span className={gpu.temperatureText === RESOURCE_TEXT.none ? styles.noValue : styles.value}>{gpu.temperatureText}</span>
-              </li>
-            ))}
-          </ul>
-        )}
-      </dd>
+    <div className={`${styles.card} ${firing ? styles.cardFiring : ""}`} role="group" aria-label={`${server} ${title}`}>
+      <p className={styles.cardTitle}>{title}</p>
+      <dl className={styles.cardReadings}>{readings}</dl>
+      {children}
     </div>
   );
 }
 
-/** 그래프 자리 — 계열 조회가 실패했으면 그 글. */
+/** 그래프 자리 — 계열 조회가 실패했으면 그 글. 카드 안이라 그래프 제목은 화면에서 숨긴다(카드 이름과 같다). */
 function GraphSlot({ result, pick, title, range }: { result: ServerResourceView["hostGraphs"]; pick: (graphs: HostGraphs) => GraphView; title: string; range: ResourceRange }) {
-  return result.ok ? <ResourceGraph graph={pick(result.value)} range={range} /> : <GraphFailure title={title} failure={result} />;
+  return result.ok ? <ResourceGraph graph={pick(result.value)} range={range} titleHidden /> : <GraphFailure title={title} failure={result} />;
 }
 
 function GpuGraphSlots({ gpu, range }: { gpu: GpuGraphs; range: ResourceRange }) {
@@ -147,36 +142,85 @@ interface ScreenLinks {
   view: ResourcesViewState;
 }
 
-/** 그래프 — CPU · 메모리 · 디스크는 늘. 나머지는 펼쳐 둔 서버만 그리고, 안 펼친 서버에는 펼치는 링크만(그리지 않으므로 HTML 이 준다). */
-function ServerGraphs({ server, links }: { server: ServerResourceView; links: ScreenLinks }) {
+/** GPU 카드 — GPU 마다 하나(사용률 · 메모리 · 온도, 펼치면 그래프). GPU 가 없거나 값을 읽지 못했으면 그 글로 카드 하나. */
+function GpuCards({ server, open, range }: { server: ServerResourceView; open: boolean; range: ResourceRange }) {
+  const gpus = server.gpus;
+  if (gpus.state !== "listed") {
+    return <MetricCard server={server.server} title="GPU" firing={false} readings={(
+      <div className={styles.reading}>
+        <dt className={styles.readingLabel}>GPU</dt>
+        <dd className={styles.readingValue}><span className={styles.noValue}>{GPU_STATE_TEXT[gpus.state]}</span></dd>
+      </div>
+    )} />;
+  }
+  return (
+    <>
+      {gpus.rows.map((gpu) => {
+        const graphs = server.gpuGraphs.find((candidate) => candidate.index === gpu.index);
+        return (
+          <MetricCard key={gpu.index} server={server.server} title={`GPU ${gpu.index}`} firing={false} readings={(
+            <>
+              <Reading label="사용률" reading={gpu.utilization} />
+              <Reading label="메모리" reading={gpu.memory} />
+              <div className={styles.reading}>
+                <dt className={styles.readingLabel}>온도</dt>
+                <dd className={styles.readingValue}>
+                  <span className={gpu.temperatureText === RESOURCE_TEXT.none ? styles.noValue : styles.value}>{gpu.temperatureText}</span>
+                </dd>
+              </div>
+            </>
+          )}>
+            {open && (graphs !== undefined ? <GpuGraphSlots gpu={graphs} range={range} />
+              : <p className={styles.noValue}>그래프를 그리지 않았습니다(서버마다 GPU 앞 4개만).</p>)}
+          </MetricCard>
+        );
+      })}
+    </>
+  );
+}
+
+/** 지표 카드들 — CPU · 메모리 · 디스크는 늘 그래프까지. 네트워크 · 디스크 입출력 · GPU 는 수치가 늘 보이고, 펼쳐 둔 서버(주소의 open)만 카드 안에 그래프를 그린다
+ * (안 펼친 서버는 그리지 않으므로 HTML 이 준다). 펼치기 · 접기 링크는 그 카드들 묶음의 머리에. */
+function MetricCards({ server, links }: { server: ServerResourceView; links: ScreenLinks }) {
   const range = links.query.range;
   const open = links.view.openServers.includes(server.server);
   const toggleHref = resourcesScreenHref(links.query, withServerOpen(links.view, server.server, !open));
+  const current = server.current;
+  const graphs = server.hostGraphs;
+  const staleClass = server.freshness.kind === "stale" ? styles.readingsStale : "";
   return (
     <>
-      <div className={styles.graphs}>
-        <GraphSlot result={server.hostGraphs} pick={(graphs) => graphs.cpu} title="CPU" range={range} />
-        <GraphSlot result={server.hostGraphs} pick={(graphs) => graphs.memory} title="메모리" range={range} />
-        <GraphSlot result={server.hostGraphs} pick={(graphs) => graphs.disk} title="디스크" range={range} />
+      <div className={`${styles.cards} ${staleClass}`}>
+        <MetricCard server={server.server} title="CPU" firing={current.cpu.firing !== null} readings={<Reading label="CPU" reading={current.cpu} />}>
+          <GraphSlot result={graphs} pick={(value) => value.cpu} title="CPU" range={range} />
+        </MetricCard>
+        <MetricCard server={server.server} title="메모리" firing={current.memory.firing !== null} readings={<Reading label="메모리" reading={current.memory} />}>
+          <GraphSlot result={graphs} pick={(value) => value.memory} title="메모리" range={range} />
+        </MetricCard>
+        <MetricCard server={server.server} title="디스크" firing={current.disk.firing !== null} readings={<Reading label="디스크" reading={current.disk} />}>
+          <GraphSlot result={graphs} pick={(value) => value.disk} title="디스크" range={range} />
+        </MetricCard>
       </div>
-      {!open ? (
-        <p className={styles.more}><a className={styles.moreLink} href={toggleHref}>그래프 더 보기 — 네트워크 · 디스크 입출력 · GPU</a></p>
-      ) : (
-        <div className={styles.more} role="group" aria-label={`${server.server} 그래프 더 보기`}>
-          <p className={styles.moreHeading}>
-            <span className={styles.moreTitle}>그래프 더 보기 — 네트워크 · 디스크 입출력 · GPU</span>
-            <a className={styles.moreLink} href={toggleHref}>접기</a>
-          </p>
-          <div className={styles.graphs}>
-            <GraphSlot result={server.hostGraphs} pick={(graphs) => graphs.network} title="네트워크" range={range} />
-            <GraphSlot result={server.hostGraphs} pick={(graphs) => graphs.diskIo} title="디스크 입출력" range={range} />
-            {server.gpus.state === "listed"
-              ? server.gpuGraphs.map((gpu) => <GpuGraphSlots key={gpu.index} gpu={gpu} range={range} />)
-              : <p className={styles.noValue}>GPU 그래프 — {GPU_STATE_TEXT[server.gpus.state]}</p>}
-          </div>
-          {server.omittedGpuGraphCount > 0 && <p className={styles.noValue}>GPU {server.omittedGpuGraphCount}개는 그래프를 그리지 않았습니다(앞 4개만).</p>}
+      <div className={styles.more} role="group" aria-label={`${server.server} 네트워크 · 디스크 입출력 · GPU`}>
+        <p className={styles.moreHeading}>
+          {open ? (
+            <><span className={styles.moreTitle}>네트워크 · 디스크 입출력 · GPU 그래프</span><a className={styles.moreLink} href={toggleHref}>접기</a></>
+          ) : <a className={styles.moreLink} href={toggleHref}>그래프 더 보기 — 네트워크 · 디스크 입출력 · GPU</a>}
+        </p>
+        <div className={`${styles.cards} ${staleClass}`}>
+          <MetricCard server={server.server} title="네트워크" firing={false} readings={(
+            <><Reading label="네트워크 받기" reading={current.networkReceive} /><Reading label="네트워크 보내기" reading={current.networkTransmit} /></>
+          )}>
+            {open && <GraphSlot result={graphs} pick={(value) => value.network} title="네트워크" range={range} />}
+          </MetricCard>
+          <MetricCard server={server.server} title="디스크 입출력" firing={false} readings={(
+            <><Reading label="디스크 읽기" reading={current.diskRead} /><Reading label="디스크 쓰기" reading={current.diskWrite} /></>
+          )}>
+            {open && <GraphSlot result={graphs} pick={(value) => value.diskIo} title="디스크 입출력" range={range} />}
+          </MetricCard>
+          <GpuCards server={server} open={open} range={range} />
         </div>
-      )}
+      </div>
     </>
   );
 }
@@ -268,7 +312,6 @@ function unplacedFiring(server: ServerResourceView): FiringView[] {
 
 function ServerSection({ server, links, selected }: { server: ServerResourceView; links: ScreenLinks; selected: SelectedContainerView | null }) {
   const headingId = `resource-server-${server.server}`;
-  const current = server.current;
   const others = unplacedFiring(server);
   return (
     <section className={styles.server} aria-labelledby={headingId}>
@@ -277,16 +320,7 @@ function ServerSection({ server, links, selected }: { server: ServerResourceView
         <FreshnessLine freshness={server.freshness} measuredAt={server.measuredAt} />
       </div>
       {server.freshness.kind === "stale" && <p className={styles.staleNote}>아래 값은 {server.freshness.label}입니다 — 지금 값이 아닐 수 있습니다.</p>}
-      <dl className={`${styles.readings} ${server.freshness.kind === "stale" ? styles.readingsStale : ""}`}>
-        <Reading label="CPU" reading={current.cpu} />
-        <Reading label="메모리" reading={current.memory} />
-        <Reading label="디스크" reading={current.disk} />
-        <Reading label="네트워크 받기" reading={current.networkReceive} />
-        <Reading label="네트워크 보내기" reading={current.networkTransmit} />
-        <Reading label="디스크 읽기" reading={current.diskRead} />
-        <Reading label="디스크 쓰기" reading={current.diskWrite} />
-        <GpuReading gpus={server.gpus} />
-      </dl>
+      <MetricCards server={server} links={links} />
       {others.length > 0 && (
         <div className={styles.others}>
           <p className={styles.othersTitle}>그 밖의 알림 {others.length}건</p>
@@ -295,7 +329,6 @@ function ServerSection({ server, links, selected }: { server: ServerResourceView
           </ul>
         </div>
       )}
-      <ServerGraphs server={server} links={links} />
       <ContainerTable server={server} links={links} />
       {selected !== null && <SelectedContainer selected={selected} links={links} />}
     </section>

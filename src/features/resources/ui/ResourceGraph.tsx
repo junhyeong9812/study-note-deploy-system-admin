@@ -58,7 +58,8 @@ function Legend({ lines, orders }: { lines: ChartLine[]; orders: number[] }) {
   );
 }
 
-export function ResourceGraph({ graph, range }: { graph: GraphView; range: ResourceRange }) {
+/** titleHidden — 카드 안처럼 둘레에 같은 이름이 이미 보일 때 제목을 화면에서만 숨긴다(읽기 도구에는 남는다). */
+export function ResourceGraph({ graph, range, titleHidden = false }: { graph: GraphView; range: ResourceRange; titleHidden?: boolean }) {
   const { chart } = graph;
   const width = chart.width + MARGIN.left + MARGIN.right;
   const height = chart.height + MARGIN.top + MARGIN.bottom;
@@ -67,7 +68,7 @@ export function ResourceGraph({ graph, range }: { graph: GraphView; range: Resou
   const note = stepNote(graph);
   return (
     <figure className={styles.graph}>
-      <figcaption className={styles.title}>{graph.title}</figcaption>
+      <figcaption className={titleHidden ? styles.titleHidden : styles.title}>{graph.title}</figcaption>
       {graph.pointCount === 0 ? <p className={styles.empty}>이 기간에 값이 없습니다</p> : (
         <svg className={styles.svg} viewBox={`0 0 ${width} ${height}`} role="img" aria-label={graph.summary} focusable="false">
           <g transform={`translate(${MARGIN.left} ${MARGIN.top})`}>

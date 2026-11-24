@@ -25,19 +25,19 @@
 .measuredAt { color: var(--muted); font-variant-numeric: tabular-nums; }
 .staleNote { font-size: var(--text-sm); color: var(--warning-fg); }
 
-/* 현재 값 — 이름 위, 값 아래의 칸들 */
-.readings { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: var(--space-3); }
+/* 지표 카드 — 이름 → 수치 → 그래프. 넓으면 셋씩 나란히, 좁으면 세로로 */
+.cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-3); }
+.card { min-width: 0; padding: var(--space-3); display: flex; flex-direction: column; gap: var(--space-2); border: 1px solid var(--line); border-radius: var(--radius-md); }
+.cardFiring { border-color: var(--warning-fg); box-shadow: inset 3px 0 0 var(--warning-fg); }
+.cardTitle { font-size: var(--text-sm); font-weight: 700; }
+.cardReadings { display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-4); }
 .readingsStale .value { color: var(--muted); }
-.reading { min-width: 0; padding: var(--space-2) var(--space-3); border: 1px solid var(--line); border-radius: var(--radius-sm); }
-.readingWide { grid-column: 1 / -1; }
-.readingFiring { border-color: var(--warning-fg); }
+.reading { min-width: 0; }
 .readingLabel { font-size: var(--text-xs); color: var(--muted); }
 .readingValue { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-1) var(--space-2); font-variant-numeric: tabular-nums; }
 .value { font-size: var(--text-md); font-weight: 600; }
 .noValue { font-size: var(--text-sm); color: var(--muted); }
 .detail { font-size: var(--text-xs); color: var(--muted); }
-.gpuList { list-style: none; display: flex; flex-direction: column; gap: var(--space-1); font-size: var(--text-sm); }
-.gpuName { font-weight: 600; margin-right: var(--space-2); }
 
 /* 울리는 임계값 — 표식 + 글(색만으로 전하지 않는다) */
 .firing {
@@ -58,7 +58,6 @@
 
 @media (max-width: 640px) {
   .main { padding: var(--space-4) var(--space-3); }
-  .readings { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
 }
 
 /* 기간 · 자동 갱신 */
@@ -70,7 +69,6 @@
 .visuallyHidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 
 /* 그래프 — 넓으면 셋을 나란히, 좁으면 세로로 */
-.graphs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-4); }
 .more { border-top: 1px solid var(--line); padding-top: var(--space-2); display: flex; flex-direction: column; gap: var(--space-2); }
 .moreHeading { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-1) var(--space-3); }
 .moreTitle { font-size: var(--text-sm); font-weight: 600; }
@@ -96,5 +94,5 @@
 .selected { border: 1px solid var(--accent); border-radius: var(--radius-md); padding: var(--space-3); display: flex; flex-direction: column; gap: var(--space-2); }
 
 @media (max-width: 900px) {
-  .graphs, .graphsTwo { grid-template-columns: minmax(0, 1fr); }
+  .graphsTwo, .cards { grid-template-columns: minmax(0, 1fr); }
 }

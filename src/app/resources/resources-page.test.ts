@@ -55,6 +55,21 @@ function textOf(fragment: string): string {
   return fragment.replace(/<[^>]+>/g, "");
 }
 
+/** 묶음 안의 지표 카드 하나 — aria-label("<서버> <지표>")을 단 <div> 의 여는 태그부터 짝이 맞는 </div> 까지(안의 <div> 를 세어 — 카드 밖의 것은 들지 않는다). */
+function metricCard(fragment: string, server: string, title: string): string {
+  const labelAt = fragment.indexOf(`aria-label="${server} ${title}"`);
+  expect(labelAt, `${server} ${title} 카드가 없다`).toBeGreaterThan(0);
+  const start = fragment.lastIndexOf("<div", labelAt);
+  const tags = /<div\b|<\/div>/g;
+  tags.lastIndex = start;
+  let depth = 0;
+  for (let match = tags.exec(fragment); match !== null; match = tags.exec(fragment)) {
+    depth += match[0] === "</div>" ? -1 : 1;
+    if (depth === 0) return fragment.slice(start, match.index + match[0].length);
+  }
+  throw new Error(`${server} ${title} 카드가 닫히지 않는다`);
+}
+
 /** 한 서버의 묶음(section) */
 function serverSection(html: string, server: string): string {
   const match = new RegExp(`<section[^>]*aria-labelledby="resource-server-${server}"[^>]*>([\\s\\S]*?)</section>`).exec(html);
@@ -103,8 +118,11 @@ describe("서버마다 한 묶음 — 이름 · 받은 때 · 현재 값", () =>
     expect(textOf(section)).toContain("받은 때 1분 안");
   });
 
-  it("164 의 GPU — 사용률 · 메모리 · 온도", async () => {
-    expect(readingText(serverSection(await render(), "164"), "GPU")).toBe("GPU 0사용률 12.0% · 메모리 0.1%9.0 MiB / 8.0 GiB · 온도 28°C");
+  it("164 의 GPU — GPU 마다 카드 하나(사용률 · 메모리 · 온도)", async () => {
+    const card = metricCard(serverSection(await render(), "164"), "164", "GPU 0");
+    expect(readingText(card, "사용률")).toBe("12.0%");
+    expect(readingText(card, "메모리")).toBe("0.1%9.0 MiB / 8.0 GiB");
+    expect(readingText(card, "온도")).toBe("28°C");
   });
 });
 
@@ -279,13 +297,14 @@ function graphFigure(fragment: string, title: string): string {
   return match![1];
 }
 
-/** 묶음 안 — 늘 보이는 그래프 부분(컨테이너 표 앞)과, 펼쳐 둔 경우의 "그래프 더 보기" 묶음(role=group). 안 펼쳤으면 folded 는 null. */
-function splitMore(section: string): { visible: string; folded: string | null } {
+/** 묶음 안 — 늘 그래프까지 보이는 카드 셋(visible)과, 네트워크 · 디스크 입출력 · GPU 카드 묶음(more). folded 는 펼쳐 둔 경우만(그래프가 있을 때) more, 아니면 null. */
+function splitMore(section: string): { visible: string; more: string; folded: string | null } {
   const containersAt = section.indexOf(">컨테이너");
   expect(containersAt, "컨테이너 표 자리가 없다").toBeGreaterThan(0);
-  const groupAt = section.indexOf('role="group"');
-  if (groupAt < 0 || groupAt > containersAt) return { visible: section.slice(0, containersAt), folded: null };
-  return { visible: section.slice(0, groupAt), folded: section.slice(groupAt, containersAt) };
+  const moreAt = section.indexOf('네트워크 · 디스크 입출력 · GPU"');
+  expect(moreAt, "네트워크 · 디스크 입출력 · GPU 묶음이 없다").toBeGreaterThan(0);
+  const more = section.slice(moreAt, containersAt);
+  return { visible: section.slice(0, moreAt), more, folded: more.includes(">접기</a>") ? more : null };   // 펼침 = 접기 링크가 있음
 }
 
 /** "그 밖의 알림" 묶음(없으면 빈 글) */
@@ -323,9 +342,11 @@ describe("그래프 — CPU · 메모리 · 디스크는 늘, 나머지는 접�
     fake.series.set(seriesKey("158", "host", null), { points: hostPointsWithGap() });
   });
 
-  it("늘 보이는 셋 — 안 펼친 서버는 '그래프 더 보기' 링크뿐(접힌 그래프의 SVG 를 그리지 않는다)", async () => {
+  it("늘 보이는 셋 — 안 펼친 서버는 접힌 지표의 수치만, 그래프는 '그래프 더 보기' 링크뿐(SVG 를 그리지 않는다)", async () => {
     const section = serverSection(await renderAtFixedNow(), "158");
-    const { visible, folded } = splitMore(section);
+    const { visible, folded, more } = splitMore(section);
+    expect(readingText(more, "네트워크 받기")).toBe(readingText(section, "네트워크 받기"));
+    expect(readingText(more, "디스크 쓰기")).not.toBe("");
     for (const title of ["CPU", "메모리", "디스크"]) graphFigure(visible, title);
     expect(folded).toBeNull();
     expect(section).not.toContain(">네트워크</figcaption>");
@@ -340,7 +361,7 @@ describe("그래프 — CPU · 메모리 · 디스크는 늘, 나머지는 접�
     const folded = splitMore(serverSection(html, "158")).folded!;
     graphFigure(folded, "네트워크");
     graphFigure(folded, "디스크 입출력");
-    expect(textOf(folded)).toContain("GPU 그래프 — GPU 없음");
+    expect(readingText(metricCard(folded, "158", "GPU"), "GPU")).toBe("GPU 없음");
     expect(folded).toContain('href="/resources?range=1h&amp;open=164">접기</a>');
     const gpuFolded = splitMore(serverSection(html, "164")).folded!;
     graphFigure(gpuFolded, "GPU 0 사용률");
@@ -592,5 +613,85 @@ describe("고른 컨테이너의 그래프", () => {
     expect(html).not.toContain("0123456789ab");
     expect(html).not.toContain("study-note-deploy-system-front");
     expect(html).not.toMatch(/NaN|Infinity/);
+  });
+});
+
+// ── 카드 배치(명세 §17 끝 줄): 지표마다 카드 하나 — 이름 → 수치 → 그래프 ──
+
+describe("지표마다 카드 하나 — 수치와 그래프가 같은 카드 안", () => {
+  beforeEach(() => {
+    fake.series.set(seriesKey("158", "host", null), { points: hostPointsWithGap() });
+  });
+
+  it("CPU · 메모리 · 디스크 카드 — 카드 이름 → 수치 → 그래프(SVG 와 요약 글)", async () => {
+    const section = serverSection(await renderAtFixedNow(), "158");
+    for (const [title, value] of [["CPU", "3.4%"], ["메모리", "13.1%2.0 GiB / 14.9 GiB"], ["디스크", "16.1%75.0 GiB / 465.9 GiB"]] as const) {
+      const card = metricCard(section, "158", title);
+      expect(readingText(card, title)).toBe(value);
+      const readingAt = card.indexOf("<dl");
+      const graphAt = card.indexOf("<svg");
+      expect(readingAt, `${title} 카드에 수치가 없다`).toBeGreaterThan(0);
+      expect(graphAt, `${title} 카드에 그래프가 없다`).toBeGreaterThan(readingAt);   // 수치 다음 그래프
+      expect(textOf(card)).toContain(`${title} 1시간:`);
+    }
+  });
+
+  it("네트워크 · 디스크 입출력 — 수치 둘이 한 카드, 펼치면 그 카드 안에 선 넷짜리 그래프 하나", async () => {
+    const closed = serverSection(await renderAtFixedNow(), "158");
+    const network = metricCard(closed, "158", "네트워크");
+    expect(readingText(network, "네트워크 받기")).toBe("1.2 KiB/s");
+    expect(readingText(network, "네트워크 보내기")).toBe("3.3 KiB/s");
+    expect(network).not.toContain("<svg");
+    const diskIo = metricCard(closed, "158", "디스크 입출력");
+    expect(readingText(diskIo, "디스크 읽기")).toBe("0 B/s");
+    expect(readingText(diskIo, "디스크 쓰기")).toBe("50.8 KiB/s");
+    expect(diskIo).not.toContain("<svg");
+
+    const opened = serverSection(await renderAtFixedNow({ open: "158" }), "158");
+    const openNetwork = metricCard(opened, "158", "네트워크");
+    expect(openNetwork.match(/<svg[^>]*role="img"/g)).toHaveLength(1);
+    expect(openNetwork.match(/<path class=/g)).toHaveLength(4);
+    expect(readingText(openNetwork, "네트워크 받기")).toBe("1.2 KiB/s");
+    expect(metricCard(opened, "158", "디스크 입출력").match(/<svg[^>]*role="img"/g)).toHaveLength(1);
+  });
+
+  it("GPU 카드 — 안 펼치면 수치만, 펼치면 그 카드 안에 사용률 · 메모리 그래프", async () => {
+    expect(metricCard(serverSection(await renderAtFixedNow(), "164"), "164", "GPU 0")).not.toContain("<svg");
+    const opened = metricCard(serverSection(await renderAtFixedNow({ open: "164" }), "164"), "164", "GPU 0");
+    expect(readingText(opened, "사용률")).toBe("12.0%");
+    graphFigure(opened, "GPU 0 사용률");
+    graphFigure(opened, "GPU 0 메모리");
+  });
+
+  it("GPU 가 없으면 그 글로 카드 하나", async () => {
+    expect(readingText(metricCard(serverSection(await renderAtFixedNow(), "158"), "158", "GPU"), "GPU")).toBe("GPU 없음");
+  });
+
+  it("임계값 알림은 그 지표의 카드에 — 글 + 표식, 카드 테두리(다른 카드는 아니다)", async () => {
+    fake.latest = () => observeLatestBody(defaultServers(), [observeFiring({ server: "158", rule: "disk_warning", severity: "warning", last_value: 86.2 })]);
+    const section = serverSection(await renderAtFixedNow(), "158");
+    const disk = metricCard(section, "158", "디스크");
+    expect(textOf(disk)).toContain("!경고디스크 경고");
+    const cardClass = (card: string) => /^<div class="([^"]*)"/.exec(card)?.[1] ?? "";
+    expect(cardClass(disk).trim().split(/\s+/)).toHaveLength(2);   // 카드 + 울림 테두리
+    expect(cardClass(metricCard(section, "158", "CPU")).trim().split(/\s+/)).toHaveLength(1);
+    expect(textOf(metricCard(section, "158", "CPU"))).not.toContain("경고");
+  });
+
+  it("값 없음의 글 — 수신 없음 서버의 카드마다 '없음'과 '이 기간에 값이 없습니다'", async () => {
+    const section = serverSection(await renderAtFixedNow(), "spare");
+    for (const title of ["CPU", "메모리", "디스크"]) {
+      const card = metricCard(section, "spare", title);
+      expect(readingText(card, title)).toBe("없음");
+      expect(textOf(card)).toContain("이 기간에 값이 없습니다");
+    }
+    expect(readingText(metricCard(section, "spare", "네트워크"), "네트워크 받기")).toBe("없음");
+  });
+
+  it("스크립트 · 표식 글자 없음", async () => {
+    const html = await renderAtFixedNow({ open: "158,164" });
+    expect(html).not.toMatch(/<script/i);
+    expectNoForbiddenText(html);
+    expect(html).not.toContain("0123456789ab");
   });
 });
