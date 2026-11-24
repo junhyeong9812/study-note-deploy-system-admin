@@ -1,5 +1,7 @@
-/** 서버 자원 화면의 본문(서버 컴포넌트) — 서버마다 한 묶음(이름 · 받은 때 → 현재 값 → 지금 울리는 임계값 → 그래프). 컨테이너 표는 다음 단계.
- * 2단계(명세 §17): CPU · 메모리 · 디스크 그래프는 늘 보이고 네트워크 · 디스크 입출력 · GPU 는 `<details>` 에 접어 둔다. 기간 고르기 링크.
+/** 서버 자원 화면의 본문(서버 컴포넌트) — 서버마다 한 묶음(이름 · 받은 때 → 현재 값 → 지금 울리는 임계값 → 그래프 → 컨테이너 표 → 고른 컨테이너의 그래프).
+ * 2단계(명세 §17): CPU · 메모리 · 디스크 그래프는 늘 보이고, 네트워크 · 디스크 입출력 · GPU 는 펼쳐 둔 서버(주소의 open)만 그린다 —
+ * 안 펼친 서버는 "그래프 더 보기" 링크(누르면 그 서버가 open 에 더해진 주소). 펼침이 곧 주소라 자동 갱신 뒤에도 남고, 안 그린 그래프만큼 HTML 이 준다. 기간 고르기 링크.
+ * 3단계: 컨테이너 표(재시작 반복 알림은 그 줄에), 이름을 누르면 그 컨테이너의 CPU · 메모리 그래프가 표 아래에 열린다(닫기 링크).
  * 자동 갱신은 스크립트 없이 `<meta http-equiv="refresh">` — 같은 주소를 다시 불러오므로 기간 · 끈 상태 · 펼친 그래프(주소의 값)가 그대로 남는다.
  * 받은 화면 모델(진입 함수가 모은 결과)만 그린다 — 다른 서버를 부르지 않고, 서버 모듈 · 클라이언트 · 설정을 임포트하지 않는다. 클라이언트 스크립트 없음.
  * 값이 없으면 모델의 글("없음" · "읽지 못함" · "확인하지 못함") 그대로 — 0 으로 보이지 않게. 한 구역이 실패해도 나머지는 그린다(실패는 고정 글자와 HTTP 상태만).
@@ -7,8 +9,8 @@
 import { formatKoreanTime } from "@/features/deploys/lib/deploy-format";
 import { formatAge, formatPercent } from "@/features/resources/lib/resource-format";
 import {
-  RESOURCE_TEXT, type ElsewhereFiringView, type FiringView, type GpuGraphs, type GpusView, type GraphView, type HostGraphs, type MetricReading,
-  type ResourcesScreen, type ServerFreshness, type ServerResourceView,
+  RESOURCE_TEXT, type ContainerRowView, type ContainersView, type ElsewhereFiringView, type FiringView, type GpuGraphs, type GpusView, type GraphView,
+  type HostGraphs, type MetricReading, type ResourcesScreen, type SelectedContainerView, type ServerFreshness, type ServerResourceView,
 } from "@/features/resources/lib/resources-screen";
 import {
   RESOURCE_AUTO_REFRESH_SECONDS, RESOURCE_RANGES, RESOURCE_RANGE_LABELS, resourcesScreenHref, withServerOpen, type ResourceRange, type ResourcesQuery, type ResourcesViewState,
@@ -145,11 +147,11 @@ interface ScreenLinks {
   view: ResourcesViewState;
 }
 
-/** 그래프 — CPU · 메모리 · 디스크는 늘, 나머지는 접어 둔다. 펼친 채로 두려면 주소에 싣는 링크(스크립트가 없어 펼침 자체는 주소에 남지 않는다). */
+/** 그래프 — CPU · 메모리 · 디스크는 늘. 나머지는 펼쳐 둔 서버만 그리고, 안 펼친 서버에는 펼치는 링크만(그리지 않으므로 HTML 이 준다). */
 function ServerGraphs({ server, links }: { server: ServerResourceView; links: ScreenLinks }) {
   const range = links.query.range;
   const open = links.view.openServers.includes(server.server);
-  const keepHref = resourcesScreenHref(links.query, withServerOpen(links.view, server.server, !open));
+  const toggleHref = resourcesScreenHref(links.query, withServerOpen(links.view, server.server, !open));
   return (
     <>
       <div className={styles.graphs}>
@@ -157,28 +159,117 @@ function ServerGraphs({ server, links }: { server: ServerResourceView; links: Sc
         <GraphSlot result={server.hostGraphs} pick={(graphs) => graphs.memory} title="메모리" range={range} />
         <GraphSlot result={server.hostGraphs} pick={(graphs) => graphs.disk} title="디스크" range={range} />
       </div>
-      <details className={styles.more} open={open}>
-        <summary className={styles.moreSummary}>그래프 더 보기 — 네트워크 · 디스크 입출력 · GPU</summary>
-        <p className={styles.keep}>
-          {open ? <>새로 고쳐도 펼쳐 둡니다 · <a href={keepHref}>펼쳐 두지 않기</a></> : <a href={keepHref}>새로 고쳐도 펼쳐 두기</a>}
-        </p>
-        <div className={styles.graphs}>
-          <GraphSlot result={server.hostGraphs} pick={(graphs) => graphs.network} title="네트워크" range={range} />
-          <GraphSlot result={server.hostGraphs} pick={(graphs) => graphs.diskIo} title="디스크 입출력" range={range} />
-          {server.gpus.state === "listed"
-            ? server.gpuGraphs.map((gpu) => <GpuGraphSlots key={gpu.index} gpu={gpu} range={range} />)
-            : <p className={styles.noValue}>GPU 그래프 — {GPU_STATE_TEXT[server.gpus.state]}</p>}
+      {!open ? (
+        <p className={styles.more}><a className={styles.moreLink} href={toggleHref}>그래프 더 보기 — 네트워크 · 디스크 입출력 · GPU</a></p>
+      ) : (
+        <div className={styles.more} role="group" aria-label={`${server.server} 그래프 더 보기`}>
+          <p className={styles.moreHeading}>
+            <span className={styles.moreTitle}>그래프 더 보기 — 네트워크 · 디스크 입출력 · GPU</span>
+            <a className={styles.moreLink} href={toggleHref}>접기</a>
+          </p>
+          <div className={styles.graphs}>
+            <GraphSlot result={server.hostGraphs} pick={(graphs) => graphs.network} title="네트워크" range={range} />
+            <GraphSlot result={server.hostGraphs} pick={(graphs) => graphs.diskIo} title="디스크 입출력" range={range} />
+            {server.gpus.state === "listed"
+              ? server.gpuGraphs.map((gpu) => <GpuGraphSlots key={gpu.index} gpu={gpu} range={range} />)
+              : <p className={styles.noValue}>GPU 그래프 — {GPU_STATE_TEXT[server.gpus.state]}</p>}
+          </div>
+          {server.omittedGpuGraphCount > 0 && <p className={styles.noValue}>GPU {server.omittedGpuGraphCount}개는 그래프를 그리지 않았습니다(앞 4개만).</p>}
         </div>
-        {server.omittedGpuGraphCount > 0 && <p className={styles.noValue}>GPU {server.omittedGpuGraphCount}개는 그래프를 그리지 않았습니다(앞 4개만).</p>}
-      </details>
+      )}
     </>
   );
 }
 
-function ServerSection({ server, links }: { server: ServerResourceView; links: ScreenLinks }) {
+const CONTAINER_STATE_TEXT: Readonly<Record<Exclude<ContainersView["state"], "listed">, string>> = {
+  unread: RESOURCE_TEXT.unread, unknown: RESOURCE_TEXT.unknown,
+};
+
+/** 컨테이너 한 줄 — 이름(계열 이름 링크 + 실제 이름) · 상태 · CPU · 메모리 · 재시작 수(울리면 표식 + 글). */
+function ContainerRow({ row, server, links }: { row: ContainerRowView; server: string; links: ScreenLinks }) {
+  const href = resourcesScreenHref({ range: links.query.range, container: { server, container: row.seriesName } }, links.view);
+  return (
+    <tr className={row.firing !== null ? styles.rowFiring : undefined}>
+      <td className={styles.containerName}>
+        <a href={href} aria-current={row.selected ? "true" : undefined} className={row.selected ? styles.containerSelected : undefined}>{row.seriesName}</a>
+        {row.selected && <span className={styles.selectedMark}> (보는 중)</span>}
+        {row.name !== row.seriesName && <span className={styles.actualName}>{row.name}</span>}
+      </td>
+      <td className={row.stateText === RESOURCE_TEXT.none ? styles.noValue : undefined}>{row.stateText}</td>
+      <td className={styles.number}><span className={row.cpu.state === "value" ? undefined : styles.noValue}>{row.cpu.text}</span></td>
+      <td className={styles.number}><span className={row.memory.state === "value" ? undefined : styles.noValue}>{row.memory.text}</span></td>
+      <td className={styles.number}>
+        <span className={row.restarts === null ? styles.noValue : undefined}>{row.restartsText}</span>
+        {row.firing !== null && <> <FiringBadge firing={row.firing} /></>}
+      </td>
+    </tr>
+  );
+}
+
+function ContainerTable({ server, links }: { server: ServerResourceView; links: ScreenLinks }) {
+  const containers = server.containers;
+  return (
+    <div className={styles.containers}>
+      <p className={styles.containersTitle}>
+        컨테이너{containers.state === "listed" && <> {containers.rows.length}개</>}
+        {containers.truncated && <span className={styles.truncated}> · 일부만 표시</span>}
+      </p>
+      {containers.state !== "listed" ? <p className={styles.noValue}>{CONTAINER_STATE_TEXT[containers.state]}</p>
+        : containers.rows.length === 0 ? <p className={styles.noValue}>컨테이너 없음</p> : (
+          <div className={styles.scroller} tabIndex={0} role="region" aria-label={`${server.server} 컨테이너 표`}>
+            <table className={styles.table}>
+              <thead>
+                <tr>
+                  <th scope="col">이름</th>
+                  <th scope="col">상태</th>
+                  <th scope="col">CPU(코어 하나 = 100%)</th>
+                  <th scope="col">메모리</th>
+                  <th scope="col">재시작 수</th>
+                </tr>
+              </thead>
+              <tbody>
+                {containers.rows.map((row) => <ContainerRow key={row.name} row={row} server={server.server} links={links} />)}
+              </tbody>
+            </table>
+          </div>
+        )}
+    </div>
+  );
+}
+
+/** 고른 컨테이너의 CPU · 메모리 그래프 — 닫기 링크(기간 · 끈 상태 · 펼친 그래프는 그대로). */
+function SelectedContainer({ selected, links }: { selected: SelectedContainerView; links: ScreenLinks }) {
+  const range = links.query.range;
+  const closeHref = resourcesScreenHref({ range, container: null }, links.view);
+  const headingId = `resource-container-${selected.server}-${selected.container}`;
+  return (
+    <section className={styles.selected} aria-labelledby={headingId}>
+      <p className={styles.moreHeading}>
+        <span id={headingId} className={styles.moreTitle}>컨테이너 {selected.container}({selected.server}) 그래프</span>
+        <a className={styles.moreLink} href={closeHref}>닫기</a>
+      </p>
+      <div className={styles.graphsTwo}>
+        {selected.graphs.ok ? (
+          <>
+            <ResourceGraph graph={selected.graphs.value.cpu} range={range} />
+            <ResourceGraph graph={selected.graphs.value.memory} range={range} />
+          </>
+        ) : <GraphFailure title={`${selected.container} CPU · 메모리`} failure={selected.graphs} />}
+      </div>
+    </section>
+  );
+}
+
+/** "그 밖의 알림" — 값 자리 · 컨테이너 줄에 붙지 않은 것(모르는 규칙, 표에 없는 컨테이너의 재시작 반복). */
+function unplacedFiring(server: ServerResourceView): FiringView[] {
+  const rowNames = new Set(server.containers.rows.map((row) => row.name));
+  return server.firing.filter((view) => !PLACED_RULES.has(view.rule) && !(view.rule === "restarts" && view.target !== null && rowNames.has(view.target)));
+}
+
+function ServerSection({ server, links, selected }: { server: ServerResourceView; links: ScreenLinks; selected: SelectedContainerView | null }) {
   const headingId = `resource-server-${server.server}`;
   const current = server.current;
-  const others = server.firing.filter((view) => !PLACED_RULES.has(view.rule));
+  const others = unplacedFiring(server);
   return (
     <section className={styles.server} aria-labelledby={headingId}>
       <div className={styles.serverHeading}>
@@ -205,6 +296,8 @@ function ServerSection({ server, links }: { server: ServerResourceView; links: S
         </div>
       )}
       <ServerGraphs server={server} links={links} />
+      <ContainerTable server={server} links={links} />
+      {selected !== null && <SelectedContainer selected={selected} links={links} />}
     </section>
   );
 }
@@ -264,9 +357,15 @@ export function ResourcesScreen({ screen, view }: ResourcesScreenProps) {
         ? <p className={parts.empty}>지표를 보낸 서버가 없습니다.</p>
         : (
           <div className={styles.servers}>
-            {screen.servers.value.map((server) => <ServerSection key={server.server} server={server} links={links} />)}
+            {screen.servers.value.map((server) => (
+              <ServerSection key={server.server} server={server} links={links}
+                selected={screen.selectedContainer !== null && screen.selectedContainer.server === server.server ? screen.selectedContainer : null} />
+            ))}
           </div>
         )}
+      {/* 고른 컨테이너의 서버가 화면에 없으면(서버 목록 실패 · 목록 밖 서버) 묶음 밖에 따로 */}
+      {screen.selectedContainer !== null && !(screen.servers.ok && screen.servers.value.some((server) => server.server === screen.selectedContainer?.server))
+        && <SelectedContainer selected={screen.selectedContainer} links={links} />}
       {screen.hiddenServerCount > 0 && <p className={styles.meta}>서버 {screen.hiddenServerCount}대는 이 화면에 보이지 않습니다(앞 10대만).</p>}
     </main>
   );

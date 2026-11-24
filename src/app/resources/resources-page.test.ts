@@ -179,7 +179,7 @@ describe("지금 울리는 임계값 — 그 값 자리에 표식 + 글(심각�
     expect(readingText(section, "메모리")).toContain("!경고메모리");
   });
 
-  it("지표 끊김은 받은 때 옆에 · 재시작 반복과 모르는 규칙은 '그 밖의 알림'", async () => {
+  it("지표 끊김은 받은 때 옆에 · 재시작 반복은 컨테이너 줄에 · 모르는 규칙은 '그 밖의 알림'", async () => {
     fake.latest = () => observeLatestBody(defaultServers(), [
       observeFiring({ server: "spare", rule: "silent", severity: "warning", last_value: null }),
       observeFiring({ server: "164", rule: "restarts", target: "llm-ollama", severity: "warning", last_value: 3 }),
@@ -187,11 +187,13 @@ describe("지금 울리는 임계값 — 그 값 자리에 표식 + 글(심각�
     ]);
     const html = await render();
     expect(textOf(serverSection(html, "spare"))).toContain("!경고지표 끊김");
-    const others = textOf(serverSection(html, "164"));
-    expect(others).toContain("그 밖의 알림 2건");
-    expect(others).toContain("!경고컨테이너 재시작 반복 · llm-ollama");
+    const section = serverSection(html, "164");
+    const others = textOf(section.slice(section.indexOf("그 밖의 알림")));
+    expect(others).toContain("그 밖의 알림 1건");
     expect(others).toContain("?infobrand_new_rule");
-    expect(others).not.toContain("마지막 3");   // 재시작 횟수는 퍼센트로 보이지 않는다
+    expect(textOf(othersBlock(section))).not.toContain("재시작 반복");
+    expect(textOf(containerRow(section, "llm-ollama"))).toContain("!경고컨테이너 재시작 반복 · llm-ollama");
+    expect(textOf(section)).not.toContain("마지막 3");   // 재시작 횟수는 퍼센트로 보이지 않는다
   });
 
   it("목록 밖 서버의 알림은 맨 위에 한 줄", async () => {
@@ -277,11 +279,33 @@ function graphFigure(fragment: string, title: string): string {
   return match![1];
 }
 
-/** 묶음 안의 <details> 앞(늘 보이는 부분)과 안 */
-function splitDetails(section: string): { visible: string; folded: string; openAttribute: boolean } {
-  const match = /<details([^>]*)>([\s\S]*?)<\/details>/.exec(section);
-  expect(match, "그래프 더 보기가 없다").not.toBeNull();
-  return { visible: section.slice(0, match!.index), folded: match![2], openAttribute: /\bopen=""/.test(match![1]) };
+/** 묶음 안 — 늘 보이는 그래프 부분(컨테이너 표 앞)과, 펼쳐 둔 경우의 "그래프 더 보기" 묶음(role=group). 안 펼쳤으면 folded 는 null. */
+function splitMore(section: string): { visible: string; folded: string | null } {
+  const containersAt = section.indexOf(">컨테이너");
+  expect(containersAt, "컨테이너 표 자리가 없다").toBeGreaterThan(0);
+  const groupAt = section.indexOf('role="group"');
+  if (groupAt < 0 || groupAt > containersAt) return { visible: section.slice(0, containersAt), folded: null };
+  return { visible: section.slice(0, groupAt), folded: section.slice(groupAt, containersAt) };
+}
+
+/** "그 밖의 알림" 묶음(없으면 빈 글) */
+function othersBlock(section: string): string {
+  const start = section.indexOf("그 밖의 알림");
+  if (start < 0) return "";
+  const end = section.indexOf("</ul>", start);
+  return section.slice(start, end);
+}
+
+/** 컨테이너 표의 한 줄(계열 이름 링크로 찾는다) */
+function containerRow(section: string, seriesName: string): string {
+  const match = new RegExp(`<tr[^>]*><td[^>]*><a[^>]*>${seriesName}</a>([\\s\\S]*?)</tr>`).exec(section);
+  expect(match, `${seriesName} 줄이 없다`).not.toBeNull();
+  return match![0];
+}
+
+/** 줄의 칸 글(td 마다) */
+function rowCells(row: string): string[] {
+  return [...row.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)].map((match) => textOf(match[1]));
 }
 
 function hostPointsWithGap(): Record<string, unknown>[] {
@@ -299,17 +323,26 @@ describe("그래프 — CPU · 메모리 · 디스크는 늘, 나머지는 접�
     fake.series.set(seriesKey("158", "host", null), { points: hostPointsWithGap() });
   });
 
-  it("늘 보이는 셋과 <details> 안의 네트워크 · 디스크 입출력 · GPU", async () => {
-    const html = await renderAtFixedNow();
-    const { visible, folded, openAttribute } = splitDetails(serverSection(html, "158"));
+  it("늘 보이는 셋 — 안 펼친 서버는 '그래프 더 보기' 링크뿐(접힌 그래프의 SVG 를 그리지 않는다)", async () => {
+    const section = serverSection(await renderAtFixedNow(), "158");
+    const { visible, folded } = splitMore(section);
     for (const title of ["CPU", "메모리", "디스크"]) graphFigure(visible, title);
-    expect(visible).not.toContain(">네트워크</figcaption>");
+    expect(folded).toBeNull();
+    expect(section).not.toContain(">네트워크</figcaption>");
+    expect(section).not.toContain(">디스크 입출력</figcaption>");
+    expect(section).not.toContain("<details");
+    expect(section).toContain('href="/resources?range=1h&amp;open=158">그래프 더 보기 — 네트워크 · 디스크 입출력 · GPU</a>');
+    expect(section.match(/<svg[^>]*role="img"/g)).toHaveLength(3);
+  });
+
+  it("펼쳐 둔 서버(open)는 네트워크 · 디스크 입출력 · GPU 를 그리고 '접기' 링크", async () => {
+    const html = await renderAtFixedNow({ open: "158,164" });
+    const folded = splitMore(serverSection(html, "158")).folded!;
     graphFigure(folded, "네트워크");
     graphFigure(folded, "디스크 입출력");
     expect(textOf(folded)).toContain("GPU 그래프 — GPU 없음");
-    expect(openAttribute).toBe(false);
-    expect(textOf(serverSection(html, "158"))).toContain("그래프 더 보기 — 네트워크 · 디스크 입출력 · GPU");
-    const gpuFolded = splitDetails(serverSection(html, "164")).folded;
+    expect(folded).toContain('href="/resources?range=1h&amp;open=164">접기</a>');
+    const gpuFolded = splitMore(serverSection(html, "164")).folded!;
     graphFigure(gpuFolded, "GPU 0 사용률");
     graphFigure(gpuFolded, "GPU 0 메모리");
   });
@@ -360,10 +393,10 @@ describe("그래프 — CPU · 메모리 · 디스크는 늘, 나머지는 접�
   it("계열 조회가 실패하면 그 서버의 그래프만 '확인하지 못함 — <고정 글>', 현재 값과 다른 서버는 그대로", async () => {
     fake.series.set(seriesKey("164", "host", null), { response: () => textResponse(leakyErrorBody(), 503) });
     fake.series.set(seriesKey("164", "gpu", "0"), { response: () => textResponse(leakyErrorBody(), 504) });
-    const html = await renderAtFixedNow();
+    const html = await renderAtFixedNow({ open: "164" });
     const section = serverSection(html, "164");
     expect(textOf(graphFigure(section, "CPU"))).toContain("확인하지 못함 — 서버 일시 장애 · HTTP 503");
-    expect(textOf(graphFigure(splitDetails(section).folded, "GPU 0"))).toContain("확인하지 못함 — 서버 조회 시간 초과 · HTTP 504");
+    expect(textOf(graphFigure(splitMore(section).folded!, "GPU 0"))).toContain("확인하지 못함 — 서버 조회 시간 초과 · HTTP 504");
     expect(readingText(section, "CPU")).toBe("3.4%");
     expect(graphFigure(serverSection(html, "158"), "CPU")).toContain("<svg");
     expectNoForbiddenText(html);
@@ -406,12 +439,12 @@ describe("자동 갱신 — 스크립트 없이 meta refresh", () => {
     expect(html).toContain('href="/resources?range=24h"');
   });
 
-  it("펼친 그래프는 주소에서 — open 이면 <details open> 과 '펼쳐 두지 않기', 아니면 '새로 고쳐도 펼쳐 두기'", async () => {
+  it("펼친 그래프는 주소에서 — 펼치기 · 접기 링크가 끈 상태와 다른 서버의 펼침을 보존", async () => {
     const html = await renderAtFixedNow({ open: "164", refresh: "off" });
-    expect(splitDetails(serverSection(html, "164")).openAttribute).toBe(true);
-    expect(splitDetails(serverSection(html, "158")).openAttribute).toBe(false);
-    expect(serverSection(html, "164")).toContain('href="/resources?range=1h&amp;refresh=off">펼쳐 두지 않기');
-    expect(serverSection(html, "158")).toContain('href="/resources?range=1h&amp;refresh=off&amp;open=158%2C164">새로 고쳐도 펼쳐 두기');
+    expect(splitMore(serverSection(html, "164")).folded).not.toBeNull();
+    expect(splitMore(serverSection(html, "158")).folded).toBeNull();
+    expect(serverSection(html, "164")).toContain('href="/resources?range=1h&amp;refresh=off">접기</a>');
+    expect(serverSection(html, "158")).toContain('href="/resources?range=1h&amp;refresh=off&amp;open=158%2C164">그래프 더 보기');
   });
 
   it("그래프가 더해져도 스크립트 · 표식 글자 없음", async () => {
@@ -421,6 +454,143 @@ describe("자동 갱신 — 스크립트 없이 meta refresh", () => {
     expect(html).not.toMatch(/\son[a-z]+=/i);
     expectNoForbiddenText(html);
     expect(html).not.toContain("0123456789ab");
+    expect(html).not.toMatch(/NaN|Infinity/);
+  });
+});
+
+// ── 3단계: 컨테이너 표 · 재시작 알림의 자리 · 고른 컨테이너의 그래프 ──
+
+function containerServers(): Record<string, unknown>[] {
+  return [
+    observeLatestServer("158", { containers: [
+      observeContainer({ name: "front-app-green", series_name: "front-app", cpu_pct: 250, mem_used: 119_000_000, restarts: 2, state: "running" }),
+      observeContainer({ name: "front-app-blue", series_name: "front-app", cpu_pct: null, mem_used: null, restarts: null, state: null }),
+      observeContainer({ name: "claude-bridge-relay", series_name: "claude-bridge-relay", cpu_pct: 0, restarts: 0, state: "exited" }),
+    ] }),
+    observeLatestServer("164", { gpus: [observeGpu()], containers: [observeContainer({ name: "llm-ollama", series_name: "llm-ollama", restarts: 7, state: "restarting" })] }),
+    observeLatestServer("9", { containers: [], missing: ["containers"] }),
+    observeSilentServer("spare"),
+  ];
+}
+
+describe("컨테이너 표", () => {
+  beforeEach(() => {
+    fake.latest = () => observeLatestBody(containerServers(), []);
+  });
+
+  it("열 — 이름(계열 이름 링크 + 실제 이름) · 상태 · CPU · 메모리 · 재시작 수, 모델의 순서 그대로", async () => {
+    const section = serverSection(await renderAtFixedNow(), "158");
+    const headers = [...section.matchAll(/<th scope="col">([^<]*)<\/th>/g)].map((match) => match[1]);
+    expect(headers).toEqual(["이름", "상태", "CPU(코어 하나 = 100%)", "메모리", "재시작 수"]);
+    const names = [...section.matchAll(/<tr[^>]*><td[^>]*><a[^>]*>([^<]*)<\/a>/g)].map((match) => match[1]);
+    expect(names).toEqual(["claude-bridge-relay", "front-app", "front-app"]);   // 계열 이름 다음 실제 이름의 글자 코드 순(모델)
+    const rows = [...section.matchAll(/<tr[^>]*><td[^>]*><a[\s\S]*?<\/tr>/g)].map((match) => rowCells(match[0]));
+    expect(rows).toEqual([
+      ["claude-bridge-relay", "exited", "0.0%", "113.5 MiB", "0"],
+      ["front-appfront-app-blue", "없음", "없음", "없음", "없음"],
+      ["front-appfront-app-green", "running", "250.0%", "113.5 MiB", "2"],
+    ]);
+    expect(textOf(section)).toContain("컨테이너 3개");
+  });
+
+  it("값 없음의 글 — 컨테이너 없음 · 읽지 못함 · 확인하지 못함 · 일부만 표시", async () => {
+    const unknownRow = observeLatestServer("164");
+    delete unknownRow.containers;
+    fake.latest = () => observeLatestBody([
+      observeLatestServer("158", { containers: [] }), unknownRow,
+      observeLatestServer("9", { containers: [], missing: ["containers"] }),
+      observeLatestServer("77", { missing: ["containers_truncated"] }),
+    ], []);
+    const html = await renderAtFixedNow();
+    expect(textOf(serverSection(html, "158"))).toContain("컨테이너 0개컨테이너 없음");
+    expect(textOf(serverSection(html, "164"))).toContain("컨테이너확인하지 못함");
+    expect(textOf(serverSection(html, "9"))).toContain("컨테이너읽지 못함");
+    expect(textOf(serverSection(html, "77"))).toContain("컨테이너 1개 · 일부만 표시");
+    expect(serverSection(html, "9")).not.toContain("<table");
+  });
+
+  it("재시작 반복은 그 줄에 표식 + 글 — '그 밖의 알림'에서 빠지고, 남는 것이 없으면 그 칸이 없다", async () => {
+    fake.latest = () => observeLatestBody(containerServers(), [
+      observeFiring({ server: "164", rule: "restarts", target: "llm-ollama", severity: "warning", last_value: 3 }),
+    ]);
+    const section = serverSection(await renderAtFixedNow(), "164");
+    const row = containerRow(section, "llm-ollama");
+    expect(rowCells(row)[4]).toContain("7 !경고컨테이너 재시작 반복 · llm-ollama");
+    expect(row).toMatch(/<tr class="[^"]+">/);   // 줄 표시(테두리) — 글과 함께
+    expect(section).not.toContain("그 밖의 알림");
+  });
+
+  it("알림의 대상 컨테이너가 표에 없으면(사라짐) '그 밖의 알림'에 남는다", async () => {
+    fake.latest = () => observeLatestBody(containerServers(), [
+      observeFiring({ server: "164", rule: "restarts", target: "llm-ollama-blue", severity: "warning" }),
+    ]);
+    const section = serverSection(await renderAtFixedNow(), "164");
+    expect(textOf(othersBlock(section))).toContain("그 밖의 알림 1건");
+    expect(textOf(othersBlock(section))).toContain("컨테이너 재시작 반복 · llm-ollama-blue");
+    expect(textOf(containerRow(section, "llm-ollama"))).not.toContain("재시작 반복");
+  });
+
+  it("이름 링크는 고른 컨테이너를 더하고 기간 · 끈 상태 · 펼친 그래프를 보존", async () => {
+    const section = serverSection(await renderAtFixedNow({ range: "24h", refresh: "off", open: "164" }), "158");
+    expect(section).toContain('href="/resources?range=24h&amp;server=158&amp;container=front-app&amp;refresh=off&amp;open=164">front-app</a>');
+  });
+});
+
+describe("고른 컨테이너의 그래프", () => {
+  beforeEach(() => {
+    fake.latest = () => observeLatestBody(containerServers(), []);
+    fake.series.set(seriesKey("158", "container", "front-app"), { points: evenlySpacedPoints("container", RANGE_START + 30_000, 30_000, 4, (index) => ({
+      cpu_pct: [100 + index * 10, 150 + index * 10], mem_used: [119_000_000, 121_000_000],
+    })) });
+  });
+
+  it("그 서버 묶음의 표 바로 아래에 CPU · 메모리 그래프와 닫기 링크, 고른 줄은 aria-current 와 글", async () => {
+    const html = await renderAtFixedNow({ server: "158", container: "front-app", open: "164" });
+    const section = serverSection(html, "158");
+    const tableEnd = section.indexOf("</table>");
+    const selectedAt = section.indexOf("컨테이너 front-app(158) 그래프");
+    expect(tableEnd).toBeGreaterThan(0);
+    expect(selectedAt).toBeGreaterThan(tableEnd);
+    const after = section.slice(tableEnd);
+    graphFigure(after, "front-app CPU");
+    graphFigure(after, "front-app 메모리");
+    expect(after).toContain('href="/resources?range=1h&amp;open=164">닫기</a>');
+    const selectedLinks = [...section.matchAll(/<a[^>]*aria-current="true"[^>]*>([^<]*)<\/a>/g)].map((match) => match[1]);
+    expect(selectedLinks).toEqual(["front-app", "front-app"]);   // 두 자리(blue · green)가 같은 계열 — 둘 다 고른 줄
+    expect(textOf(containerRow(section, "front-app"))).toContain("(보는 중)");
+    expect(textOf(containerRow(section, "claude-bridge-relay"))).not.toContain("(보는 중)");
+    expect(serverSection(html, "164")).not.toContain("컨테이너 front-app");
+  });
+
+  it("고른 컨테이너의 계열 조회가 실패하면 그 자리에 '확인하지 못함 — <고정 글>'", async () => {
+    fake.series.set(seriesKey("158", "container", "front-app"), { response: () => textResponse(leakyErrorBody(), 503) });
+    const html = await renderAtFixedNow({ server: "158", container: "front-app" });
+    expect(textOf(serverSection(html, "158"))).toContain("확인하지 못함 — 서버 일시 장애 · HTTP 503");
+    expectNoForbiddenText(html);
+  });
+
+  it("고른 서버가 화면에 없으면(서버 목록 실패) 묶음 밖에 따로 그래프", async () => {
+    fake.latest = () => textResponse(leakyErrorBody(), 503);
+    const html = await renderAtFixedNow({ server: "158", container: "front-app" });
+    expect(textOf(html)).toContain("서버 값: 확인하지 못함");
+    expect(textOf(html)).toContain("컨테이너 front-app(158) 그래프");
+    expect(html).toContain(">front-app CPU</figcaption>");
+  });
+
+  it("자동 갱신 · 기간 링크가 고른 컨테이너를 보존(새로 고침 뒤에도 그대로)", async () => {
+    const html = await renderAtFixedNow({ server: "158", container: "front-app" });
+    expect(html).toContain('<meta http-equiv="refresh" content="30"/>');   // content 에 주소가 없다 — 지금 주소(고른 컨테이너 포함)를 다시 부른다
+    expect(html).toContain('href="/resources?range=7d&amp;server=158&amp;container=front-app">7일</a>');
+    expect(html).toContain('href="/resources?range=1h&amp;server=158&amp;container=front-app&amp;refresh=off">끄기</a>');
+  });
+
+  it("스크립트 · 표식 글자 없음", async () => {
+    const html = await renderAtFixedNow({ server: "158", container: "front-app", open: "158,164" });
+    expect(html).not.toMatch(/<script/i);
+    expect(html).not.toMatch(/\son[a-z]+=/i);
+    expectNoForbiddenText(html);
+    expect(html).not.toContain("0123456789ab");
+    expect(html).not.toContain("study-note-deploy-system-front");
     expect(html).not.toMatch(/NaN|Infinity/);
   });
 });
