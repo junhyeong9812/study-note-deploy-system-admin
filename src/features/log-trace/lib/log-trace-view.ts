@@ -303,18 +303,23 @@ interface LocatedWithRelated {
   related: UpstreamResult<RelatedLogs> | null;
 }
 
-export async function buildLogTrace(dependencies: LogTraceDependencies, query: LogTraceQuery): Promise<LogTraceOutcome> {
+/** onSelectedService(선택): 고른 로그 확인(1단계 a)이 끝나는 대로 한 번 — 확인되면 그 줄의 service, 확인하지 못함 · not_found · 관측 서버 설정 없음이면 null.
+ * (연관 로그의 자원 칸이 전체를 기다리지 않고 서비스를 알게 — server/log-trace-resources.ts.) 호출 · 결과는 이 인자와 무관하게 그대로다. */
+export async function buildLogTrace(
+  dependencies: LogTraceDependencies, query: LogTraceQuery, onSelectedService?: (service: string | null) => void,
+): Promise<LogTraceOutcome> {
   const at = query.selectedAtMilliseconds;
   const notConfigured = upstreamFailure("not_configured");
   const { logs, deployHistory, incidents } = dependencies;
 
   // 1단계 — 다섯 호출을 한꺼번에. 2단계(연관 로그)는 고른 로그 확인이 끝나는 대로 이어 붙인다(b~e 를 기다리지 않는다).
+  if (logs === null) onSelectedService?.(null);
   const locatedWithRelated: Promise<LocatedWithRelated> = logs === null
     ? Promise.resolve({ located: notConfigured, related: null })
-    : locateSelected(logs, query).then(async (located) => ({
-      located,
-      related: located !== "not_found" && located.ok ? await loadRelatedLogs(logs, located.value, at) : null,
-    }));
+    : locateSelected(logs, query).then(async (located) => {
+      onSelectedService?.(located !== "not_found" && located.ok ? located.value.service : null);
+      return { located, related: located !== "not_found" && located.ok ? await loadRelatedLogs(logs, located.value, at) : null };
+    });
   const levelWindow = { from: isoText(at - LEVEL_COUNT_WINDOW_MILLISECONDS), to: isoText(at + LEVEL_COUNT_WINDOW_MILLISECONDS), limit: LEVEL_COUNT_LIMIT };
   const warningsPromise: Promise<UpstreamResult<LogPage>> = logs === null
     ? Promise.resolve(notConfigured) : logs.searchLogs({ ...EMPTY_LOG_QUERY, ...levelWindow, level: "warning" });

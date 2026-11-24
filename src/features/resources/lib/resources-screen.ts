@@ -270,7 +270,7 @@ export function resourcesScreenFailures(screen: ResourcesScreen): [string, Upstr
 }
 
 /** 글자 코드 순(localeCompare 가 아니다). */
-function byCharacterCode(left: string, right: string): number {
+export function byCharacterCode(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
@@ -278,7 +278,7 @@ function labelOf(labels: Readonly<Record<string, string>>, word: string): string
   return Object.hasOwn(labels, word) ? labels[word] : word;
 }
 
-function firingView(rule: FiringRule): FiringView {
+export function firingView(rule: FiringRule): FiringView {
   return {
     rule: rule.rule, ruleLabel: labelOf(FIRING_RULE_LABELS, rule.rule), severity: rule.severity, severityLabel: labelOf(FIRING_SEVERITY_LABELS, rule.severity),
     target: rule.target, since: rule.since, lastValue: rule.lastValue,
@@ -294,7 +294,7 @@ function reading(value: number | null, format: (value: number) => string, unavai
 }
 
 /** used ÷ total × 100 — total 이 0 · null 이면 값 없음(0 으로 나누지 않는다). */
-function usedPercent(used: number | null, total: number | null): number | null {
+export function usedPercent(used: number | null, total: number | null): number | null {
   return used !== null && total !== null && total > 0 ? used / total * 100 : null;
 }
 
@@ -302,7 +302,7 @@ function usageReading(used: number | null, total: number | null, unavailable: Un
   return reading(usedPercent(used, total), formatPercent, unavailable, firing, `${formatBytes(used)} / ${formatBytes(total)}`);
 }
 
-function freshnessOf(server: ServerLatest, firing: FiringView | null): ServerFreshness {
+export function freshnessOf(server: ServerLatest, firing: FiringView | null): ServerFreshness {
   const ageMilliseconds = server.ageMilliseconds === null ? null : Math.max(0, server.ageMilliseconds);
   if (server.measuredAt === null) return { kind: "never", ageMilliseconds, label: RESOURCE_TEXT.never, firing };
   if (server.stale === null) return { kind: "unknown", ageMilliseconds, label: RESOURCE_TEXT.unknown, firing };
@@ -313,7 +313,7 @@ function freshnessOf(server: ServerLatest, firing: FiringView | null): ServerFre
   return { kind: "fresh", ageMilliseconds, label: null, firing };
 }
 
-interface ServerFiring {
+export interface ServerFiring {
   all: FiringView[];
   disk: FiringView | null;
   memory: FiringView | null;
@@ -322,7 +322,7 @@ interface ServerFiring {
   restartsByTarget: Map<string, FiringView>;
 }
 
-function serverFiringOf(rules: FiringRule[]): ServerFiring {
+export function serverFiringOf(rules: FiringRule[]): ServerFiring {
   const all = rules.map(firingView);
   const first = (rule: string) => all.find((view) => view.rule === rule) ?? null;
   const restartsByTarget = new Map<string, FiringView>();
@@ -332,7 +332,7 @@ function serverFiringOf(rules: FiringRule[]): ServerFiring {
   };
 }
 
-function currentReadings(server: ServerLatest, firing: ServerFiring): CurrentHostReadings {
+export function currentReadings(server: ServerLatest, firing: ServerFiring): CurrentHostReadings {
   const host = server.host;
   const unavailable: Unavailable = server.measuredAt !== null && server.missing?.includes("host") ? "unread" : "none";
   const value = (pick: (values: NonNullable<ServerLatest["host"]>) => number | null) => (server.measuredAt === null || host === null ? null : pick(host));

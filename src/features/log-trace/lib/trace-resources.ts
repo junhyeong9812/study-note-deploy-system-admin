@@ -33,8 +33,13 @@
  * - atLogValue: [at, at + step) 에 T 가 드는 점의 평균(없으면 null). maximumValue: 점들의 `_max`(백분율 값은 used_max ÷ 그 점의 total 평균) 중 최대,
  *   `_max` 가 하나도 없으면 평균의 최대(없으면 null). 글자는 formatPercent · formatBytes(없으면 "없음"). */
 import type { FetchLike, TimeoutSignalFactory } from "@/features/auth/lib/types";
-import type { ResourceSeriesSource } from "@/features/resources/lib/resource-metrics-client";
-import type { UpstreamResult } from "@/shared/lib/upstream-result";
+import { formatBytes, formatPercent } from "@/features/resources/lib/resource-format";
+import {
+  createResourceMetricsClient, type ResourceMetricsClient, type ResourceSeries, type ResourceSeriesSource, type SeenContainers, type SeriesPoint,
+} from "@/features/resources/lib/resource-metrics-client";
+import { byCharacterCode, usedPercent } from "@/features/resources/lib/resources-screen";
+import { parseIsoUtc } from "@/shared/lib/query-input";
+import { upstreamFailure, type UpstreamResult } from "@/shared/lib/upstream-result";
 
 export const TRACE_RESOURCE_WINDOW_MILLISECONDS = 5 * 60 * 1000;
 export const TRACE_RESOURCE_SERVER_LIMIT = 10;
@@ -95,17 +100,145 @@ export interface TraceResourcesOptions {
 
 /** 그 서비스의 컨테이너인가(계열 이름 기준). */
 export function containerBelongsToService(seriesName: string, service: string): boolean {
-  void seriesName; void service;
-  throw new Error("not implemented");
+  return seriesName === service || seriesName.startsWith(`${service}-`);
 }
 
 /** 값을 보일 그 서비스 컨테이너의 계열 이름. */
 export function serviceContainerName(service: string): string {
-  void service;
-  throw new Error("not implemented");
+  return Object.hasOwn(SERVICE_CONTAINER_NAMES, service) ? SERVICE_CONTAINER_NAMES[service] : `${service}-app`;
 }
 
-export function collectTraceResources(options: TraceResourcesOptions): Promise<TraceResourcesView | null> {
-  void options;
-  throw new Error("not implemented");
+/** 1단계의 결과 — latest 실패면 그 실패, 아니면 서버마다 containers(서버, T) 의 결과(이름순). */
+type ServerSightings = UpstreamResult<{ server: string; seen: UpstreamResult<SeenContainers> }[]>;
+
+async function sightingsAt(client: ResourceMetricsClient, atMilliseconds: number): Promise<ServerSightings> {
+  const latest = await client.latest();
+  if (!latest.ok) return latest;
+  // 지금의 컨테이너(latest.containers)는 보지 않는다 — 서버 이름만 쓰고, 그때의 위치는 containers(서버, T) 로 묻는다
+  const servers = latest.value.servers.map((server) => server.server).sort(byCharacterCode).slice(0, TRACE_RESOURCE_SERVER_LIMIT);
+  const seen = await Promise.all(servers.map((server) => client.containers(server, atMilliseconds)));
+  return { ok: true, value: servers.map((server, index) => ({ server, seen: seen[index] })) };
+}
+
+interface Candidate {
+  server: string;
+  containers: string[];
+  hasServiceContainer: boolean;
+  lastSeenMilliseconds: number;
+}
+
+function locate(sightings: { server: string; seen: UpstreamResult<SeenContainers> }[], service: string): TraceServerLocation {
+  const wanted = serviceContainerName(service);
+  const failedServers: string[] = [];
+  const candidates: Candidate[] = [];
+  for (const { server, seen } of sightings) {
+    if (!seen.ok) {
+      failedServers.push(server);
+      continue;
+    }
+    const matched = seen.value.containers.filter((container) => containerBelongsToService(container.name, service));
+    if (matched.length === 0) continue;
+    candidates.push({
+      server,
+      containers: [...new Set(matched.map((container) => container.name))].sort(byCharacterCode),
+      hasServiceContainer: matched.some((container) => container.name === wanted),
+      lastSeenMilliseconds: Math.max(...matched.map((container) => parseIsoUtc(container.lastSeenAt) as number)),
+    });
+  }
+  failedServers.sort(byCharacterCode);
+  if (candidates.length === 0) return failedServers.length > 0 ? { kind: "unknown", failedServers } : { kind: "none" };
+  // ① 그 서비스 컨테이너가 보인 서버 ② last_seen_at 이 늦은 서버 ③ 서버 이름순
+  candidates.sort((left, right) => Number(right.hasServiceContainer) - Number(left.hasServiceContainer)
+    || right.lastSeenMilliseconds - left.lastSeenMilliseconds || byCharacterCode(left.server, right.server));
+  const [chosen, ...others] = candidates;
+  return {
+    kind: "found", server: chosen.server, serviceContainer: chosen.hasServiceContainer ? wanted : null, containers: chosen.containers,
+    alsoSeenOn: others.map((candidate) => candidate.server).sort(byCharacterCode), uncheckedServers: failedServers,
+  };
+}
+
+interface TraceValueSpec {
+  label: string;
+  unit: TraceValueView["unit"];
+  valueName: string;
+  /** 있으면 점 값 = 값 ÷ 그 점의 이 값(평균) × 100 */
+  totalName: string | null;
+}
+
+const HOST_VALUE_SPECS: TraceValueSpec[] = [
+  { label: "CPU", unit: "percent", valueName: "cpu_pct", totalName: null },
+  { label: "메모리", unit: "percent", valueName: "mem_used", totalName: "mem_total" },
+  { label: "디스크", unit: "percent", valueName: "disk_used", totalName: "disk_total" },
+];
+
+const CONTAINER_VALUE_SPECS: TraceValueSpec[] = [
+  { label: "CPU", unit: "percent", valueName: "cpu_pct", totalName: null },
+  { label: "메모리", unit: "bytes", valueName: "mem_used", totalName: null },
+];
+
+function pointValue(point: SeriesPoint, spec: TraceValueSpec, role: "average" | "maximum"): number | null {
+  const value = point.values[spec.valueName]?.[role] ?? null;
+  return spec.totalName === null ? value : usedPercent(value, point.values[spec.totalName]?.average ?? null);
+}
+
+function maximumOf(values: (number | null)[]): number | null {
+  const present = values.filter((value): value is number => value !== null);
+  return present.length === 0 ? null : Math.max(...present);
+}
+
+function traceValue(series: ResourceSeries, spec: TraceValueSpec, atMilliseconds: number): TraceValueView {
+  // 로그 시각이 든 점 — [at, at + step)(5분 평균의 첫 점은 from 보다 앞설 수 있다 — 버리지 않는다)
+  const atLogPoint = series.points.find((point) => point.atMilliseconds <= atMilliseconds && atMilliseconds < point.atMilliseconds + series.stepMilliseconds);
+  const atLogValue = atLogPoint === undefined ? null : pointValue(atLogPoint, spec, "average");
+  const maximumValue = maximumOf(series.points.map((point) => pointValue(point, spec, "maximum")))
+    ?? maximumOf(series.points.map((point) => pointValue(point, spec, "average")));
+  const format = spec.unit === "percent" ? formatPercent : formatBytes;
+  return { label: spec.label, unit: spec.unit, atLogValue, atLogText: format(atLogValue), maximumValue, maximumText: format(maximumValue) };
+}
+
+function traceSeries(result: UpstreamResult<ResourceSeries>, specs: TraceValueSpec[], atMilliseconds: number): UpstreamResult<TraceSeriesView> {
+  if (!result.ok) return result;
+  try {
+    const series = result.value;
+    return { ok: true, value: {
+      source: series.source, stepMilliseconds: series.stepMilliseconds, pointCount: series.points.length, noRecord: series.points.length === 0,
+      values: specs.map((spec) => traceValue(series, spec, atMilliseconds)),
+    } };
+  } catch {
+    return upstreamFailure("unparseable");
+  }
+}
+
+export async function collectTraceResources(options: TraceResourcesOptions): Promise<TraceResourcesView | null> {
+  const { atMilliseconds } = options;
+  const fromMilliseconds = atMilliseconds - TRACE_RESOURCE_WINDOW_MILLISECONDS;
+  const toMilliseconds = atMilliseconds + TRACE_RESOURCE_WINDOW_MILLISECONDS;
+  // 설정이 없으면 클라이언트가 호출 없이 not_configured 를 돌려준다
+  const client = createResourceMetricsClient({ baseUrl: options.observeUrl, secret: options.observeSecret, fetch: options.fetch, timeoutSignal: options.timeoutSignal });
+  // 1 — 서비스를 기다리지 않고 곧바로 서버 찾기를 시작한다(거부하지 않게 — 뜻밖의 예외는 unparseable)
+  const sightings: Promise<ServerSightings> = sightingsAt(client, atMilliseconds).catch(() => upstreamFailure("unparseable"));
+  // 2 — 서비스가 정해지면(null 이면 곧바로 끝 — 이미 시작한 호출의 결과는 버린다)
+  const service = await options.service.catch(() => null);
+  if (service === null) return null;
+  const found = await sightings;
+  let location: UpstreamResult<TraceServerLocation>;
+  try {
+    location = found.ok ? { ok: true, value: locate(found.value, service) } : found;
+  } catch {
+    location = upstreamFailure("unparseable");
+  }
+  if (!location.ok || location.value.kind !== "found") {
+    return { service, atMilliseconds, fromMilliseconds, toMilliseconds, location, host: null, container: null };
+  }
+  const { server, serviceContainer } = location.value;
+  const window = { fromMilliseconds, toMilliseconds };
+  const [hostSeries, containerSeries] = await Promise.all([
+    client.series({ server, scope: "host", name: null, ...window }),
+    serviceContainer === null ? Promise.resolve(null) : client.series({ server, scope: "container", name: serviceContainer, ...window }),
+  ]);
+  return {
+    service, atMilliseconds, fromMilliseconds, toMilliseconds, location,
+    host: traceSeries(hostSeries, HOST_VALUE_SPECS, atMilliseconds),
+    container: containerSeries === null ? null : traceSeries(containerSeries, CONTAINER_VALUE_SPECS, atMilliseconds),
+  };
 }

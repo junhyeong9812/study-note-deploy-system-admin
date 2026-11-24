@@ -7,16 +7,39 @@
  * - statusScreenResponse(request): 세션이 없으면 401, 그 밖은 200 `{success:true,data:StatusScreenData}`(no-store). */
 import "server-only";
 import { requireApiSession, requireSession } from "@/features/auth/server/require-session";
-import type { StatusScreenData } from "@/features/status/lib/status-resources";
+import { collectStatusScreen, type StatusScreenData } from "@/features/status/lib/status-resources";
+import { STATUS_CHECK_NAMES } from "@/features/status/lib/status-overview";
+import { readServerConfig } from "@/shared/config/server-config";
+import { log } from "@/shared/lib/logger";
+import { screenDataResponse, upstreamFailureLogLine } from "@/shared/lib/screen-responses";
+import type { UpstreamResult } from "@/shared/lib/upstream-result";
+
+/** 세션 검증을 마친 뒤에만 부른다. */
+async function buildStatusScreen(): Promise<StatusScreenData> {
+  const config = readServerConfig();
+  const data = await collectStatusScreen({
+    alertUrl: config.alertUrl, alertSecret: config.alertSecret, observeUrl: config.observeUrl, observeSecret: config.observeSecret,
+    backendUrl: config.backendUrl, deployMasterUrl: config.deployMasterUrl, fetch: (input, init) => fetch(input, init),
+  });
+  const cells: [string, UpstreamResult<unknown>][] = [
+    ...STATUS_CHECK_NAMES.map((name): [string, UpstreamResult<unknown>] => [name, data.overview[name]]),
+    ["resources", data.resources],
+  ];
+  for (const [cell, result] of cells) {
+    const logLine = upstreamFailureLogLine("status", cell, result);
+    if (logLine !== null) void log("screen-status", logLine, "warning");
+  }
+  return data;
+}
 
 export async function loadStatusScreen(): Promise<StatusScreenData> {
   await requireSession();
-  throw new Error("not implemented");
+  return buildStatusScreen();
 }
 
 export async function statusScreenResponse(request: Request): Promise<Response> {
   void request;
   const session = await requireApiSession();
   if (session instanceof Response) return session;
-  throw new Error("not implemented");
+  return screenDataResponse(await buildStatusScreen(), null);
 }
