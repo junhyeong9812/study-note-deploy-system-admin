@@ -8,6 +8,10 @@ import {
   collectTraceResources, containerBelongsToService, serviceContainerName, type TraceResourcesOptions, type TraceResourcesView,
 } from "@/features/log-trace/lib/trace-resources";
 import { createFakeTraceObserve, type FakeTraceObserve } from "@/features/log-trace/lib/trace-resources-test-fakes";
+import { buildLogTrace } from "@/features/log-trace/lib/log-trace-view";
+import { parseLogTraceQuery } from "@/features/log-trace/lib/log-trace-query";
+import { SELECTED_LOG_ID, createFakeObserveLogs, fakeLogLine } from "@/features/log-trace/lib/log-trace-test-fakes";
+import { createLogClient } from "@/features/logs/lib/log-client";
 import {
   DAY, MINUTE, SECOND, observeLatestBody, observeLatestServer, observePoint, observeSilentServer, seriesKey,
 } from "@/features/resources/lib/resource-metrics-test-fakes";
@@ -360,5 +364,40 @@ describe("시간 — 서버 찾기는 서비스를 기다리지 않는다(가짜
     await vi.advanceTimersByTimeAsync(500);
     expect(pending.settled).toBe(true);
     expect(pending.value).toBeNull();
+  });
+});
+
+describe("buildLogTrace 의 onSelectedService — 고른 로그 확인 직후(연관 로그를 기다리지 않는다)", () => {
+  it("연관 로그 응답을 붙잡아 둔 동안에도 서비스가 먼저 알려진다", async () => {
+    const lines = [fakeLogLine()];
+    const logs = createFakeObserveLogs(lines);
+    let releaseRelated!: () => void;
+    const relatedHeld = new Promise<void>((resolve) => { releaseRelated = resolve; });
+    let relatedStarted = false;
+    let relatedFinished = false;
+    const fetch = createRoutedFetch(async (url, init) => {
+      if (url.searchParams.get("request_id") !== null) {
+        relatedStarted = true;
+        await relatedHeld;
+        relatedFinished = true;
+      }
+      return logs.handler(url, init);
+    });
+    const announced: (string | null)[] = [];
+    const parsed = parseLogTraceQuery({ selected: SELECTED_LOG_ID });
+    if (!parsed.ok) throw new Error("query");
+    const outcome = buildLogTrace(
+      { logs: createLogClient({ baseUrl: FAKE_OBSERVE_URL, secret: FAKE_OBSERVE_SECRET, fetch }), deployHistory: null, incidents: null },
+      parsed.query, (service) => { announced.push(service); },
+    );
+    try {
+      await vi.waitFor(() => expect(relatedStarted).toBe(true));
+      await vi.waitFor(() => expect(announced).toEqual(["backend"]));
+      expect(relatedFinished).toBe(false);
+    } finally {
+      releaseRelated();
+    }
+    expect((await outcome).kind).toBe("view");
+    expect(announced).toEqual(["backend"]);
   });
 });

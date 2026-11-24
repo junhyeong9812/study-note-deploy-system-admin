@@ -312,6 +312,26 @@ describe("collectStatusScreen — 병렬(가짜 타이머)", () => {
     okValue(pending.value!.resources);
   });
 
+  it("다섯 칸이 3초씩 걸려도 /metrics/latest 는 0초에 시작한다(다섯 뒤에 차례로 부르지 않는다)", async () => {
+    const timeout = createTimerTimeoutSignal();
+    const startedAt: Record<string, number> = {};
+    const start = Date.now();
+    const inner = statusRoutes(() => observeLatestBody([observeLatestServer("158")]));
+    const fetch = createRoutedFetch((url, init) => {
+      startedAt[url.pathname] ??= Date.now() - start;
+      if (url.pathname === "/metrics/latest") return inner(url.toString(), init);
+      return respondAfter(3_000, () => new Response(null), init).then(() => inner(url.toString(), init));
+    });
+    const pending = track(collectStatusScreen({ ...screenOptions(fetch), timeoutSignal: timeout.factory }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(startedAt["/metrics/latest"]).toBe(0);
+    expect(startedAt["/health"]).toBe(0);
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(pending.settled).toBe(true);
+    okValue(pending.value!.resources);
+    okValue(pending.value!.overview.alertHealth);
+  });
+
   it("자원 조회가 멈추면 5초에 timeout — 다섯 칸은 값이 있다", async () => {
     const timeout = createTimerTimeoutSignal();
     const fetch = statusRoutes((init) => hangUntilAborted(init));

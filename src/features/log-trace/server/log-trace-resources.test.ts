@@ -187,6 +187,33 @@ describe("세션이 있으면", () => {
     expect(result.outcome.kind).toBe("view");
   });
 
+  it("연관 로그 응답을 붙잡아 둔 동안에도 계열(/metrics/series)이 시작된다 — buildLogTrace 전체를 기다리지 않는다", async () => {
+    const realLogs = logsHandler;
+    let releaseRelated!: () => void;
+    const relatedHeld = new Promise<void>((resolve) => { releaseRelated = resolve; });
+    let relatedStarted = false;
+    let relatedFinished = false;
+    logsHandler = async (url, init) => {
+      if (url.searchParams.get("request_id") !== null) {
+        relatedStarted = true;
+        await relatedHeld;
+        relatedFinished = true;
+      }
+      return realLogs(url, init);
+    };
+    const pending = loadLogTraceWithResources({ selected: SELECTED_LOG_ID });
+    try {
+      await vi.waitFor(() => expect(relatedStarted).toBe(true));
+      await vi.waitFor(() => expect(metricPaths()).toContain("/metrics/series"));
+      expect(relatedFinished).toBe(false);
+    } finally {
+      releaseRelated();
+    }
+    const result = await pending;
+    expect(result.outcome.kind).toBe("view");
+    okValue(result.resources!.host!);
+  });
+
   it("계열 하나가 실패 → 그 칸만", async () => {
     metrics.metrics.series.set(seriesKey("164", "container", "backend-app"), { response: () => textResponse(leakyErrorBody(), 504) });
     const result = await loadLogTraceWithResources({ selected: SELECTED_LOG_ID });
