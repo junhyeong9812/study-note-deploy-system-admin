@@ -1,0 +1,25 @@
+/* 그래프 하나 — 색은 전부 globals.css 토큰(다크 모드 포함). 선의 구분은 굵기 · 무늬 · 옅기 + 범례 글(색만이 아니다). */
+.graph { min-width: 0; display: flex; flex-direction: column; gap: var(--space-1); }
+.title { font-size: var(--text-sm); font-weight: 600; }
+.svg { width: 100%; height: auto; display: block; overflow: visible; }
+.grid { stroke: var(--line); stroke-width: 1; }
+.tickText { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+
+.lineAverage, .lineMaximum { fill: none; stroke-linejoin: round; stroke-linecap: round; vector-effect: non-scaling-stroke; }
+.lineAverage { stroke-width: 2.2; }
+.lineMaximum { stroke-width: 1.2; opacity: 0.55; stroke-dasharray: 3 3; }
+.lineFirst { stroke: var(--accent); }
+.lineSecond { stroke: var(--success-fg); }
+.lineAverage.lineSecond { stroke-dasharray: 9 3 2 3; }
+.lineMaximum.lineSecond { stroke-dasharray: 1 3; }
+.isolated { stroke: none; }
+.isolatedAverage { fill: var(--accent); }
+.isolatedMaximum { fill: var(--accent); opacity: 0.55; }
+
+.legend { list-style: none; display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-3); font-size: var(--text-xs); color: var(--muted); }
+.legendItem { display: inline-flex; align-items: center; gap: var(--space-1); }
+.legendSample { width: 24px; height: 8px; overflow: visible; }
+.summary { font-size: var(--text-xs); color: var(--fg); }
+.note { font-size: var(--text-xs); color: var(--muted); }
+.empty, .failure { padding: var(--space-4) var(--space-3); font-size: var(--text-sm); color: var(--muted); border: 1px dashed var(--line); border-radius: var(--radius-sm); text-align: center; }
+.failure { color: var(--fg); background: var(--warning-bg); border-style: solid; border-color: var(--warning-fg); text-align: left; }

@@ -1,0 +1,80 @@
+/* 서버 자원 — 색은 전부 globals.css 토큰(다크 모드 포함). 제목 줄 · 빈 상태는 공통 조각(src/shared/ui/screen-parts.module.css). */
+.main { max-width: var(--content-width); margin: 0 auto; padding: var(--space-6) var(--space-4); display: flex; flex-direction: column; gap: var(--space-4); }
+.meta { font-size: var(--text-sm); color: var(--muted); font-variant-numeric: tabular-nums; }
+.metaNote { margin-left: var(--space-2); font-size: var(--text-xs); }
+.refresh { font-weight: 600; }
+.refresh:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.failure {
+  padding: var(--space-2) var(--space-3); font-size: var(--text-sm); color: var(--fg);
+  background: var(--warning-bg); border-left: 3px solid var(--warning-fg); border-radius: var(--radius-sm);
+}
+
+/* 서버마다 한 묶음 — 세로로 쌓는다 */
+.servers { display: flex; flex-direction: column; gap: var(--space-4); }
+.server {
+  min-width: 0; padding: var(--space-4); display: flex; flex-direction: column; gap: var(--space-3);
+  border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--bg);
+}
+.serverHeading { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-4); }
+.serverName { font-size: var(--text-lg); }
+.freshnessLine { display: inline-flex; flex-wrap: wrap; align-items: center; gap: var(--space-1) var(--space-3); font-size: var(--text-sm); }
+.freshness { display: inline-flex; align-items: center; gap: var(--space-1); padding: 0 var(--space-2); border-radius: var(--radius-pill); font-weight: 600; }
+.freshnessFresh { color: var(--success-fg); background: var(--success-bg); }
+.freshnessStale { color: var(--warning-fg); background: var(--warning-bg); }
+.measuredAt { color: var(--muted); font-variant-numeric: tabular-nums; }
+.staleNote { font-size: var(--text-sm); color: var(--warning-fg); }
+
+/* 현재 값 — 이름 위, 값 아래의 칸들 */
+.readings { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: var(--space-3); }
+.readingsStale .value { color: var(--muted); }
+.reading { min-width: 0; padding: var(--space-2) var(--space-3); border: 1px solid var(--line); border-radius: var(--radius-sm); }
+.readingWide { grid-column: 1 / -1; }
+.readingFiring { border-color: var(--warning-fg); }
+.readingLabel { font-size: var(--text-xs); color: var(--muted); }
+.readingValue { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-1) var(--space-2); font-variant-numeric: tabular-nums; }
+.value { font-size: var(--text-md); font-weight: 600; }
+.noValue { font-size: var(--text-sm); color: var(--muted); }
+.detail { font-size: var(--text-xs); color: var(--muted); }
+.gpuList { list-style: none; display: flex; flex-direction: column; gap: var(--space-1); font-size: var(--text-sm); }
+.gpuName { font-weight: 600; margin-right: var(--space-2); }
+
+/* 울리는 임계값 — 표식 + 글(색만으로 전하지 않는다) */
+.firing {
+  display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 0 var(--space-2);
+  padding: 0 var(--space-2); font-size: var(--text-xs); border-radius: var(--radius-sm); border: 1px solid currentColor;
+}
+.firingWarning { color: var(--warning-fg); background: var(--warning-bg); }
+.firingCritical { color: var(--danger); background: var(--danger-bg); }
+.firingMark { font-weight: 700; }
+.firingSince { color: var(--fg); font-variant-numeric: tabular-nums; }
+.firingList { list-style: none; display: flex; flex-direction: column; gap: var(--space-1); }
+.others { display: flex; flex-direction: column; gap: var(--space-1); }
+.othersTitle { font-size: var(--text-sm); font-weight: 600; }
+.elsewhere {
+  display: flex; flex-direction: column; gap: var(--space-1); padding: var(--space-2) var(--space-3); font-size: var(--text-sm);
+  border: 1px solid var(--warning-fg); border-radius: var(--radius-md);
+}
+
+@media (max-width: 640px) {
+  .main { padding: var(--space-4) var(--space-3); }
+  .readings { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+}
+
+/* 기간 · 자동 갱신 */
+.controls { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-4); }
+.ranges { list-style: none; display: flex; flex-wrap: wrap; gap: var(--space-1); }
+.range { display: inline-block; padding: 0 var(--space-3); font-size: var(--text-sm); border: 1px solid var(--line); border-radius: var(--radius-pill); }
+.rangeSelected { font-weight: 700; color: var(--fg); background: var(--accent-bg); border-color: var(--accent); text-decoration: underline; }
+.range:focus-visible, .keep a:focus-visible, .moreSummary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.visuallyHidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* 그래프 — 넓으면 셋을 나란히, 좁으면 세로로 */
+.graphs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-4); }
+.more { border-top: 1px solid var(--line); padding-top: var(--space-2); display: flex; flex-direction: column; gap: var(--space-2); }
+.moreSummary { cursor: pointer; font-size: var(--text-sm); font-weight: 600; }
+.keep { font-size: var(--text-xs); color: var(--muted); margin: var(--space-2) 0; }
+
+@media (max-width: 900px) {
+  .graphs { grid-template-columns: minmax(0, 1fr); }
+}

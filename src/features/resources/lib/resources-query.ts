@@ -92,3 +92,58 @@ export function resourcesHref(query: ResourcesQuery): string {
   }
   return `${RESOURCES_PATH}?${search.toString()}`;
 }
+
+// ── 화면 상태(자동 갱신 · 펼친 그래프) — 명세 §17 "끈 상태 · 고른 기간 · 펼친 그래프는 주소에 실려 새로 고침 뒤에도 그대로" ──
+// 조회 입력(ResourcesQuery)과 따로 둔다 — 관측 서버 조회에는 쓰이지 않고 화면의 모양만 정한다. 틀린 값은 거절하지 않고 기본값(켜짐 · 펼친 것 없음).
+// - `refresh`: "off" 하나만 뜻이 있다(끔). 없음 · 그 밖의 글자 · 배열 → 켜짐.
+// - `open`: 그래프 더 보기를 펼친 서버 이름을 쉼표로(`open=158,164`). 하나라도 RESOURCE_SERVER_NAME_PATTERN 에 맞지 않거나 배열이면 펼친 것 없음.
+//   같은 이름은 한 번, 글자 코드 순. 서버 이름 꼴에는 쉼표가 없다.
+
+export const RESOURCE_AUTO_REFRESH_OFF = "off";
+/** 자동 갱신 간격(초) — 1시간 · 24시간은 수집 주기(30초)와 같게, 7일 · 30일은 한 점이 20분 · 86분이라 5분. */
+export const RESOURCE_AUTO_REFRESH_SECONDS: Readonly<Record<ResourceRange, number>> = { "1h": 30, "24h": 30, "7d": 300, "30d": 300 };
+/** 펼친 그래프로 받는 서버 수의 상한(화면의 서버 상한과 같다 — 주소가 끝없이 길어지지 않게). */
+export const RESOURCE_OPEN_SERVER_LIMIT = 10;
+
+export interface ResourcesViewState {
+  autoRefresh: boolean;
+  /** 그래프 더 보기를 펼친 서버(글자 코드 순, 겹침 없음) */
+  openServers: string[];
+}
+
+export const RESOURCE_DEFAULT_VIEW_STATE: ResourcesViewState = { autoRefresh: true, openServers: [] };
+
+function byCharacterCode(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+/** 겹침을 없애고 글자 코드 순으로. */
+function normalizedServers(servers: readonly string[]): string[] {
+  return [...new Set(servers)].sort(byCharacterCode);
+}
+
+export function parseResourcesViewState(input: SearchParamsInput): ResourcesViewState {
+  const refresh = onlyValue(input, "refresh");
+  const open = onlyValue(input, "open");
+  const names = open === null ? [] : open.split(",");
+  const valid = names.every((name) => RESOURCE_SERVER_NAME_PATTERN.test(name));
+  const openServers = valid ? normalizedServers(names) : [];
+  return { autoRefresh: refresh !== RESOURCE_AUTO_REFRESH_OFF, openServers: openServers.length <= RESOURCE_OPEN_SERVER_LIMIT ? openServers : [] };
+}
+
+/** 화면 주소 — resourcesHref(query) 뒤에 `&refresh=off`(끈 때만) · `&open=<서버,…>`(펼친 것이 있을 때만). 기본 상태면 resourcesHref(query) 와 같다.
+ * parseResourcesQuery · parseResourcesViewState(이 주소의 인자) 는 받은 query · view(정규화한 것)와 같다. */
+export function resourcesScreenHref(query: ResourcesQuery, view: ResourcesViewState): string {
+  const search = new URLSearchParams();
+  if (!view.autoRefresh) search.append("refresh", RESOURCE_AUTO_REFRESH_OFF);
+  const openServers = normalizedServers(view.openServers);
+  if (openServers.length > 0) search.append("open", openServers.join(","));
+  const extra = search.toString();
+  return extra.length > 0 ? `${resourcesHref(query)}&${extra}` : resourcesHref(query);
+}
+
+/** 한 서버의 펼침을 바꾼 화면 상태. */
+export function withServerOpen(view: ResourcesViewState, server: string, open: boolean): ResourcesViewState {
+  const others = view.openServers.filter((name) => name !== server);
+  return { ...view, openServers: normalizedServers(open ? [...others, server] : others) };
+}
