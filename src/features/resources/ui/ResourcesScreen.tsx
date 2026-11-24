@@ -310,7 +310,43 @@ function unplacedFiring(server: ServerResourceView): FiringView[] {
   return server.firing.filter((view) => !PLACED_RULES.has(view.rule) && !(view.rule === "restarts" && view.target !== null && rowNames.has(view.target)));
 }
 
+/** 값이 없는 서버(명세 §17 끝 셋째 줄) — 한 번도 안 보냈거나(수신 없음) 고른 기간에 그래프 점이 하나도 없는 서버.
+ * 화면 모델의 그래프 점 수로 판단한다: 서버 전체 계열이 성공했고 점이 0 이며, GPU 계열도 점이 없을 때만. 계열 조회가 실패했으면 알 수 없으므로 카드를 그대로 그린다. */
+function isEmptyServer(server: ServerResourceView): boolean {
+  if (server.freshness.kind !== "never" || !server.hostGraphs.ok) return false;
+  const hostPoints = Object.values(server.hostGraphs.value).reduce((total, graph) => total + graph.pointCount, 0);
+  const gpuPoints = server.gpuGraphs.reduce((total, gpu) => total + (gpu.graphs.ok ? gpu.graphs.value.utilization.pointCount + gpu.graphs.value.memory.pointCount : 1), 0);
+  return hostPoints === 0 && gpuPoints === 0;
+}
+
+/** 값이 없는 서버의 한 줄 — 서버 이름 · 받은 때(수신 없음 + 지표 끊김 알림) · "이 기간에 값이 없습니다". 컨테이너가 있으면 그 수만. */
+function EmptyServerLine({ server, links, selected }: { server: ServerResourceView; links: ScreenLinks; selected: SelectedContainerView | null }) {
+  const headingId = `resource-server-${server.server}`;
+  const others = unplacedFiring(server);
+  const containerCount = server.containers.state === "listed" ? server.containers.rows.length : 0;
+  return (
+    <section className={`${styles.server} ${styles.serverEmpty}`} aria-labelledby={headingId}>
+      <div className={styles.serverHeading}>
+        <h2 id={headingId} className={styles.serverName}>{server.server}</h2>
+        <FreshnessLine freshness={server.freshness} measuredAt={server.measuredAt} />
+        <span className={styles.noValue}>이 기간에 값이 없습니다</span>
+        {containerCount > 0 && <span className={styles.noValue}>컨테이너 {containerCount}개</span>}
+      </div>
+      {others.length > 0 && (
+        <div className={styles.others}>
+          <p className={styles.othersTitle}>그 밖의 알림 {others.length}건</p>
+          <ul className={styles.firingList}>
+            {others.map((view, index) => <li key={`${index}-${view.rule}-${view.target ?? ""}`}><FiringBadge firing={view} /></li>)}
+          </ul>
+        </div>
+      )}
+      {selected !== null && <SelectedContainer selected={selected} links={links} />}
+    </section>
+  );
+}
+
 function ServerSection({ server, links, selected }: { server: ServerResourceView; links: ScreenLinks; selected: SelectedContainerView | null }) {
+  if (isEmptyServer(server)) return <EmptyServerLine server={server} links={links} selected={selected} />;
   const headingId = `resource-server-${server.server}`;
   const others = unplacedFiring(server);
   return (

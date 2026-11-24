@@ -163,11 +163,14 @@ describe("오래됨 · 수신 없음", () => {
     expect(readingText(section, "CPU")).toBe("3.4%");
   });
 
-  it("수신 없음 — 표식 + 글, 값은 전부 '없음'", async () => {
+  it("수신 없음 + 그 기간에 점 없음 → 카드 없이 한 줄(표식 + 글 · '이 기간에 값이 없습니다', 컨테이너 표 없음)", async () => {
     const section = serverSection(await render(), "spare");
-    expect(textOf(section)).toContain("✕수신 없음");
-    for (const label of ["CPU", "메모리", "디스크", "네트워크 받기", "디스크 쓰기"]) expect(readingText(section, label)).toBe("없음");
+    expect(textOf(section)).toContain("spare✕수신 없음이 기간에 값이 없습니다");
+    expect(section).not.toContain('role="group"');
+    expect(section).not.toContain("<table");
+    expect(section).not.toContain("<svg");
     expect(section).not.toContain("측정");
+    expect(textOf(section)).not.toContain("컨테이너");
   });
 });
 
@@ -678,14 +681,31 @@ describe("지표마다 카드 하나 — 수치와 그래프가 같은 카드 �
     expect(textOf(metricCard(section, "158", "CPU"))).not.toContain("경고");
   });
 
-  it("값 없음의 글 — 수신 없음 서버의 카드마다 '없음'과 '이 기간에 값이 없습니다'", async () => {
+  it("값 없음의 글 — 수신 없음이어도 그 기간에 점이 있으면(끊긴 지 얼마 안 됨) 카드를 그대로: 수치는 '없음', 그래프는 남은 점", async () => {
+    fake.series.set(seriesKey("spare", "host", null), { points: [observePoint("host", RANGE_START + 5 * MINUTE, { cpu_pct: [40, 45] }), observePoint("host", RANGE_START + 5 * MINUTE + 30_000, { cpu_pct: [41, 44] })] });
     const section = serverSection(await renderAtFixedNow(), "spare");
-    for (const title of ["CPU", "메모리", "디스크"]) {
-      const card = metricCard(section, "spare", title);
-      expect(readingText(card, title)).toBe("없음");
-      expect(textOf(card)).toContain("이 기간에 값이 없습니다");
-    }
+    const cpu = metricCard(section, "spare", "CPU");
+    expect(readingText(cpu, "CPU")).toBe("없음");
+    expect(cpu).toContain("<svg");
+    const memory = metricCard(section, "spare", "메모리");
+    expect(readingText(memory, "메모리")).toBe("없음");
+    expect(textOf(memory)).toContain("메모리 1시간: 평균 최근 없음 · 최댓값 없음");   // 점은 있지만 그 값이 없다(모델의 점 수는 점의 수)
     expect(readingText(metricCard(section, "spare", "네트워크"), "네트워크 받기")).toBe("없음");
+  });
+
+  it("수신 없음인데 서버 계열 조회가 실패하면(점 수를 알 수 없음) 카드를 그대로", async () => {
+    fake.series.set(seriesKey("spare", "host", null), { response: () => textResponse(leakyErrorBody(), 503) });
+    const section = serverSection(await renderAtFixedNow(), "spare");
+    expect(textOf(metricCard(section, "spare", "CPU"))).toContain("확인하지 못함 — 서버 일시 장애 · HTTP 503");
+  });
+
+  it("한 줄로 줄인 서버에 컨테이너가 있으면 그 수만 · 지표 끊김 알림은 글 + 표식", async () => {
+    fake.latest = () => observeLatestBody([...defaultServers().slice(0, 3), observeSilentServer("spare", { containers: [observeContainer(), observeContainer({ name: "front-app-blue" })] })],
+      [observeFiring({ server: "spare", rule: "silent", severity: "warning", last_value: null })]);
+    const section = serverSection(await renderAtFixedNow(), "spare");
+    expect(textOf(section)).toContain("컨테이너 2개");
+    expect(textOf(section)).toContain("!경고지표 끊김");
+    expect(section).not.toContain("<table");
   });
 
   it("스크립트 · 표식 글자 없음", async () => {

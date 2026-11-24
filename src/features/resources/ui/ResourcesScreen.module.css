@@ -96,3 +96,6 @@
 @media (max-width: 900px) {
   .graphsTwo, .cards { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* 값이 없는 서버 — 한 줄 */
+.serverEmpty { padding: var(--space-2) var(--space-4); gap: var(--space-1); }
