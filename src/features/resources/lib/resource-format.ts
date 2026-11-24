@@ -9,27 +9,51 @@
 
 export const RESOURCE_NO_VALUE_TEXT = "없음";
 
+const BYTE_UNITS = ["KiB", "MiB", "GiB", "TiB"] as const;
+
+function hasValue(value: number | null): value is number {
+  return value !== null && Number.isFinite(value);
+}
+
+/** Math.round(x × 10) / 10 의 소수 한 자리 글자(toFixed 는 반올림이 끝난 값을 적기만 한다). */
+function oneDecimal(value: number): string {
+  return (Math.round(value * 10) / 10).toFixed(1);
+}
+
 export function formatBytes(value: number | null): string {
-  void value;
-  throw new Error("not implemented");
+  if (!hasValue(value)) return RESOURCE_NO_VALUE_TEXT;
+  if (Math.round(value) < 1024) return `${Math.round(value)} B`;
+  let scaled = value / 1024;
+  let unitIndex = 0;
+  // 반올림한 값이 1024.0 이 되면 다음 단위로(TiB 가 끝)
+  while (unitIndex < BYTE_UNITS.length - 1 && Math.round(scaled * 10) / 10 >= 1024) {
+    scaled /= 1024;
+    unitIndex += 1;
+  }
+  return `${oneDecimal(scaled)} ${BYTE_UNITS[unitIndex]}`;
 }
 
 export function formatBytesPerSecond(value: number | null): string {
-  void value;
-  throw new Error("not implemented");
+  return hasValue(value) ? `${formatBytes(value)}/s` : RESOURCE_NO_VALUE_TEXT;
 }
 
 export function formatPercent(value: number | null): string {
-  void value;
-  throw new Error("not implemented");
+  return hasValue(value) ? `${oneDecimal(value)}%` : RESOURCE_NO_VALUE_TEXT;
 }
 
 export function formatCelsius(value: number | null): string {
-  void value;
-  throw new Error("not implemented");
+  return hasValue(value) ? `${Math.round(value)}°C` : RESOURCE_NO_VALUE_TEXT;
 }
 
+const MINUTE_MILLISECONDS = 60_000;
+const HOUR_MILLISECONDS = 60 * MINUTE_MILLISECONDS;
+const DAY_MILLISECONDS = 24 * HOUR_MILLISECONDS;
+
 export function formatAge(milliseconds: number | null): string {
-  void milliseconds;
-  throw new Error("not implemented");
+  if (!hasValue(milliseconds)) return RESOURCE_NO_VALUE_TEXT;
+  const age = Math.max(0, milliseconds);
+  if (age < MINUTE_MILLISECONDS) return "1분 안";
+  if (age < HOUR_MILLISECONDS) return `${Math.floor(age / MINUTE_MILLISECONDS)}분 전`;
+  if (age < DAY_MILLISECONDS) return `${Math.floor(age / HOUR_MILLISECONDS)}시간 전`;
+  return `${Math.floor(age / DAY_MILLISECONDS)}일 전`;
 }

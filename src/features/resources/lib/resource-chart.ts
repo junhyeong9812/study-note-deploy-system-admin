@@ -82,7 +82,84 @@ export interface ChartGeometry {
   xTicks: ChartTick[];
 }
 
+const NICE_MULTIPLIERS = [1, 2, 2.5, 5, 10] as const;
+
+/** target(> 0, 유한) 이상인 1 · 2 · 2.5 · 5 × 10^k 가운데 가장 작은 수. 음의 k 는 나누어 만든다(0.1 의 이진 오차를 곱하지 않게).
+ * log10 이 한 자리 낮게 나와도 × 10 이 받친다. */
+function niceCeiling(target: number): number {
+  const exponent = Math.floor(Math.log10(target));
+  const scaled = (multiplier: number) => (exponent >= 0 ? multiplier * 10 ** exponent : multiplier / 10 ** -exponent);
+  return NICE_MULTIPLIERS.map(scaled).find((candidate) => candidate >= target) ?? scaled(20);
+}
+
+function axisTop(axis: ChartAxis, lines: readonly ChartLineInput[]): number {
+  if (axis.kind === "percent") return 100;
+  const minimumTop = axis.minimumTop !== undefined && axis.minimumTop > 0 && Number.isFinite(axis.minimumTop) ? axis.minimumTop : null;
+  let maximum = 0;
+  for (const line of lines) for (const point of line.points) if (point.value !== null && Number.isFinite(point.value)) maximum = Math.max(maximum, point.value);
+  if (maximum === 0) return minimumTop ?? 1;   // 값이 없거나 최댓값이 0 — 0 으로 나누지 않는다
+  const top = niceCeiling(maximum * CHART_AUTO_HEADROOM);
+  if (!Number.isFinite(top)) return minimumTop ?? 1;   // 1e308 같은 값 — 꼭대기로 잘려 그려진다
+  return Math.max(top, minimumTop ?? 0);
+}
+
+function clamp(value: number, lowest: number, highest: number): number {
+  return Math.min(highest, Math.max(lowest, value));
+}
+
+/** 소수 한 자리 반올림(-0 은 0). */
+function roundCoordinate(value: number): number {
+  const rounded = Math.round(value * 10) / 10;
+  return rounded === 0 ? 0 : rounded;
+}
+
 export function buildChartGeometry(input: ChartInput): ChartGeometry {
-  void input;
-  throw new Error("not implemented");
+  const { width, height, fromMilliseconds, toMilliseconds } = input;
+  const top = axisTop(input.axis, input.lines);
+  const span = toMilliseconds - fromMilliseconds;
+  const step = Number.isFinite(input.stepMilliseconds) && input.stepMilliseconds > 0 ? input.stepMilliseconds : CHART_FALLBACK_STEP_MILLISECONDS;
+  const gapLimit = step * CHART_GAP_FACTOR;
+  const xOf = (atMilliseconds: number) => (span > 0 ? roundCoordinate(clamp((atMilliseconds - fromMilliseconds) / span * width, 0, width)) : 0);
+  const yOf = (value: number) => roundCoordinate(height - clamp(value / top, 0, 1) * height);
+
+  const lines = input.lines.map((line): ChartLine => {
+    const segments: ChartCoordinate[][] = [];
+    let current: ChartCoordinate[] = [];
+    let previousAt: number | null = null;
+    for (const point of line.points) {
+      const drawable = point.value !== null && Number.isFinite(point.value) && Number.isFinite(point.atMilliseconds);
+      if (!drawable) {   // 값이 없는 점은 선을 끊는다(0 으로 그리지 않는다)
+        if (current.length > 0) segments.push(current);
+        current = [];
+        previousAt = null;
+        continue;
+      }
+      if (previousAt !== null && point.atMilliseconds - previousAt > gapLimit && current.length > 0) {   // 빈 구간은 잇지 않는다
+        segments.push(current);
+        current = [];
+      }
+      current.push({ x: xOf(point.atMilliseconds), y: yOf(point.value as number) });
+      previousAt = point.atMilliseconds;
+    }
+    if (current.length > 0) segments.push(current);
+    const drawnSegments = segments.filter((segment) => segment.length >= 2);
+    const isolatedPoints = segments.filter((segment) => segment.length === 1).map(([coordinate]) => coordinate);
+    const path = drawnSegments
+      .map((segment) => segment.map((coordinate, index) => `${index === 0 ? "M" : "L"}${coordinate.x} ${coordinate.y}`).join(" "))
+      .join(" ");
+    return {
+      key: line.key, label: line.label, role: line.role, path, segmentCount: drawnSegments.length, isolatedPoints,
+      drawnPointCount: segments.reduce((count, segment) => count + segment.length, 0),
+    };
+  });
+
+  return {
+    width, height, top, lines,
+    yTicks: [{ value: 0, position: height }, { value: top / 2, position: height / 2 }, { value: top, position: 0 }],
+    xTicks: [
+      { value: fromMilliseconds, position: 0 },
+      { value: fromMilliseconds + span / 2, position: span > 0 ? width / 2 : 0 },
+      { value: toMilliseconds, position: span > 0 ? width : 0 },
+    ],
+  };
 }

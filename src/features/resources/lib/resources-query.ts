@@ -55,19 +55,40 @@ export interface ResourcesWindow {
   to: string;
 }
 
+function isResourceRange(value: string): value is ResourceRange {
+  return (RESOURCE_RANGES as readonly string[]).includes(value);
+}
+
+/** 하나뿐인 값 — 없음 · 배열(같은 이름 여러 번)이면 null. (query-input 의 singleValue 는 배열을 "many" 글자로 돌려줘 서버 이름 "many" 와 섞이므로 쓰지 않는다.) */
+function onlyValue(input: SearchParamsInput, name: string): string | null {
+  const value = input[name];
+  return typeof value === "string" ? value : null;
+}
+
 export function parseResourcesQuery(input: SearchParamsInput): ResourcesQuery {
-  void input;
-  throw new Error("not implemented");
+  const range = onlyValue(input, "range");
+  const server = onlyValue(input, "server");
+  const container = onlyValue(input, "container");
+  const selected = server !== null && RESOURCE_SERVER_NAME_PATTERN.test(server) && container !== null && RESOURCE_CONTAINER_NAME_PATTERN.test(container)
+    ? { server, container } : null;
+  return { range: range !== null && isResourceRange(range) ? range : RESOURCE_DEFAULT_RANGE, container: selected };
 }
 
 export function resourcesWindow(range: ResourceRange, nowMilliseconds: number): ResourcesWindow {
-  void range; void nowMilliseconds;
-  throw new Error("not implemented");
+  const fromMilliseconds = nowMilliseconds - RESOURCE_RANGE_MILLISECONDS[range];
+  return {
+    range, label: RESOURCE_RANGE_LABELS[range], fromMilliseconds, toMilliseconds: nowMilliseconds,
+    from: new Date(fromMilliseconds).toISOString(), to: new Date(nowMilliseconds).toISOString(),
+  };
 }
 
 /** 화면 주소 — `/resources?range=<기간>[&server=<서버>&container=<이름>]`(이 순서, 기간은 언제나 싣는다).
  * parseResourcesQuery(이 주소의 인자) 는 받은 query 와 같다. */
 export function resourcesHref(query: ResourcesQuery): string {
-  void query;
-  throw new Error("not implemented");
+  const search = new URLSearchParams({ range: query.range });
+  if (query.container !== null) {
+    search.append("server", query.container.server);
+    search.append("container", query.container.container);
+  }
+  return `${RESOURCES_PATH}?${search.toString()}`;
 }

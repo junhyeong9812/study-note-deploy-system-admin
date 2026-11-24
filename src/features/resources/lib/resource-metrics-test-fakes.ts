@@ -70,7 +70,8 @@ export function observeFiring(overrides: Record<string, unknown> = {}): Record<s
   };
 }
 
-export function observeLatestBody(servers: Record<string, unknown>[], firing: Record<string, unknown>[] | undefined = []): Response {
+export function observeLatestBody(servers: Record<string, unknown>[], ...rest: [firing: Record<string, unknown>[] | undefined] | []): Response {
+  const firing = rest.length === 0 ? [] : rest[0];   // 인자를 안 넘기면 [] · undefined 를 명시로 넘기면 "firing 칸 없음"
   const data: Record<string, unknown> = { servers, extra: UPSTREAM_RAW_MARKER };
   if (firing !== undefined) data.firing = firing;
   return jsonBody({ success: true, data });

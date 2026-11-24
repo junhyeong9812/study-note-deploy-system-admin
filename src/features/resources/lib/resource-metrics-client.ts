@@ -41,7 +41,12 @@
  * - 첫 점의 at 은 from 보다 최대 5분 앞설 수 있다(5분 평균의 구간 시작 — §15.1). 이 클라이언트는 그 점을 버리지 않는다.
  * containers: server 가 요청과 같음 · from · to 는 시각 · containers 는 배열, 줄마다 name(꼴) · last_seen_at(시각). */
 import type { FetchLike, TimeoutSignalFactory } from "@/features/auth/lib/types";
-import type { UpstreamResult } from "@/shared/lib/upstream-result";
+import { RESOURCE_CONTAINER_NAME_PATTERN, RESOURCE_SERVER_NAME_PATTERN } from "@/features/resources/lib/resources-query";
+import { parseIsoUtc } from "@/shared/lib/query-input";
+import { isHttpBaseUrl, isRecord, upstreamUrl } from "@/shared/lib/upstream-fetch";
+import {
+  UPSTREAM_TIMEOUT_MILLISECONDS, failureForHttpStatus, invalidInput, upstreamFailure, type UpstreamResult,
+} from "@/shared/lib/upstream-result";
 
 export const RESOURCE_METRICS_LATEST_PATH = "/metrics/latest";
 export const RESOURCE_METRICS_SERIES_PATH = "/metrics/series";
@@ -200,11 +205,299 @@ export interface ResourceMetricsClient {
 /** 자리 이름 떼기(observe MetricEntry.kt:284-292 ContainerName.seriesName 과 같은 규칙) — 끝의 `-blue` · `-green` 하나만,
  * 떼면 빈 이름이 되거나 그 꼴로 끝나지 않으면 그대로. */
 export function seriesNameOf(actualName: string): string {
-  void actualName;
-  throw new Error("not implemented");
+  for (const slot of ["-blue", "-green"]) {
+    if (actualName.endsWith(slot) && actualName.length > slot.length) return actualName.slice(0, -slot.length);
+  }
+  return actualName;
+}
+
+/** 응답 한 번을 읽은 결과 — 상태 코드와 JSON(해석되지 않으면 parsed:false). */
+type BoundedResponse = { status: number; parsed: true; json: unknown } | { status: number; parsed: false };
+
+/** 본문을 maximumBytes 바이트까지만 읽는다 — 넘으면 남은 본문을 취소하고 null. 읽는 중의 실패(기한 끊김 포함)는 던진다.
+ * 공용 getUpstream 은 본문을 끝까지 읽어(response.text()) 상한을 둘 수 없어 이 기능 안에 둔다. 기한은 fetch 에 준 신호가 본문 스트림까지 끊는다. */
+async function readBoundedText(response: Response, maximumBytes: number): Promise<string | null> {
+  if (response.body === null) return "";
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    totalBytes += value.byteLength;
+    if (totalBytes > maximumBytes) {
+      reader.cancel().catch(() => undefined);
+      return null;
+    }
+    chunks.push(value);
+  }
+  const joined = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    joined.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(joined);
+}
+
+/** GET 한 번(5초 기한이 본문 읽기까지 덮는다). 거부하지 않는다 — 실패는 고정 이유만(예외 문구 · 본문 원문 없음). */
+async function getBounded(url: string, options: ResourceMetricsClientOptions): Promise<UpstreamResult<BoundedResponse>> {
+  const signal = options.timeoutSignal ? options.timeoutSignal(UPSTREAM_TIMEOUT_MILLISECONDS) : AbortSignal.timeout(UPSTREAM_TIMEOUT_MILLISECONDS);
+  try {
+    const response = await options.fetch(url, {
+      method: "GET",
+      headers: { Accept: "application/json", "X-Observe-Secret": options.secret },
+      signal,
+      redirect: "manual",
+      cache: "no-store",
+    });
+    if (response.status < 200 || response.status >= 300) {
+      response.body?.cancel().catch(() => undefined);   // 오류 본문은 읽지 않는다
+      return { ok: true, value: { status: response.status, parsed: false } };
+    }
+    const text = await readBoundedText(response, RESOURCE_RESPONSE_MAXIMUM_BYTES);
+    if (text === null) return upstreamFailure("unparseable");
+    try {
+      return { ok: true, value: { status: response.status, parsed: true, json: JSON.parse(text) as unknown } };
+    } catch {
+      return { ok: true, value: { status: response.status, parsed: false } };
+    }
+  } catch {
+    return upstreamFailure(signal.aborted ? "timeout" : "unreachable");
+  }
+}
+
+/** 칸 해석의 실패 — 꼴이 계약과 다르다(전체 unparseable). */
+class MalformedResponse extends Error {}
+
+function malformed(): never {
+  throw new MalformedResponse();
+}
+
+/** 빠진 칸(없음 · null) → null, 있으면 check 를 통과한 값, 아니면 꼴 오류. */
+function optional<Value>(value: unknown, check: (candidate: unknown) => candidate is Value): Value | null {
+  if (value === undefined || value === null) return null;
+  return check(value) ? value : malformed();
+}
+
+function isNonNegativeNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return isNonNegativeNumber(value) && Number.isInteger(value);
+}
+
+function isInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value);
+}
+
+function isString(value: unknown): value is string {
+  return typeof value === "string";
+}
+
+function isBoolean(value: unknown): value is boolean {
+  return typeof value === "boolean";
+}
+
+function isTimeText(value: unknown): value is string {
+  return typeof value === "string" && parseIsoUtc(value) !== null;
+}
+
+function isContainerName(value: unknown): value is string {
+  return typeof value === "string" && RESOURCE_CONTAINER_NAME_PATTERN.test(value);
+}
+
+function isServerName(value: unknown): value is string {
+  return typeof value === "string" && RESOURCE_SERVER_NAME_PATTERN.test(value);
+}
+
+function required<Value>(value: unknown, check: (candidate: unknown) => candidate is Value): Value {
+  return check(value) ? value : malformed();
+}
+
+function record(value: unknown): Record<string, unknown> {
+  return isRecord(value) ? value : malformed();
+}
+
+/** 배열 칸 — 빠지면 null, 배열이 아니면 꼴 오류. */
+function optionalArray<Value>(value: unknown, parseRow: (row: unknown) => Value): Value[] | null {
+  if (value === undefined || value === null) return null;
+  return Array.isArray(value) ? value.map(parseRow) : malformed();
+}
+
+function timeMilliseconds(value: unknown): number {
+  return parseIsoUtc(required(value, isTimeText)) as number;
+}
+
+function parseHost(value: unknown): HostValues | null {
+  if (value === undefined || value === null) return null;
+  const host = record(value);
+  const read = (name: string) => optional(host[name], isNonNegativeNumber);
+  return {
+    cpuPct: read("cpu_pct"), load1: read("load1"), memTotal: read("mem_total"), memUsed: read("mem_used"),
+    diskTotal: read("disk_total"), diskUsed: read("disk_used"), netRxBps: read("net_rx_bps"), netTxBps: read("net_tx_bps"),
+    ioReadBps: read("io_read_bps"), ioWriteBps: read("io_write_bps"),
+  };
+}
+
+function parseContainer(value: unknown): ContainerLatest {
+  const row = record(value);   // id · project 는 읽지 않는다
+  const name = required(row.name, isContainerName);
+  return {
+    name, seriesName: optional(row.series_name, isContainerName) ?? seriesNameOf(name), state: optional(row.state, isString),
+    cpuPct: optional(row.cpu_pct, isNonNegativeNumber), memUsed: optional(row.mem_used, isNonNegativeNumber), restarts: optional(row.restarts, isNonNegativeInteger),
+  };
+}
+
+function isGpuIndex(value: unknown): value is number {
+  return isNonNegativeInteger(value) && value <= 999;
+}
+
+function parseGpu(value: unknown): GpuLatest {
+  const row = record(value);
+  return {
+    index: required(row.index, isGpuIndex), utilPct: optional(row.util_pct, isNonNegativeNumber), memUsed: optional(row.mem_used, isNonNegativeNumber),
+    memTotal: optional(row.mem_total, isNonNegativeNumber), tempC: optional(row.temp_c, isFiniteNumber),
+  };
+}
+
+function parseMissing(value: unknown): string {
+  return required(value, isString);
+}
+
+function parseServer(value: unknown): ServerLatest {
+  const row = record(value);
+  return {
+    server: required(row.server, isServerName), measuredAt: optional(row.at, isTimeText), receivedAt: optional(row.received_at, isTimeText),
+    ageMilliseconds: optional(row.age_ms, isInteger), stale: optional(row.stale, isBoolean), host: parseHost(row.host),
+    containers: optionalArray(row.containers, parseContainer), gpus: optionalArray(row.gpus, parseGpu), missing: optionalArray(row.missing, parseMissing),
+  };
+}
+
+function parseFiring(value: unknown): FiringRule {
+  const row = record(value);
+  return {
+    server: required(row.server, isString), rule: required(row.rule, isString), target: optional(row.target, isString),
+    severity: required(row.severity, isString), since: required(row.since, isTimeText), lastValue: optional(row.last_value, isFiniteNumber),
+  };
+}
+
+function parseLatest(data: Record<string, unknown>): LatestResources {
+  if (!Array.isArray(data.servers)) malformed();
+  const servers = (data.servers as unknown[]).map(parseServer);
+  if (new Set(servers.map((server) => server.server)).size !== servers.length) malformed();   // 같은 서버 두 번
+  return { servers, firing: optionalArray(data.firing, parseFiring) };
+}
+
+/** 갈래마다 값의 꼴 — GPU 온도만 음수를 받는다. */
+function seriesValueCheck(scope: ResourceScope, name: string): (candidate: unknown) => candidate is number {
+  return scope === "gpu" && name === "temp_c" ? isFiniteNumber : isNonNegativeNumber;
+}
+
+function parseSeries(data: Record<string, unknown>, request: SeriesRequest): ResourceSeries {
+  if (data.server !== request.server || data.scope !== request.scope || (data.name ?? null) !== request.name) malformed();
+  if (timeMilliseconds(data.from) !== request.fromMilliseconds || timeMilliseconds(data.to) !== request.toMilliseconds) malformed();
+  const stepMilliseconds = required(data.step_ms, isNonNegativeInteger);
+  if (stepMilliseconds === 0) malformed();
+  const sourceText = optional(data.source, isString);
+  const source = sourceText !== null && (RESOURCE_SERIES_SOURCES as readonly string[]).includes(sourceText) ? sourceText as ResourceSeriesSource : null;
+  if (!Array.isArray(data.points) || data.points.length > RESOURCE_SERIES_MAXIMUM_POINTS) malformed();
+  const valueNames = RESOURCE_SCOPE_VALUE_NAMES[request.scope];
+  let previousAt = Number.NEGATIVE_INFINITY;
+  const points = (data.points as unknown[]).map((value): SeriesPoint => {
+    const row = record(value);
+    const at = required(row.at, isTimeText);
+    const atMilliseconds = parseIsoUtc(at) as number;
+    if (atMilliseconds <= previousAt) malformed();   // 시각은 엄격히 오름차순
+    previousAt = atMilliseconds;
+    const values: Record<string, SeriesValue> = {};
+    for (const name of valueNames) {
+      const check = seriesValueCheck(request.scope, name);
+      values[name] = { average: optional(row[name], check), maximum: optional(row[`${name}_max`], check) };
+    }
+    return { at, atMilliseconds, values };
+  });
+  return {
+    server: request.server, scope: request.scope, name: request.name, fromMilliseconds: request.fromMilliseconds, toMilliseconds: request.toMilliseconds,
+    stepMilliseconds, source, points,
+  };
+}
+
+function parseSeenContainer(value: unknown): SeenContainer {
+  const row = record(value);
+  return { name: required(row.name, isContainerName), lastSeenAt: required(row.last_seen_at, isTimeText) };
+}
+
+function parseContainers(data: Record<string, unknown>, server: string): SeenContainers {
+  if (data.server !== server) malformed();
+  if (!Array.isArray(data.containers)) malformed();
+  return {
+    server, fromMilliseconds: timeMilliseconds(data.from), toMilliseconds: timeMilliseconds(data.to),
+    containers: (data.containers as unknown[]).map(parseSeenContainer),
+  };
+}
+
+/** 시각 인자 — 유한한 정수이고 Date 로 글자가 되는 값. */
+function isTimeArgument(value: number): boolean {
+  return Number.isInteger(value) && !Number.isNaN(new Date(value).getTime());
+}
+
+function seriesInputFailure(request: SeriesRequest): UpstreamResult<never> | null {
+  if (!isServerName(request.server)) return invalidInput("server");
+  if (!(RESOURCE_SCOPES as readonly string[]).includes(request.scope)) return invalidInput("scope");
+  const nameMatches = request.scope === "host" ? request.name === null
+    : request.scope === "container" ? isContainerName(request.name)
+    : typeof request.name === "string" && /^\d{1,3}$/.test(request.name);
+  if (!nameMatches) return invalidInput("name");
+  if (!isTimeArgument(request.fromMilliseconds)) return invalidInput("from");
+  if (!isTimeArgument(request.toMilliseconds)) return invalidInput("to");
+  const range = request.toMilliseconds - request.fromMilliseconds;
+  if (range < 0 || range > RESOURCE_SERIES_MAXIMUM_RANGE_MILLISECONDS) return invalidInput("range");
+  return null;
 }
 
 export function createResourceMetricsClient(options: ResourceMetricsClientOptions): ResourceMetricsClient {
-  void options;
-  throw new Error("not implemented");
+  const configured = isHttpBaseUrl(options.baseUrl) && options.secret.length > 0;
+
+  /** 부르고 봉투의 data 를 해석한다 — 2xx 가 아니면 상태의 실패, 꼴이 다르면(해석 중 뜻밖의 예외 포함) unparseable. */
+  const call = async <Value>(path: string, parameters: [string, string | null][], interpret: (data: Record<string, unknown>) => Value): Promise<UpstreamResult<Value>> => {
+    const result = await getBounded(upstreamUrl(options.baseUrl, path, parameters), options);
+    if (!result.ok) return result;
+    const response = result.value;
+    if (response.status < 200 || response.status >= 300) return failureForHttpStatus(response.status);
+    if (!response.parsed || !isRecord(response.json) || response.json.success !== true || !isRecord(response.json.data)) return upstreamFailure("unparseable");
+    try {
+      return { ok: true, value: interpret(response.json.data) };
+    } catch {
+      return upstreamFailure("unparseable");
+    }
+  };
+
+  return {
+    async latest() {
+      if (!configured) return upstreamFailure("not_configured");
+      return call(RESOURCE_METRICS_LATEST_PATH, [], parseLatest);
+    },
+    async series(request) {
+      if (!configured) return upstreamFailure("not_configured");
+      const failure = seriesInputFailure(request);
+      if (failure !== null) return failure;
+      return call(RESOURCE_METRICS_SERIES_PATH, [
+        ["server", request.server], ["scope", request.scope], ["name", request.name],
+        ["from", new Date(request.fromMilliseconds).toISOString()], ["to", new Date(request.toMilliseconds).toISOString()],
+      ], (data) => parseSeries(data, request));
+    },
+    async containers(server, atMilliseconds) {
+      if (!configured) return upstreamFailure("not_configured");
+      if (!isServerName(server)) return invalidInput("server");
+      if (atMilliseconds !== null && !isTimeArgument(atMilliseconds)) return invalidInput("at");
+      return call(RESOURCE_METRICS_CONTAINERS_PATH, [["server", server], ["at", atMilliseconds === null ? null : new Date(atMilliseconds).toISOString()]],
+        (data) => parseContainers(data, server));
+    },
+  };
 }
