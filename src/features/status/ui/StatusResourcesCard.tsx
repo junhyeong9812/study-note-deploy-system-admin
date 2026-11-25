@@ -3,6 +3,8 @@
  * 받은 값(진입 함수의 자원 요약)만 그린다 — 다른 서버를 부르지 않는다. 요약 조회가 실패하면 이 카드만 "확인하지 못함 — <고정 글>".
  * 상태는 색 + 기호 + 글자(색만으로 전하지 않는다). */
 import { formatKoreanTime } from "@/features/deploys/lib/deploy-format";
+import { resourceIncidentId } from "@/features/incidents/lib/incident-id";
+import { incidentHref } from "@/features/incidents/lib/incidents-query";
 import { formatAge } from "@/features/resources/lib/resource-format";
 import { resourcesHref } from "@/features/resources/lib/resources-query";
 import type { StatusResourceRow, StatusResourcesSummary, StatusResourceValue } from "@/features/status/lib/status-resources";
@@ -43,7 +45,7 @@ function FiringCell({ row, firingKnown }: { row: StatusResourceRow; firingKnown:
   return (
     <td className={worst.severity === "critical" ? styles.undelivered : undefined}>
       <span aria-hidden="true" className={styles.badgeMark}>{SEVERITY_MARKS[worst.severity] ?? "?"} </span>
-      <strong>{worst.ruleLabel}{worst.target !== null && <> {worst.target}</>}({worst.severityLabel})</strong>
+      <a href={incidentHref(resourceIncidentId(row.server, worst.rule, worst.target))}><strong>{worst.ruleLabel}{worst.target !== null && <> {worst.target}</>}({worst.severityLabel})</strong></a>
       {row.firingCount > 1 && <> 외 {row.firingCount - 1}건</>}
     </td>
   );

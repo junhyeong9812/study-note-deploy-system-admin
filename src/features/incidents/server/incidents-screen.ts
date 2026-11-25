@@ -5,19 +5,46 @@
  * - incidentsScreenResponse(request): 세션 없음 401 · 입력 거절 422 `{success:false,error:{code:"invalid_input",field:"incident"}}`(호출 없음) ·
  *   그 밖 200 `{success:true,data:IncidentsScreenData}`(다른 서버의 실패는 칸의 결과로). 언제나 no-store. */
 import "server-only";
-import type { IncidentsScreenData } from "@/features/incidents/lib/incidents-screen";
+import { requireApiSession, requireSession } from "@/features/auth/server/require-session";
+import { parseIncidentsQuery } from "@/features/incidents/lib/incidents-query";
+import { collectIncidentsScreen, type IncidentsScreenData } from "@/features/incidents/lib/incidents-screen";
+import { readServerConfig } from "@/shared/config/server-config";
+import { log } from "@/shared/lib/logger";
+import { searchParamsInputFromUrl } from "@/shared/lib/query-input";
+import { screenDataResponse, upstreamFailureLogLine } from "@/shared/lib/screen-responses";
 import type { SearchParamsInput } from "@/shared/lib/upstream-result";
 
 export type IncidentsScreenOutcome =
   | { kind: "screen"; data: IncidentsScreenData }
   | { kind: "invalid_input"; field: string };
 
-export async function loadIncidentsScreen(input: SearchParamsInput): Promise<IncidentsScreenOutcome> {
-  void input;
-  throw new Error("not implemented");
+/** 세션 검증과 입력 검증을 마친 뒤에만 부른다. */
+function buildIncidentsScreen(incidentId: string | null): Promise<IncidentsScreenData> {
+  const config = readServerConfig();
+  return collectIncidentsScreen({
+    alertUrl: config.alertUrl, alertSecret: config.alertSecret, observeUrl: config.observeUrl, observeSecret: config.observeSecret,
+    deployMasterUrl: config.deployMasterUrl, deploySecret: config.deploySecret,
+    fetch: (input, init) => fetch(input, init), now: () => Date.now(),
+    logFailure: (cell, failure) => {
+      const logLine = upstreamFailureLogLine("incidents", cell, failure);
+      if (logLine !== null) void log("screen-incidents", logLine, "warning");
+    },
+  }, incidentId);
 }
 
+/** 화면용 — 세션이 없으면 requireSession 이 /login 으로 보낸다(다른 서버를 한 번도 부르지 않는다). 입력 거절은 { kind: "invalid_input", field }. */
+export async function loadIncidentsScreen(input: SearchParamsInput): Promise<IncidentsScreenOutcome> {
+  await requireSession();
+  const parsed = parseIncidentsQuery(input);
+  if (!parsed.ok) return { kind: "invalid_input", field: parsed.field ?? "" };
+  return { kind: "screen", data: await buildIncidentsScreen(parsed.query.incidentId) };
+}
+
+/** 데이터 경로용(Route Handler 의 GET 이 그대로 돌려준다). */
 export async function incidentsScreenResponse(request: Request): Promise<Response> {
-  void request;
-  throw new Error("not implemented");
+  const session = await requireApiSession();
+  if (session instanceof Response) return session;
+  const parsed = parseIncidentsQuery(searchParamsInputFromUrl(new URL(request.url)));
+  if (!parsed.ok) return screenDataResponse(null, parsed);
+  return screenDataResponse(await buildIncidentsScreen(parsed.query.incidentId), null);
 }

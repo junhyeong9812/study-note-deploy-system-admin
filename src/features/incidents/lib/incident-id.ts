@@ -8,6 +8,7 @@
  *   같은 입력은 언제나 같은 식별자, 다른 입력은 다른 식별자.
  * 길이 상한 64 — `admin:` + `:incident:` 16자를 더해도 계정 이름이 48자 이하면 128자 안에 든다(계정 길이 확인은 다음 조각의 몫).
  * 식별자는 종류 + 대상이다(같은 대상이 닫혔다 다시 열려도 같은 식별자 — 배포 실패만 요청 ID 로 한 번의 배포를 가린다). */
+import { createHash } from "node:crypto";
 
 export const INCIDENT_KINDS = ["monitor_down", "deploy_failed", "resource_threshold", "error_logs"] as const;
 export type IncidentKind = (typeof INCIDENT_KINDS)[number];
@@ -21,39 +22,43 @@ export const INCIDENT_ID_MAXIMUM_LENGTH = 64;
 /** 식별자의 꼴 — 종류 낱말 + `:` + 허용 글자. 길이는 isIncidentId 가 따로 본다. */
 export const INCIDENT_ID_PATTERN = /^(?:monitor|deploy|resource|errors):[A-Za-z0-9._:-]+$/;
 
+/** 그대로 이을 수 있는 부분의 글자(`:` 은 부분의 경계라서 부분 안에 두지 않는다). */
+const READABLE_PART_PATTERN = /^[A-Za-z0-9._-]+$/;
+const HASHED_LENGTH = 16;
+
 export function incidentId(kind: IncidentKind, parts: readonly string[]): string {
-  void kind; void parts;
-  throw new Error("not implemented");
+  const prefix = INCIDENT_ID_PREFIXES[kind];
+  const readable = `${prefix}:${parts.join(":")}`;
+  if (parts.every((part) => READABLE_PART_PATTERN.test(part)) && readable.length <= INCIDENT_ID_MAXIMUM_LENGTH) return readable;
+  const digest = createHash("sha256").update([prefix, ...parts].join("\n"), "utf8").digest("hex");
+  return `${prefix}:sha256-${digest.slice(0, HASHED_LENGTH)}`;
 }
 
 export function monitorIncidentId(monitor: string): string {
-  void monitor;
-  throw new Error("not implemented");
+  return incidentId("monitor_down", [monitor]);
 }
 
 export function deployIncidentId(service: string, requestId: string): string {
-  void service; void requestId;
-  throw new Error("not implemented");
+  return incidentId("deploy_failed", [service, requestId]);
 }
 
 export function resourceIncidentId(server: string, rule: string, target: string | null): string {
-  void server; void rule; void target;
-  throw new Error("not implemented");
+  return incidentId("resource_threshold", target === null ? [server, rule] : [server, rule, target]);
 }
 
 export function errorLogsIncidentId(service: string): string {
-  void service;
-  throw new Error("not implemented");
+  return incidentId("error_logs", [service]);
 }
 
 /** 꼴(INCIDENT_ID_PATTERN)과 길이(INCIDENT_ID_MAXIMUM_LENGTH 이하)가 맞는가. */
 export function isIncidentId(value: string): boolean {
-  void value;
-  throw new Error("not implemented");
+  return value.length <= INCIDENT_ID_MAXIMUM_LENGTH && INCIDENT_ID_PATTERN.test(value);
 }
 
 /** 식별자의 종류 낱말 → 종류(모르는 낱말이면 null). 꼴 검사는 하지 않는다. */
 export function incidentKindOfId(value: string): IncidentKind | null {
-  void value;
-  throw new Error("not implemented");
+  const separator = value.indexOf(":");
+  if (separator < 0) return null;
+  const prefix = value.slice(0, separator);
+  return INCIDENT_KINDS.find((kind) => INCIDENT_ID_PREFIXES[kind] === prefix) ?? null;
 }

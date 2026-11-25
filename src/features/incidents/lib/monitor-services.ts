@@ -3,10 +3,11 @@
  * 서버는 표에 두지 않는다 — 서버 이름은 배치마다 다르므로, 그 서비스의 컨테이너가 그때 보인 서버를 관측 서버에서 찾는다(로그 추적의 자원 칸과 같은 방법).
  * 표에 없는 대상(배포 마스터 · 배포 agent 들, 그 밖의 새 이름)은 "서비스 · 서버를 모름" — 짐작하지 않는다. */
 
-export const MONITOR_SERVICES: Readonly<Record<string, string>> = {};
+export const MONITOR_SERVICES: Readonly<Record<string, string>> = {
+  front: "front", backend: "backend", "backend-deps": "backend", llm: "llm", observe: "observe", admin: "admin",
+};
 
 /** 표에 있으면 그 서비스, 없으면 null(객체의 기본 속성 이름 — constructor · __proto__ 등 — 도 null). */
 export function serviceForMonitor(monitor: string): string | null {
-  void monitor;
-  throw new Error("not implemented");
+  return Object.hasOwn(MONITOR_SERVICES, monitor) ? MONITOR_SERVICES[monitor] : null;
 }

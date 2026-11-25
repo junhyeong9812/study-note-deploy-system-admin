@@ -47,15 +47,24 @@
  * 호출 수의 상한(이 함수 — 목록의 네 호출은 따로): 알림 1 + 로그 2 + 커밋 1 + 자원(TRACE_RESOURCE_MAXIMUM_CALLS) 가운데 그 종류가 쓰는 것 —
  * 어느 종류든 INCIDENT_EVIDENCE_MAXIMUM_CALLS 이하. 각 호출은 5초 기한(클라이언트의 것), 자원 칸은 전체 8초 상한(collectTraceResources 의 것). */
 import type { IncidentClient, IncidentSummary } from "@/features/log-trace/lib/incident-client";
-import type { TraceResourcesView } from "@/features/log-trace/lib/trace-resources";
-import { TRACE_RESOURCE_MAXIMUM_CALLS } from "@/features/log-trace/lib/trace-resources";
+import { TRACE_RESOURCE_MAXIMUM_CALLS, containerBelongsToService, type TraceResourcesView } from "@/features/log-trace/lib/trace-resources";
 import type { LogClient } from "@/features/logs/lib/log-client";
-import type { LogEntryView } from "@/features/logs/lib/log-query";
+import { LOG_QUERY_DEFAULT_LIMIT, type LogEntryView, type LogLevel, type LogPage, type LogQuery } from "@/features/logs/lib/log-query";
+import { logsHref } from "@/features/logs/ui/logs-address";
 import type { DeployGitClient, GitCommit, GitRelation } from "@/features/deploy-detail/lib/deploy-git-client";
-import type { DeployRangeStatus } from "@/features/deploy-detail/lib/deploy-range";
+import { findDeployRange, type DeployRangeStatus } from "@/features/deploy-detail/lib/deploy-range";
 import type { DeploymentSummary } from "@/features/deploys/lib/deploy-history-client";
-import type { IncidentSources, OpenIncident } from "@/features/incidents/lib/incident-list";
-import type { UpstreamFailure } from "@/shared/lib/upstream-result";
+import { failedStageLabel } from "@/features/deploys/lib/deploy-format";
+import { DEPLOY_HISTORY_DEFAULT_LIMIT, DEPLOY_SERVICES, type DeployService } from "@/features/deploys/lib/deploy-history-query";
+import { deploysHref } from "@/features/deploys/ui/deploys-address";
+import { INCIDENT_DEPLOY_LOOKUP_LIMIT, errorCountText, type IncidentSources, type OpenIncident } from "@/features/incidents/lib/incident-list";
+import type { LatestResources } from "@/features/resources/lib/resource-metrics-client";
+import { RESOURCE_NO_VALUE_TEXT, formatPercent } from "@/features/resources/lib/resource-format";
+import { resourcesHref } from "@/features/resources/lib/resources-query";
+import { FIRING_SEVERITY_LABELS, currentReadings, serverFiringOf } from "@/features/resources/lib/resources-screen";
+import { STATUS_RESOURCE_ANCHOR_PREFIX } from "@/features/status/lib/status-resources";
+import { parseIsoUtc } from "@/shared/lib/query-input";
+import { upstreamFailure, type UpstreamFailure, type UpstreamResult } from "@/shared/lib/upstream-result";
 
 export const EVIDENCE_LOG_LINE_LIMIT = 100;
 export const EVIDENCE_LOG_FETCH_LIMIT = 500;
@@ -182,11 +191,295 @@ export interface IncidentEvidenceInput {
 
 /** 칸이 실패 · 대응 없음 · 해당 없음일 때의 글 — failed 는 `확인하지 못함 — <message>`. value 면 null. */
 export function evidenceCellNotice(cell: EvidenceCell<unknown>): string | null {
-  void cell;
-  throw new Error("not implemented");
+  switch (cell.state) {
+    case "value": return null;
+    case "failed": return `${EVIDENCE_TEXT.failed}${cell.failure.message}`;
+    case "unmapped": return EVIDENCE_TEXT.unmapped;
+    case "not_applicable": return EVIDENCE_TEXT.notApplicable;
+  }
+}
+
+/** 값이 퍼센트인 규칙(그 밖은 받은 수 그대로). */
+const PERCENT_RULES: ReadonlySet<string> = new Set(["disk_warning", "disk_critical", "memory", "cpu"]);
+const NOT_GIVEN_TEXT = "—";
+
+function isoText(milliseconds: number): string {
+  return new Date(milliseconds).toISOString();
+}
+
+/** 다른 서버가 준 시각 글자 → 밀리초(Java Instant 의 소수 9자리까지 — 읽을 수 없으면 NaN). */
+function instantMilliseconds(text: string): number {
+  return parseIsoUtc(text) ?? Date.parse(text);
+}
+
+function within(text: string, fromMilliseconds: number, toMilliseconds: number): boolean {
+  const at = instantMilliseconds(text);
+  return at >= fromMilliseconds && at <= toMilliseconds;
+}
+
+function failedCell(failure: UpstreamFailure): EvidenceCell<never> {
+  return { state: "failed", failure };
+}
+
+/** 칸 하나를 거부하지 않게 — 뜻밖의 예외는 그 칸만 unparseable. */
+function settledCell<Value>(work: () => Promise<EvidenceCell<Value>>): Promise<EvidenceCell<Value>> {
+  return work().catch(() => failedCell(upstreamFailure("unparseable")));
+}
+
+/** 기준 시각 T(밀리초). */
+function referenceMilliseconds(incident: OpenIncident, nowMilliseconds: number): number {
+  switch (incident.kind) {
+    case "monitor_down": {
+      const downSince = incident.monitor.downSince === null ? Number.NaN : instantMilliseconds(incident.monitor.downSince);
+      return Number.isNaN(downSince) ? nowMilliseconds : downSince;
+    }
+    case "deploy_failed": return instantMilliseconds(incident.deployment.finishedAt ?? incident.deployment.acceptedAt);
+    case "resource_threshold": return instantMilliseconds(incident.firing.since);
+    case "error_logs": return nowMilliseconds;
+  }
+}
+
+function factsOf(incident: OpenIncident): EvidenceFact[] {
+  switch (incident.kind) {
+    case "monitor_down": return [
+      { label: "대상", value: incident.monitor.name }, { label: "상태", value: incident.monitor.status },
+      { label: "이유", value: incident.monitor.reason === "" ? NOT_GIVEN_TEXT : incident.monitor.reason },
+      { label: "DOWN 시각", value: incident.monitor.downSince ?? "모름" }, { label: "서비스", value: incident.service ?? "대응 표에 없음" },
+    ];
+    case "deploy_failed": {
+      const { deployment } = incident;
+      const stage = deployment.failedStage;
+      const stageLabel = stage === null ? null : failedStageLabel(stage);
+      return [
+        { label: "서비스", value: deployment.service }, { label: "커밋", value: deployment.commitSha }, { label: "요청 ID", value: deployment.requestId },
+        { label: "실패 단계", value: stage === null ? NOT_GIVEN_TEXT : stageLabel === null ? stage : `${stage}(${stageLabel})` },
+        { label: "접수 시각", value: deployment.acceptedAt }, { label: "끝난 시각", value: deployment.finishedAt ?? NOT_GIVEN_TEXT },
+      ];
+    }
+    case "resource_threshold": {
+      const { firing } = incident;
+      const value = PERCENT_RULES.has(firing.rule) ? formatPercent(firing.lastValue) : firing.lastValue === null ? RESOURCE_NO_VALUE_TEXT : String(firing.lastValue);
+      return [
+        { label: "서버", value: firing.server }, { label: "규칙", value: incident.ruleLabel }, { label: "대상", value: firing.target ?? NOT_GIVEN_TEXT },
+        { label: "심각도", value: Object.hasOwn(FIRING_SEVERITY_LABELS, firing.severity) ? FIRING_SEVERITY_LABELS[firing.severity] : firing.severity },
+        { label: "값", value }, { label: "언제부터", value: firing.since },
+      ];
+    }
+    case "error_logs": return [
+      { label: "서비스", value: incident.service }, { label: "최근 10분의 오류 수", value: errorCountText(incident.errorCount, incident.countIsLowerBound) },
+    ];
+  }
+}
+
+// ── 관련 알림 ──────────────────────────────────────────────
+
+interface AlertFilter {
+  fromMilliseconds: number;
+  toMilliseconds: number;
+  matches: (record: IncidentSummary) => boolean;
+}
+
+function alertFilterOf(incident: OpenIncident, referenceAt: number, nowMilliseconds: number): AlertFilter | null {
+  switch (incident.kind) {
+    case "monitor_down": return {
+      fromMilliseconds: referenceAt - EVIDENCE_ALERT_WINDOW_MILLISECONDS, toMilliseconds: referenceAt + EVIDENCE_ALERT_WINDOW_MILLISECONDS,
+      matches: (record) => record.kind.startsWith("monitor_") && record.key.split(",").includes(incident.monitor.name),
+    };
+    case "deploy_failed": {
+      const key = `deploy-failed:${incident.deployment.service}:${incident.deployment.commitSha}`;
+      return {
+        fromMilliseconds: instantMilliseconds(incident.deployment.acceptedAt), toMilliseconds: referenceAt + EVIDENCE_AFTER_DEPLOY_MILLISECONDS,
+        matches: (record) => record.key === key,
+      };
+    }
+    case "resource_threshold": {
+      const key = `resource:${incident.firing.server}:${incident.firing.rule}`;
+      return {
+        fromMilliseconds: referenceAt - EVIDENCE_ALERT_WINDOW_MILLISECONDS, toMilliseconds: nowMilliseconds,
+        matches: (record) => record.key === key || record.key.startsWith(`${key}:`),
+      };
+    }
+    case "error_logs": return null;
+  }
+}
+
+async function alertHistoryCell(client: IncidentClient, filter: AlertFilter): Promise<EvidenceCell<AlertHistoryView>> {
+  const result = await client.listIncidents(EVIDENCE_ALERT_LOOKUP_LIMIT);
+  if (!result.ok) return failedCell(result);
+  const received = result.value;
+  const earliest = Math.min(...received.map((record) => instantMilliseconds(record.at)));
+  return { state: "value", value: {
+    from: isoText(filter.fromMilliseconds), to: isoText(filter.toMilliseconds),
+    records: received.filter((record) => filter.matches(record) && within(record.at, filter.fromMilliseconds, filter.toMilliseconds)),
+    coversWindow: received.length < EVIDENCE_ALERT_LOOKUP_LIMIT || earliest < filter.fromMilliseconds,
+  } };
+}
+
+// ── 로그 ───────────────────────────────────────────────────
+
+interface LogPlan {
+  scope: EvidenceLogsView["scope"];
+  fromMilliseconds: number;
+  toMilliseconds: number;
+  /** 관측 서버에 보내는 서비스 거름(null = 거름 없음) */
+  service: string | null;
+  levels: (LogLevel | null)[];
+  requestId: string | null;
+  /** 화면에 보이는 서비스 거름 */
+  services: string[] | null;
+  keep: (line: LogEntryView) => boolean;
+}
+
+/** 그 서버의 컨테이너(latest)가 속한 배포 서비스들(DEPLOY_SERVICES 순서). 서버가 없거나 컨테이너를 모르면 []. */
+function servicesOnServer(latest: UpstreamResult<LatestResources>, server: string): string[] {
+  if (!latest.ok) return [];
+  const containers = latest.value.servers.find((entry) => entry.server === server)?.containers ?? [];
+  return DEPLOY_SERVICES.filter((service) => containers.some((container) => containerBelongsToService(container.seriesName, service)));
+}
+
+function logPlanOf(incident: OpenIncident, referenceAt: number, sources: IncidentSources, nowMilliseconds: number): LogPlan | null {
+  const around = { fromMilliseconds: referenceAt - EVIDENCE_LOG_WINDOW_MILLISECONDS, toMilliseconds: referenceAt + EVIDENCE_LOG_WINDOW_MILLISECONDS };
+  switch (incident.kind) {
+    case "monitor_down":
+      if (incident.service === null) return null;
+      return { scope: "levels", ...around, service: incident.service, levels: ["warning", "error"], requestId: null, services: [incident.service], keep: () => true };
+    case "deploy_failed": {
+      const { requestId } = incident.deployment;
+      return {
+        scope: "request", fromMilliseconds: instantMilliseconds(incident.deployment.acceptedAt) - EVIDENCE_LOG_WINDOW_MILLISECONDS,
+        toMilliseconds: referenceAt + EVIDENCE_AFTER_DEPLOY_MILLISECONDS, service: null, levels: [null], requestId, services: null,
+        keep: (line) => line.requestId === requestId,
+      };
+    }
+    case "resource_threshold": {
+      const services = servicesOnServer(sources.latest, incident.firing.server);
+      return { scope: "levels", ...around, service: null, levels: ["warning", "error"], requestId: null, services, keep: (line) => services.includes(line.service) };
+    }
+    case "error_logs":
+      return {
+        scope: "errors", fromMilliseconds: nowMilliseconds - EVIDENCE_LOG_WINDOW_MILLISECONDS, toMilliseconds: nowMilliseconds,
+        service: incident.service, levels: ["error"], requestId: null, services: [incident.service], keep: () => true,
+      };
+  }
+}
+
+async function logsCell(client: LogClient, plan: LogPlan): Promise<EvidenceCell<EvidenceLogsView>> {
+  const from = isoText(plan.fromMilliseconds);
+  const to = isoText(plan.toMilliseconds);
+  // 두 번 부르는 칸도 한꺼번에 시작한다
+  const pages = await Promise.all(plan.levels.map((level): Promise<UpstreamResult<LogPage>> => client.searchLogs({
+    from, to, service: plan.service, level, requestId: plan.requestId, text: null, before: null, limit: EVIDENCE_LOG_FETCH_LIMIT,
+  } satisfies LogQuery)));
+  const received: LogEntryView[] = [];
+  let moreOnServer = false;
+  for (const page of pages) {
+    if (!page.ok) return failedCell(page);   // warning 쪽을 먼저 본다(plan.levels 순서)
+    received.push(...page.value.logs.filter(plan.keep));
+    moreOnServer ||= page.value.nextBefore !== null;
+  }
+  const chronological = received
+    .map((line) => ({ line, at: instantMilliseconds(line.at) }))
+    .sort((left, right) => left.at - right.at)
+    .map(({ line }) => line);
+  const kept = chronological.slice(-EVIDENCE_LOG_LINE_LIMIT);
+  const truncated = chronological.length > kept.length || moreOnServer;
+  return { state: "value", value: {
+    scope: plan.scope, from, to, services: plan.services, requestId: plan.requestId,
+    lines: kept.map((line) => ({
+      ...line,
+      href: logsHref({ service: line.service, level: null, requestId: null, text: null, from, to, before: null, limit: LOG_QUERY_DEFAULT_LIMIT }, line.id),
+    })),
+    truncated, noticeText: truncated ? `최근 ${EVIDENCE_LOG_LINE_LIMIT}줄만 보입니다 — 더 있음` : null,
+  } };
+}
+
+// ── 배포 ───────────────────────────────────────────────────
+
+function deploymentHref(deployment: DeploymentSummary): string {
+  return deploysHref({ service: null, limit: DEPLOY_HISTORY_DEFAULT_LIMIT }, { requestId: deployment.requestId, service: deployment.service });
+}
+
+/** 창 [T − 1시간, T] 에 접수된 배포(받은 이력을 다시 거른다 — 호출 없음). */
+function deploymentWindowCell(history: UpstreamResult<DeploymentSummary[]>, referenceAt: number): EvidenceCell<EvidenceDeploymentsView> {
+  if (!history.ok) return failedCell(history);
+  const fromMilliseconds = referenceAt - EVIDENCE_DEPLOY_WINDOW_MILLISECONDS;
+  const oldest = Math.min(...history.value.map((deployment) => instantMilliseconds(deployment.acceptedAt)));
+  return { state: "value", value: {
+    kind: "window", from: isoText(fromMilliseconds), to: isoText(referenceAt),
+    deployments: history.value
+      .filter((deployment) => within(deployment.acceptedAt, fromMilliseconds, referenceAt))
+      .map((deployment) => ({ ...deployment, href: deploymentHref(deployment) })),
+    coversWindow: history.value.length < INCIDENT_DEPLOY_LOOKUP_LIMIT || oldest < fromMilliseconds,
+  } };
+}
+
+/** 앞 성공 배포와의 사이의 커밋(range 일 때만 master git 한 번). */
+async function deploymentRangeCell(client: DeployGitClient, history: UpstreamResult<DeploymentSummary[]>, failed: DeploymentSummary): Promise<EvidenceCell<EvidenceDeploymentsView>> {
+  if (!history.ok) return failedCell(history);
+  const found = findDeployRange(history.value, failed.requestId);
+  if (found === null) return failedCell(upstreamFailure("not_found"));
+  const { range } = found;
+  const base = { kind: "range" as const, status: range.status, baseRequestId: range.baseRequestId, baseCommitSha: range.baseCommitSha, headCommitSha: range.headCommitSha, detailHref: deploymentHref(failed) };
+  if (range.status !== "range" || range.baseCommitSha === null) return { state: "value", value: { ...base, commits: [], truncated: false, relation: null } };
+  const commits = await client.listCommits(failed.service as DeployService, range.baseCommitSha, range.headCommitSha);
+  if (!commits.ok) return failedCell(commits);
+  return { state: "value", value: { ...base, commits: commits.value.commits, truncated: commits.value.truncated, relation: commits.value.relation } };
+}
+
+// ── 자원 ───────────────────────────────────────────────────
+
+/** 그 서버의 지금 값(sources.latest — 호출 없음). */
+function serverResourcesCell(latest: UpstreamResult<LatestResources>, server: string): EvidenceCell<EvidenceResourcesView> {
+  if (!latest.ok) return failedCell(latest);
+  const resourcesScreenHref = `${resourcesHref({ range: "1h", container: null })}#${STATUS_RESOURCE_ANCHOR_PREFIX}${server}`;
+  const entry = latest.value.servers.find((candidate) => candidate.server === server);
+  if (entry === undefined) {
+    return { state: "value", value: {
+      kind: "server", server, found: false, cpuText: RESOURCE_NO_VALUE_TEXT, memoryText: RESOURCE_NO_VALUE_TEXT, diskText: RESOURCE_NO_VALUE_TEXT,
+      receivedAt: null, resourcesHref: resourcesScreenHref,
+    } };
+  }
+  const readings = currentReadings(entry, serverFiringOf([]));
+  return { state: "value", value: {
+    kind: "server", server, found: true, cpuText: readings.cpu.text, memoryText: readings.memory.text, diskText: readings.disk.text,
+    receivedAt: entry.receivedAt, resourcesHref: resourcesScreenHref,
+  } };
+}
+
+/** 그 서비스가 T 에 있던 서버의 그때 값 — 서버를 찾지 못한 실패(location)는 칸 전체의 실패. */
+async function traceResourcesCell(dependencies: IncidentEvidenceDependencies, service: string, referenceAt: number): Promise<EvidenceCell<EvidenceResourcesView>> {
+  const trace = await dependencies.traceResources(service, referenceAt);
+  if (trace === null) return failedCell(upstreamFailure("unparseable"));
+  if (!trace.location.ok) return failedCell(trace.location);
+  return { state: "value", value: { kind: "trace", trace } };
+}
+
+function serviceOf(incident: OpenIncident): string | null {
+  switch (incident.kind) {
+    case "monitor_down": return incident.service;
+    case "deploy_failed": return incident.deployment.service;
+    case "resource_threshold": return null;
+    case "error_logs": return incident.service;
+  }
 }
 
 export async function buildIncidentEvidence(dependencies: IncidentEvidenceDependencies, input: IncidentEvidenceInput): Promise<IncidentEvidence> {
-  void dependencies; void input;
-  throw new Error("not implemented");
+  const { incident, sources, nowMilliseconds } = input;
+  const referenceAt = referenceMilliseconds(incident, nowMilliseconds);
+  const alertFilter = alertFilterOf(incident, referenceAt, nowMilliseconds);
+  const logPlan = logPlanOf(incident, referenceAt, sources, nowMilliseconds);
+  const service = serviceOf(incident);
+  // 칸들을 한꺼번에 시작한다(서로 기다리지 않는다)
+  const [alertHistory, logs, deployments, resources] = await Promise.all([
+    settledCell(async (): Promise<EvidenceCell<AlertHistoryView>> => (alertFilter === null ? { state: "not_applicable" } : alertHistoryCell(dependencies.alertRecords, alertFilter))),
+    settledCell(async (): Promise<EvidenceCell<EvidenceLogsView>> => (logPlan === null ? { state: "unmapped" } : logsCell(dependencies.logs, logPlan))),
+    settledCell(async (): Promise<EvidenceCell<EvidenceDeploymentsView>> => (incident.kind === "deploy_failed"
+      ? deploymentRangeCell(dependencies.deployGit, sources.deployments, incident.deployment)
+      : deploymentWindowCell(sources.deployments, referenceAt))),
+    settledCell(async (): Promise<EvidenceCell<EvidenceResourcesView>> => {
+      if (incident.kind === "resource_threshold") return serverResourcesCell(sources.latest, incident.firing.server);
+      return service === null ? { state: "unmapped" } : traceResourcesCell(dependencies, service, referenceAt);
+    }),
+  ]);
+  return { incident, facts: factsOf(incident), alertHistory, logs, deployments, resources, reductions: [] };
 }

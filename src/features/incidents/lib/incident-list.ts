@@ -18,7 +18,11 @@ import type { AlertMonitorView, AlertMonitorsView } from "@/features/status/lib/
 import type { DeploymentSummary } from "@/features/deploys/lib/deploy-history-client";
 import type { FiringRule, LatestResources } from "@/features/resources/lib/resource-metrics-client";
 import type { LogPage } from "@/features/logs/lib/log-query";
-import type { IncidentKind } from "@/features/incidents/lib/incident-id";
+import {
+  INCIDENT_KINDS, deployIncidentId, errorLogsIncidentId, monitorIncidentId, resourceIncidentId, type IncidentKind,
+} from "@/features/incidents/lib/incident-id";
+import { serviceForMonitor } from "@/features/incidents/lib/monitor-services";
+import { FIRING_RULE_LABELS, byCharacterCode } from "@/features/resources/lib/resources-screen";
 import type { UpstreamResult } from "@/shared/lib/upstream-result";
 
 export const ERROR_LOG_WINDOW_MILLISECONDS = 10 * 60 * 1000;
@@ -92,13 +96,98 @@ export interface IncidentSources {
   errorLogs: UpstreamResult<LogPage>;
 }
 
+function sourceFailure(source: IncidentSource, message: string): IncidentSourceFailure {
+  const label = INCIDENT_SOURCE_LABELS[source];
+  return { source, label, message, text: `${label}: 확인하지 못함 — ${message}` };
+}
+
+function heading(kind: IncidentKind, id: string, target: string, severity: IncidentSeverity, since: string | null): IncidentHeading {
+  return { id, kindLabel: INCIDENT_KIND_LABELS[kind], target, severity, severityLabel: INCIDENT_SEVERITY_LABELS[severity], since };
+}
+
+function monitorIncidents(view: AlertMonitorsView): OpenIncident[] {
+  return view.monitors.filter((monitor) => monitor.status === "DOWN").map((monitor: AlertMonitorView): OpenIncident => ({
+    ...heading("monitor_down", monitorIncidentId(monitor.name), monitor.name, "critical", monitor.downSince),
+    kind: "monitor_down", monitor, service: serviceForMonitor(monitor.name),
+  }));
+}
+
+function thresholdIncidents(firing: FiringRule[]): OpenIncident[] {
+  return firing.map((rule): OpenIncident => {
+    const ruleLabel = Object.hasOwn(FIRING_RULE_LABELS, rule.rule) ? FIRING_RULE_LABELS[rule.rule] : rule.rule;
+    const target = `서버 ${rule.server} ${ruleLabel}${rule.target === null ? "" : ` ${rule.target}`}`;
+    const severity: IncidentSeverity = rule.severity === "critical" ? "critical" : "warning";
+    return {
+      ...heading("resource_threshold", resourceIncidentId(rule.server, rule.rule, rule.target), target, severity, rule.since),
+      kind: "resource_threshold", firing: rule, ruleLabel,
+    };
+  });
+}
+
+/** 서비스마다 가장 최근(목록에서 처음 나오는) 배포만 본다 — 그것이 failed 일 때만 열린 문제(성공 · 진행 중이면 그 앞의 실패는 보지 않는다). */
+function deployIncidents(deployments: DeploymentSummary[]): OpenIncident[] {
+  const seen = new Set<string>();
+  const incidents: OpenIncident[] = [];
+  for (const deployment of deployments) {
+    if (seen.has(deployment.service)) continue;
+    seen.add(deployment.service);
+    if (deployment.state !== "failed") continue;
+    incidents.push({
+      ...heading("deploy_failed", deployIncidentId(deployment.service, deployment.requestId), deployment.service, "warning", deployment.finishedAt ?? deployment.acceptedAt),
+      kind: "deploy_failed", deployment,
+    });
+  }
+  return incidents;
+}
+
+function errorLogIncidents(page: LogPage): OpenIncident[] {
+  const counts = new Map<string, number>();
+  for (const line of page.logs) counts.set(line.service, (counts.get(line.service) ?? 0) + 1);
+  const countIsLowerBound = page.nextBefore !== null;
+  return [...counts].map(([service, errorCount]): OpenIncident => ({
+    ...heading("error_logs", errorLogsIncidentId(service), service, "warning", null),
+    kind: "error_logs", service, errorCount, countIsLowerBound,
+  }));
+}
+
+/** 언제부터의 밀리초 — 모르거나 읽을 수 없으면 null(뒤로 간다). */
+function sinceMilliseconds(incident: OpenIncident): number | null {
+  if (incident.since === null) return null;
+  const parsed = Date.parse(incident.since);
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+function compareIncidents(left: OpenIncident, right: OpenIncident): number {
+  const severityOrder = Number(right.severity === "critical") - Number(left.severity === "critical");
+  if (severityOrder !== 0) return severityOrder;
+  const leftSince = sinceMilliseconds(left);
+  const rightSince = sinceMilliseconds(right);
+  if (leftSince !== rightSince) {
+    if (leftSince === null) return 1;
+    if (rightSince === null) return -1;
+    return leftSince - rightSince;
+  }
+  return INCIDENT_KINDS.indexOf(left.kind) - INCIDENT_KINDS.indexOf(right.kind) || byCharacterCode(left.id, right.id);
+}
+
 export function openIncidentsFrom(sources: IncidentSources): IncidentList {
-  void sources;
-  throw new Error("not implemented");
+  const incidents: OpenIncident[] = [];
+  const unchecked: IncidentSourceFailure[] = [];
+  const collect = <Value>(source: IncidentSource, result: UpstreamResult<Value>, open: (value: Value) => OpenIncident[]) => {
+    if (result.ok) incidents.push(...open(result.value));
+    else unchecked.push(sourceFailure(source, result.message));
+  };
+  collect("monitors", sources.monitors, monitorIncidents);
+  if (sources.latest.ok && sources.latest.value.firing === null) unchecked.push(sourceFailure("thresholds", INCIDENT_LIST_TEXT.firingMissing));
+  else collect("thresholds", sources.latest, (latest) => thresholdIncidents(latest.firing ?? []));
+  collect("deployments", sources.deployments, deployIncidents);
+  collect("errorLogs", sources.errorLogs, errorLogIncidents);
+  incidents.sort(compareIncidents);
+  const emptyText = incidents.length > 0 ? null : unchecked.length === 0 ? INCIDENT_LIST_TEXT.empty : INCIDENT_LIST_TEXT.emptyWithinChecked;
+  return { incidents, unchecked, errorLogsTruncated: sources.errorLogs.ok && sources.errorLogs.value.nextBefore !== null, emptyText };
 }
 
 /** 오류 수의 글 — `오류 N건` · 상한이면 `오류 N건 이상`. */
 export function errorCountText(errorCount: number, countIsLowerBound: boolean): string {
-  void errorCount; void countIsLowerBound;
-  throw new Error("not implemented");
+  return `오류 ${errorCount}건${countIsLowerBound ? " 이상" : ""}`;
 }
