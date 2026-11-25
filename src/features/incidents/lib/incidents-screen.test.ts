@@ -170,7 +170,7 @@ describe("문제 하나 — 목록 뒤에 근거 묶음(호출 수 상한 안)",
     expect(fitIncidentEvidence(data.selected.evidence)).toEqual(data.selected.evidence);
   });
 
-  it("근거 칸들은 한꺼번에 — 알림 서버가 5초 멈춰도 묶음은 5초에 끝나고 그 칸만 확인하지 못함", async () => {
+  it("근거 칸 하나가 5초 기한에 걸려도 묶음은 5초에 끝나고 그 칸만 확인하지 못함(다른 칸은 값)", async () => {
     vi.useFakeTimers();
     const timer = createTimerTimeoutSignal();
     const fetch = fakeServers({ [`${FAKE_ALERT_URL}/incidents`]: (_url, init) => hangUntilAborted(init) });
@@ -239,6 +239,39 @@ describe("고른 문제가 지금은 목록에 없을 때", () => {
 
   it("다른 종류의 출처만 실패했으면 closed 그대로", async () => {
     const fetch = fakeServers({ [`${FAKE_DEPLOY_MASTER_URL}/deploys`]: () => textResponse("", 503) });
+    const data = await collectIncidentsScreen(options(fetch), monitorIncidentId("backend"));
+    expect(data.selected).toEqual({ kind: "closed", incidentId: monitorIncidentId("backend") });
+  });
+
+  /** 목록의 오류 로그 호출(서비스 거름 없음 · error)만 바꾼다 — 그 밖의 로그 호출은 빈 답. */
+  function errorLogsListing(rows: Record<string, unknown>[], nextBefore: string): Handler {
+    return (url) => {
+      const from = url.searchParams.get("from")!;
+      const to = url.searchParams.get("to")!;
+      const listing = url.searchParams.get("level") === "error" && url.searchParams.get("service") === null;
+      return jsonBody(logsBody(listing ? rows : [], from, to, listing ? nextBefore : ""));
+    };
+  }
+  const FULL_PAGE = Array.from({ length: 500 }, (_, index) => logRow({ id: `${NOW - MINUTE}-${index}`, service: "llm", message: `llm 오류 ${index}` }));
+
+  it("오류 로그가 상한(500건)을 채웠으면 목록에 없는 서비스의 오류 로그 문제는 unchecked — 닫혔다고 말하지 않는다", async () => {
+    const fetch = fakeServers({ [`${FAKE_OBSERVE_URL}/logs`]: errorLogsListing(FULL_PAGE, `${NOW - 10 * MINUTE}-0`) });
+    const data = await collectIncidentsScreen(options(fetch), errorLogsIncidentId("backend"));
+    expect(data.list.errorLogsTruncated).toBe(true);
+    expect(data.list.incidents.map((incident) => incident.id)).toContain(errorLogsIncidentId("llm"));
+    expect(data.selected).toEqual({ kind: "unchecked", incidentId: errorLogsIncidentId("backend") });
+    expect(fetch).toHaveBeenCalledTimes(INCIDENT_LIST_CALLS);
+  });
+
+  it("오류 로그가 상한을 채우지 않았으면(499건 · next_before 없음) 목록에 없는 서비스의 오류 로그 문제는 closed", async () => {
+    const fetch = fakeServers({ [`${FAKE_OBSERVE_URL}/logs`]: errorLogsListing(FULL_PAGE.slice(1), "") });
+    const data = await collectIncidentsScreen(options(fetch), errorLogsIncidentId("backend"));
+    expect(data.list.errorLogsTruncated).toBe(false);
+    expect(data.selected).toEqual({ kind: "closed", incidentId: errorLogsIncidentId("backend") });
+  });
+
+  it("오류 로그가 상한을 채웠어도 다른 종류의 문제는 그대로 closed", async () => {
+    const fetch = fakeServers({ [`${FAKE_OBSERVE_URL}/logs`]: errorLogsListing(FULL_PAGE, `${NOW - 10 * MINUTE}-0`) });
     const data = await collectIncidentsScreen(options(fetch), monitorIncidentId("backend"));
     expect(data.selected).toEqual({ kind: "closed", incidentId: monitorIncidentId("backend") });
   });

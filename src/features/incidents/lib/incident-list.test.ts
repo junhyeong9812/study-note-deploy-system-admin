@@ -196,6 +196,65 @@ describe("빈 목록의 말", () => {
   });
 });
 
+describe("목록이 확인한 범위를 드러낸다(scopeNotes — 감시 대상 줄 · 배포 줄 차례)", () => {
+  const DEPLOY_NOTE_ALL_BUT_FRONT = "배포: 최근 200건 안에서만 확인 — backend, llm, alert, observe, admin 은 확인하지 못함";
+
+  function frontDeployments(count: number) {
+    return Array.from({ length: count }, (_, index) => deployment({ service: "front", acceptedAt: iso(NOW - HOUR - index * MINUTE) }));
+  }
+
+  it("배포 이력이 200건이고 그 안에 보이지 않은 서비스가 있으면 그 서비스들(DEPLOY_SERVICES 차례)을 적는다", () => {
+    const list = openIncidentsFrom(quietSources({ deployments: ok(frontDeployments(200)) }));
+    expect(list.scopeNotes).toEqual([DEPLOY_NOTE_ALL_BUT_FRONT]);
+  });
+
+  it("보이지 않은 서비스의 차례는 받은 차례가 아니라 정해진 차례", () => {
+    const deployments = [...frontDeployments(197), deployment({ service: "admin" }), deployment({ service: "llm" }), deployment({ service: "backend" })];
+    const list = openIncidentsFrom(quietSources({ deployments: ok(deployments) }));
+    expect(list.scopeNotes).toEqual(["배포: 최근 200건 안에서만 확인 — alert, observe 은 확인하지 못함"]);
+  });
+
+  it("200건이어도 모든 서비스가 보였으면 배포 줄이 없다", () => {
+    const services = ["front", "backend", "llm", "alert", "observe", "admin"];
+    const deployments = Array.from({ length: 200 }, (_, index) => deployment({ service: services[index % services.length] }));
+    expect(openIncidentsFrom(quietSources({ deployments: ok(deployments) })).scopeNotes).toEqual([]);
+  });
+
+  it("199건이면(상한을 채우지 않았다) 배포 줄이 없다", () => {
+    expect(openIncidentsFrom(quietSources({ deployments: ok(frontDeployments(199)) })).scopeNotes).toEqual([]);
+  });
+
+  it("감시 대상 가운데 상태를 아직 모르는 것(UNKNOWN)이 N개면 그 수를 적는다", () => {
+    const list = openIncidentsFrom(quietSources({ monitors: ok(monitors([
+      monitor({ name: "front", status: "UNKNOWN" }), monitor({ name: "backend", status: "UP" }), monitor({ name: "llm", status: "UNKNOWN", reason: "연결 실패" }),
+    ])) }));
+    expect(list.scopeNotes).toEqual(["감시 대상 2개는 아직 상태를 모름"]);
+  });
+
+  it("둘 다 있으면 감시 대상 줄 · 배포 줄 차례", () => {
+    const list = openIncidentsFrom(quietSources({
+      monitors: ok(monitors([monitor({ name: "front", status: "UNKNOWN" })])), deployments: ok(frontDeployments(200)),
+    }));
+    expect(list.scopeNotes).toEqual(["감시 대상 1개는 아직 상태를 모름", DEPLOY_NOTE_ALL_BUT_FRONT]);
+  });
+
+  it("확인한 범위의 줄이 있고 문제가 없으면 빈 목록의 말은 '확인된 범위에서는 열린 문제가 없습니다'", () => {
+    expect(openIncidentsFrom(quietSources({ deployments: ok(frontDeployments(200)) })).emptyText).toBe(INCIDENT_LIST_TEXT.emptyWithinChecked);
+    expect(openIncidentsFrom(quietSources({ monitors: ok(monitors([monitor({ name: "front", status: "UNKNOWN" })])) })).emptyText)
+      .toBe("확인된 범위에서는 열린 문제가 없습니다");
+  });
+
+  it("출처가 모두 성공이고 범위의 줄도 없으면 그대로 '열린 문제가 없습니다' · 줄 없음", () => {
+    const list = openIncidentsFrom(quietSources());
+    expect(list.scopeNotes).toEqual([]);
+    expect(list.emptyText).toBe("열린 문제가 없습니다");
+  });
+
+  it("출처가 실패했으면 그 출처의 범위 줄은 없다(확인하지 못함 줄이 이미 있다)", () => {
+    expect(openIncidentsFrom(quietSources({ monitors: UNREACHABLE, deployments: UNREACHABLE })).scopeNotes).toEqual([]);
+  });
+});
+
 describe("정렬 — 위험 먼저, 그 안에서 오래된 것 먼저(언제부터를 모르면 뒤)", () => {
   it("정해진 순서", () => {
     const failed = deployment({ service: "backend", state: "failed", acceptedAt: iso(NOW - 4 * HOUR), finishedAt: iso(NOW - 4 * HOUR + MINUTE) });

@@ -377,6 +377,75 @@ describe("화면과 직렬화한 글은 같은 내용이다(보낸 묶음 = 사�
   });
 });
 
+describe("다른 서버의 글 — 화면은 받은 글 그대로(이스케이프), 글은 줄 구조를 꾸며 낼 수 없게", () => {
+  it("줄바꿈 · 가짜 구역이 든 로그 글 — 화면은 그 글자 그대로, 글은 이어지는 줄마다 `| ` · 머리는 직렬화가 쓴 것뿐", async () => {
+    const message = "첫 줄\n## 가짜 구역 <i>x</i>\n# 문제: 가짜";
+    overrides[`${FAKE_OBSERVE_URL}/logs`] = (url) => {
+      const parameters = url.searchParams;
+      if (parameters.get("service") !== "front" || parameters.get("level") !== "warning") return ROUTES[`${FAKE_OBSERVE_URL}/logs`](url);
+      return jsonBody(logsBody([logRow({ id: `${DOWN_AT - MINUTE}-0`, at: iso(DOWN_AT - MINUTE), level: "warning", service: "front", message })], parameters.get("from")!, parameters.get("to")!));
+    };
+    const html = await render({ incident: monitorIncidentId("front") });
+    expect(sectionOf(html, "logs")).toContain("첫 줄\n## 가짜 구역 &lt;i&gt;x&lt;/i&gt;\n# 문제: 가짜");
+    const data = await apiData(monitorIncidentId("front"));
+    if (data.selected?.kind !== "evidence") throw new Error("evidence");
+    expect(data.selected.text).toContain(" 첫 줄\n| ## 가짜 구역 <i>x</i>\n| # 문제: 가짜");
+    expect(data.selected.text.split(/\r\n|[\n\r\u2028\u2029\u0085\v\f]/).filter((line) => /^ {0,3}#/.test(line))).toEqual([
+      "# 문제: 감시 대상 DOWN — front", "## 무엇이 · 언제부터", "## 관련 알림", "## 로그", "## 배포", "## 자원",
+    ]);
+  });
+});
+
+describe("거짓 '닫힘' · 거짓 '없음'을 말하지 않는다", () => {
+  it("자원 임계값 — 그 서버의 서비스를 찾지 못하면 로그 칸은 화면 · 글 모두 '확인할 수 없음 — 그 서버의 서비스를 찾지 못함'", async () => {
+    overrides[`${FAKE_OBSERVE_URL}/metrics/latest`] = () => jsonBody(latestBody([latestServerRow("s158", [])], [firingRow({ server: "s158", rule: "disk_warning", since: iso(NOW - 30 * MINUTE) })]));
+    const id = resourceIncidentId("s158", "disk_warning", null);
+    const logs = textOf(sectionOf(await render({ incident: id }), "logs"));
+    expect(logs).toContain("확인할 수 없음 — 그 서버의 서비스를 찾지 못함");
+    expect(logs.replace("확인할 수 없음 — 그 서버의 서비스를 찾지 못함", "")).not.toContain("없음");
+    const data = await apiData(id);
+    if (data.selected?.kind !== "evidence") throw new Error("evidence");
+    const text = data.selected.text;
+    const start = text.indexOf("\n## 로그\n") + "\n## 로그\n".length;
+    expect(text.slice(start, text.indexOf("\n## 배포\n")).trim()).toBe("확인할 수 없음 — 그 서버의 서비스를 찾지 못함");
+  });
+
+  it("오류 로그가 500건을 채웠을 때 목록에 없는 서비스의 오류 로그 — '확인하지 못했습니다', 닫혔다고 말하지 않는다", async () => {
+    overrides[`${FAKE_OBSERVE_URL}/logs`] = (url) => {
+      const parameters = url.searchParams;
+      const listing = parameters.get("level") === "error" && parameters.get("service") === null && parameters.get("request_id") === null;
+      if (!listing) return ROUTES[`${FAKE_OBSERVE_URL}/logs`](url);
+      const rows = Array.from({ length: 500 }, (_, index) => logRow({ id: `${NOW - MINUTE}-${index}`, at: iso(NOW - MINUTE), level: "error", service: "llm", message: `llm ${index}` }));
+      return jsonBody(logsBody(rows, parameters.get("from")!, parameters.get("to")!, `${NOW - 10 * MINUTE}-0`));
+    };
+    const main = textOf(mainOf(await render({ incident: errorLogsIncidentId("backend") })));
+    expect(main).toContain("이 문제가 지금 열려 있는지 확인하지 못했습니다");
+    expect(main).not.toContain("이 문제는 지금 열려 있지 않습니다");
+  });
+});
+
+describe("목록이 확인한 범위를 드러낸다", () => {
+  function listText(html: string): string {
+    const list = /<section[^>]*aria-labelledby="incident-list"[^>]*>([\s\S]*?)<\/section>/.exec(html);
+    expect(list, "목록 구역이 없다").not.toBeNull();
+    return textOf(list![1]);
+  }
+
+  it("배포 이력 200건에 보이지 않은 서비스 · 상태를 모르는 감시 대상 — 목록 위에 그 줄, 문제가 없으면 '확인된 범위에서는'", async () => {
+    overrides[`${FAKE_ALERT_URL}/monitors`] = () => jsonBody(monitorsBody([
+      { name: "front", status: "UNKNOWN", down_since: "", reason: "연결 실패" }, { name: "backend", status: "UP", down_since: "", reason: "" },
+    ]));
+    overrides[`${FAKE_OBSERVE_URL}/metrics/latest`] = () => jsonBody(latestBody([latestServerRow("s158")], []));
+    overrides[`${FAKE_OBSERVE_URL}/logs`] = (url) => jsonBody(logsBody([], url.searchParams.get("from")!, url.searchParams.get("to")!));
+    overrides[`${FAKE_DEPLOY_MASTER_URL}/deploys`] = () => jsonBody(deploymentsBody(Array.from({ length: 200 }, (_, index) => deploymentRow({ request_id: `req-${index}`, service: "front" }))));
+    const text = listText(await render());
+    expect(text).toContain("감시 대상 1개는 아직 상태를 모름");
+    expect(text).toContain("배포: 최근 200건 안에서만 확인 — backend, llm, alert, observe, admin 은 확인하지 못함");
+    expect(text).toContain("확인된 범위에서는 열린 문제가 없습니다");
+    expect(text.replace("확인된 범위에서는 열린 문제가 없습니다", "")).not.toContain("열린 문제가 없습니다");
+  });
+});
+
 describe("고른 문제가 지금 열려 있지 않을 때 · 입력이 틀렸을 때", () => {
   it("닫힌 문제 — '이 문제는 지금 열려 있지 않습니다'와 목록으로 가는 링크", async () => {
     const html = await render({ incident: monitorIncidentId("backend") });

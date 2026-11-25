@@ -456,7 +456,7 @@ describe("자원 임계값 — 무엇이 · 관련 알림 · 로그 · 자원", 
     ]);
   });
 
-  it("관련 알림은 그 서버 · 규칙의 key(대상 · :resolved 이어짐 포함), 창 [since − 1시간, 지금]", async () => {
+  it("관련 알림은 그 서버 · 규칙의 key(그 뒤 :resolved 포함), 창 [since − 1시간, 지금]", async () => {
     const records = [
       alertRecord({ kind: "event", key: "resource:s158:disk_warning:resolved", title: "해소", at: iso(NOW - MINUTE) }),
       alertRecord({ kind: "event", key: "resource:s158:disk_warning", title: "넘음", at: iso(FIRING_SINCE) }),
@@ -491,6 +491,41 @@ describe("자원 임계값 — 무엇이 · 관련 알림 · 로그 · 자원", 
       kind: "server", server: "s158", found: true, cpuText: "3.4%", memoryText: "12.5%", diskText: "86.0%", receivedAt: iso(NOW - 19 * SECOND),
       resourcesHref: "/resources?range=1h#resource-server-s158",
     });
+  });
+});
+
+describe("자원 임계값 — 관련 알림은 대상까지 맞춘다(key 가 같거나 그 뒤에 `:resolved` 만)", () => {
+  async function keptKeys(rule: { rule: string; target: string | null }, keys: string[]): Promise<string[]> {
+    const sources = quietSources({ latest: ok(latest([serverLatest("s")], [firing({ server: "s", ...rule, since: iso(FIRING_SINCE) })])) });
+    const records = keys.map((key) => alertRecord({ kind: "event", key, title: key, at: iso(FIRING_SINCE) }));
+    const history = value((await build(fakeDependencies({ alertRecords: async () => ok(records) }), sources, "resource_threshold")).alertHistory);
+    return history.records.map((record) => record.key);
+  }
+
+  it("대상이 있는 규칙 — 그 대상의 key 와 그 :resolved 만(다른 대상 · 대상 이름의 접두는 아니다)", async () => {
+    expect(await keptKeys({ rule: "restarts", target: "front-app-green" }, [
+      "resource:s:restarts:front-app-green", "resource:s:restarts:front-app-green:resolved",
+      "resource:s:restarts:backend-app-blue", "resource:s:restarts:front-app-green-2", "resource:s:restarts",
+    ])).toEqual(["resource:s:restarts:front-app-green", "resource:s:restarts:front-app-green:resolved"]);
+  });
+
+  it("대상이 없는 규칙 — 그 key 와 그 :resolved 만(이름이 이어지는 다른 규칙 · 뒤에 다른 부분이 붙은 key 는 아니다)", async () => {
+    expect(await keptKeys({ rule: "disk", target: null }, [
+      "resource:s:disk", "resource:s:disk:resolved", "resource:s:disk_warning", "resource:s:disk:무엇",
+    ])).toEqual(["resource:s:disk", "resource:s:disk:resolved"]);
+  });
+});
+
+describe("자원 임계값 — 그 서버의 서비스를 찾지 못하면 로그 칸은 '확인할 수 없음'(없음이라고 말하지 않는다)", () => {
+  it.each([
+    ["그 서버의 컨테이너 목록이 비었다", [serverLatest("s158", { containers: [] })]],
+    ["그 서버가 지금 지표를 보낸 서버 목록에 없다", [serverLatest("s9")]],
+  ])("%s → 로그 칸의 글은 '확인할 수 없음 — 그 서버의 서비스를 찾지 못함' 한 줄", async (_label, servers) => {
+    const sources = quietSources({ latest: ok(latest(servers, [firing({ server: "s158", rule: "disk_warning", since: iso(FIRING_SINCE) })])) });
+    const fake = fakeDependencies({ logs: async () => ok(logPage([logLine({ service: "front", message: "다른 서버의 줄" })])) });
+    const evidence = await build(fake, sources, "resource_threshold");
+    expect(evidence.logs.state).not.toBe("value");
+    expect(evidenceCellNotice(evidence.logs)).toBe("확인할 수 없음 — 그 서버의 서비스를 찾지 못함");
   });
 });
 

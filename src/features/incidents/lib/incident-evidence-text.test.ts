@@ -4,10 +4,14 @@ import { describe, expect, it } from "vitest";
 import {
   EVIDENCE_LOG_MESSAGE_MAXIMUM_LENGTH, INCIDENT_EVIDENCE_TEXT_MAXIMUM_BYTES, evidenceTextBytes, fitIncidentEvidence, incidentEvidenceText,
 } from "@/features/incidents/lib/incident-evidence-text";
-import type { EvidenceLogLine, IncidentEvidence } from "@/features/incidents/lib/incident-evidence";
-import { openIncidentsFrom } from "@/features/incidents/lib/incident-list";
+import {
+  buildIncidentEvidence, type EvidenceLogLine, type IncidentEvidence, type IncidentEvidenceDependencies,
+} from "@/features/incidents/lib/incident-evidence";
+import { openIncidentsFrom, type IncidentSources, type OpenIncident } from "@/features/incidents/lib/incident-list";
 import { upstreamFailure } from "@/shared/lib/upstream-result";
-import { HOUR, MINUTE, NOW, SECOND, alertRecord, deployment, iso, monitor, monitors, ok, quietSources } from "@/features/incidents/lib/incidents-test-fakes";
+import {
+  HOUR, MINUTE, NOW, SECOND, alertRecord, deployment, firing, iso, latest, logPage, monitor, monitors, ok, quietSources, serverLatest,
+} from "@/features/incidents/lib/incidents-test-fakes";
 
 const DOWN_AT = NOW - 20 * MINUTE;
 
@@ -100,11 +104,13 @@ describe("글의 꼴", () => {
     expect(resources).toContain("- CPU: 그때 97.5% · 창의 최대 99.0%");
   });
 
-  it("줄바꿈이 든 로그 글은 이어지는 줄을 두 칸 들여 쓴다(글의 줄 구조가 깨지지 않게)", () => {
+  it("줄바꿈이 든 로그 글은 이어지는 줄마다 앞에 `| ` — 로그 글이 `## ` 구역을 흉내 내지 못한다(칸마다의 검사는 incident-evidence-text-structure.test.ts)", () => {
     const text = incidentEvidenceText(evidenceWith(logLines(1, () => "첫 줄\n\tat a.b(C.kt:1)\n## 가짜 제목")));
     const logs = sectionOf(text, "로그");
-    expect(logs).toContain("첫 줄\n  \tat a.b(C.kt:1)\n  ## 가짜 제목");
-    expect(text.split("\n").filter((line) => line.startsWith("## "))).toHaveLength(5);
+    expect(logs).toMatch(/첫 줄\n\| [\t ]at a\.b\(C\.kt:1\)\n\| ## 가짜 제목/);   // 글 안의 탭은 그대로든 빈칸이든 된다
+    expect(text.split("\n").filter((line) => /^ {0,3}#/.test(line))).toEqual([
+      "# 문제: 감시 대상 DOWN — front", "## 무엇이 · 언제부터", "## 관련 알림", "## 로그", "## 배포", "## 자원",
+    ]);
   });
 
   it("칸이 값이 아니면 그 칸의 한 줄 — 확인하지 못함 · 대응 표에 없음 · 해당 없음", () => {
@@ -224,5 +230,172 @@ describe("크기 상한 — 넘으면 로그의 줄 수부터 줄이고, 줄였�
     const kept = fitted.alertHistory.value.records;
     expect(kept).toEqual(records.slice(0, kept.length));   // 알림 서버 순서(최신 먼저) — 앞쪽(최신)이 남는다
     expect(fitted.reductions).toEqual([`관련 알림 200건 중 오래된 ${200 - kept.length}건을 뺐습니다(크기 상한)`]);
+  });
+});
+
+// ── 깨끗한 작은 입력 · 크기의 상한(명세 ⑫ §11 4) ─────────────
+
+/** 칸마다 기본 답(빈 목록 · 자원 칸은 부르지 않음)인 가짜 클라이언트 — 실제 조립(buildIncidentEvidence)을 거친 묶음을 만든다. */
+function quietDependencies(overrides: Partial<IncidentEvidenceDependencies> = {}): IncidentEvidenceDependencies {
+  return {
+    alertRecords: { listIncidents: async () => ok([]) },
+    logs: { searchLogs: async (query) => ok(logPage([], { from: query.from!, to: query.to! })) },
+    deployGit: { listCommits: async () => ok({ commits: [], truncated: false, rangeComplete: true, relation: "ancestor" }), getCommit: async () => upstreamFailure("not_found") },
+    traceResources: async () => null,
+    ...overrides,
+  };
+}
+
+async function builtEvidence(sources: IncidentSources, kind: OpenIncident["kind"], dependencies: IncidentEvidenceDependencies = quietDependencies()): Promise<IncidentEvidence> {
+  const incident = openIncidentsFrom(sources).incidents.find((candidate) => candidate.kind === kind);
+  expect(incident, kind).toBeDefined();
+  return buildIncidentEvidence(dependencies, { incident: incident!, sources, nowMilliseconds: NOW });
+}
+
+/** 깨진 글자 — 바꿈 글자(U+FFFD) · 짝 없는 서로게이트. */
+const BROKEN_CHARACTER = /\uFFFD|[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+const VALUE_CUT_REDUCTION = /^값 \d+개를 앞 500자로 잘랐습니다\(크기 상한\)$/;
+const END_CUT_REDUCTION = "상한을 넘어 끝을 잘랐습니다(크기 상한)";
+
+/** 맞춘 묶음의 글 — 상한 이하 · 깨진 글자 없음 · 줄인 것이 있고 그 줄마다 글의 '줄인 것' 구역에 있다. */
+function expectFittedText(fitted: IncidentEvidence, maximumBytes: number = INCIDENT_EVIDENCE_TEXT_MAXIMUM_BYTES): string {
+  const text = incidentEvidenceText(fitted);
+  expect(evidenceTextBytes(text)).toBeLessThanOrEqual(maximumBytes);
+  expect(text).not.toMatch(BROKEN_CHARACTER);
+  expect(new TextDecoder().decode(new TextEncoder().encode(text))).toBe(text);
+  expect(fitted.reductions.length).toBeGreaterThan(0);
+  const reductionsSection = sectionOf(text, "줄인 것");
+  for (const reduction of fitted.reductions) expect(reductionsSection).toContain(`- ${reduction}`);
+  return text;
+}
+
+function firstCodePoints(text: string, count: number): string {
+  return Array.from(text).slice(0, count).join("");
+}
+
+describe("깨끗한 작은 입력은 한 글자도 바뀌지 않는다(지금의 글 그대로)", () => {
+  it("감시 대상 DOWN — 창의 배포 · 그때 자원", () => {
+    const evidence = evidenceWith(logLines(3, (index) => `메시지 ${index}`));
+    expect(fitIncidentEvidence(evidence)).toEqual(evidence);
+    expect(incidentEvidenceText(fitIncidentEvidence(evidence))).toBe([
+      "# 문제: 감시 대상 DOWN — front",
+      "- 식별자: monitor:front",
+      "- 심한 정도: 위험",
+      "- 언제부터: 2026-11-25T05:40:00.000Z",
+      "",
+      "## 무엇이 · 언제부터",
+      "- 대상: front",
+      "- 상태: DOWN",
+      "- 이유: status 502",
+      "- DOWN 시각: 2026-11-25T05:40:00.000Z",
+      "- 서비스: front",
+      "",
+      "## 관련 알림",
+      "기간: 2026-11-25T04:40:00.000Z ~ 2026-11-25T06:40:00.000Z",
+      "- 2026-11-25T05:40:00.000Z monitor_down front 응답 없음: front",
+      "",
+      "## 로그",
+      "기간: 2026-11-25T05:30:00.000Z ~ 2026-11-25T05:50:00.000Z",
+      "서비스: front",
+      "- 2026-11-25T05:30:00.000Z error front req-0 메시지 0",
+      "- 2026-11-25T05:30:01.000Z warning front - 메시지 1",
+      "- 2026-11-25T05:30:02.000Z error front - 메시지 2",
+      "",
+      "## 배포",
+      "기간: 2026-11-25T04:40:00.000Z ~ 2026-11-25T05:40:00.000Z",
+      `- 2026-11-25T05:10:00.000Z backend ${"e".repeat(40)} failed cd_health req-deploy-7`,
+      "",
+      "## 자원",
+      "서비스 front · 기준 시각 2026-11-25T05:40:00.000Z · 앞뒤 5분",
+      "서버 s158 (front-app)",
+      "서버 값:",
+      "- CPU: 그때 97.5% · 창의 최대 99.0%",
+      "컨테이너 값: 기록 없음",
+    ].join("\n"));
+  });
+
+  it("자원 임계값 — 범위의 커밋 · 서버의 지금 값", () => {
+    const threshold = openIncidentsFrom(quietSources({ latest: ok(latest([serverLatest("s158")], [firing({ server: "s158", rule: "disk_warning", since: iso(NOW - 30 * MINUTE) })])) })).incidents[0];
+    const evidence = evidenceWith(logLines(3, (index) => `메시지 ${index}`), {
+      incident: threshold,
+      facts: [{ label: "서버", value: "s158" }, { label: "규칙", value: "디스크 경고" }],
+      deployments: { state: "value", value: { kind: "range", status: "range", baseRequestId: "req-ok-1", baseCommitSha: "c".repeat(40), headCommitSha: "b".repeat(40),
+        commits: [{ sha: "b".repeat(40), authorName: "jun", authoredAt: iso(NOW - HOUR), subject: "검색 수정", body: "", bodyTruncated: false }], truncated: true, relation: "ancestor", detailHref: "/deploys" } },
+      resources: { state: "value", value: { kind: "server", server: "s158", found: true, cpuText: "3.4%", memoryText: "12.5%", diskText: "86.0%", receivedAt: iso(NOW - 19 * SECOND), resourcesHref: "/resources" } },
+    });
+    expect(fitIncidentEvidence(evidence)).toEqual(evidence);
+    const text = incidentEvidenceText(fitIncidentEvidence(evidence));
+    expect(text.split("\n").slice(0, 8)).toEqual([
+      "# 문제: 자원 임계값 — 서버 s158 디스크 경고", "- 식별자: resource:s158:disk_warning", "- 심한 정도: 경고", "- 언제부터: 2026-11-25T05:30:00.000Z",
+      "", "## 무엇이 · 언제부터", "- 서버: s158", "- 규칙: 디스크 경고",
+    ]);
+    expect(sectionOf(text, "배포")).toBe([
+      "앞 성공 배포: req-ok-1 " + "c".repeat(40), "이번 배포 커밋: " + "b".repeat(40), `- ${"b".repeat(40)} 검색 수정`, "(더 있음)", "",
+    ].join("\n"));
+    expect(sectionOf(text, "자원")).toBe("서버 s158: CPU 3.4% · 메모리 12.5% · 디스크 86.0%\n마지막 수신: 2026-11-25T05:59:41.000Z");
+  });
+});
+
+describe("크기의 상한은 언제나 지켜진다 — 줄이지 않던 칸도 값 하나에 500자, 그래도 넘으면 끝을 잘라 맞춘다", () => {
+  it("감시 대상 이름 6만 자 — 머리의 대상 · 무엇이의 대상을 앞 500자로 자르고, 줄인 것에 적는다", async () => {
+    const name = "x".repeat(60_000);
+    const sources = quietSources({ monitors: ok(monitors([monitor({ name, status: "DOWN", downSince: iso(DOWN_AT), reason: "status 502" })])) });
+    const fitted = fitIncidentEvidence(await builtEvidence(sources, "monitor_down"));
+    const text = expectFittedText(fitted);
+    expect(text.split("\n")[0]).toBe(`# 문제: 감시 대상 DOWN — ${"x".repeat(500)}`);
+    expect(sectionOf(text, "무엇이 · 언제부터").split("\n")).toContain(`- 대상: ${"x".repeat(500)}`);
+    expect(fitted.reductions.filter((reduction) => VALUE_CUT_REDUCTION.test(reduction))).toHaveLength(1);
+    expect(fitted.reductions).not.toContain(END_CUT_REDUCTION);
+  });
+
+  it("값 하나의 500자는 코드 포인트로 센다 — 이모지 이름도 깨지지 않는다", async () => {
+    const name = "😀".repeat(30_000);
+    const sources = quietSources({ monitors: ok(monitors([monitor({ name, status: "DOWN", downSince: iso(DOWN_AT) })])) });
+    const text = expectFittedText(fitIncidentEvidence(await builtEvidence(sources, "monitor_down")));
+    expect(sectionOf(text, "무엇이 · 언제부터").split("\n")).toContain(`- 대상: ${"😀".repeat(500)}`);
+  });
+
+  it("firing 대상 6만 자 — 머리의 대상(`서버 … <대상>`)과 무엇이의 대상을 앞 500자로", async () => {
+    const target = "t".repeat(60_000);
+    const sources = quietSources({ latest: ok(latest([serverLatest("s158")], [firing({ server: "s158", rule: "restarts", target, since: iso(NOW - 30 * MINUTE) })])) });
+    const fitted = fitIncidentEvidence(await builtEvidence(sources, "resource_threshold"));
+    const text = expectFittedText(fitted);
+    expect(text.split("\n")[0]).toBe(`# 문제: 자원 임계값 — ${firstCodePoints(`서버 s158 컨테이너 재시작 반복 ${target}`, 500)}`);
+    expect(sectionOf(text, "무엇이 · 언제부터").split("\n")).toContain(`- 대상: ${"t".repeat(500)}`);
+    expect(fitted.reductions.some((reduction) => VALUE_CUT_REDUCTION.test(reduction))).toBe(true);
+  });
+
+  it("알림 종류 6만 자 — 상한 안 · 줄인 것이 글에 있다", async () => {
+    const sources = quietSources({ latest: ok(latest([serverLatest("s158")], [firing({ server: "s158", rule: "cpu", since: iso(NOW - 30 * MINUTE) })])) });
+    const records = [alertRecord({ at: iso(NOW - 5 * MINUTE), kind: "k".repeat(60_000), key: "resource:s158:cpu", title: "CPU 넘음" })];
+    const fitted = fitIncidentEvidence(await builtEvidence(sources, "resource_threshold", quietDependencies({ alertRecords: { listIncidents: async () => ok(records) } })));
+    expectFittedText(fitted);
+  });
+
+  /** 앞 1시간의 배포 200건 — 실패 단계마다 한글 · 이모지가 섞인 긴 글(500자로 잘라도 200건이면 상한을 넘는다). */
+  function longStageDeployments(): IncidentEvidence {
+    const failedStage = "가😀".repeat(1_000);
+    const deployments = Array.from({ length: 200 }, (_, index) => {
+      const summary = deployment({ requestId: `req-${String(index).padStart(3, "0")}`, service: "backend", commitSha: "e".repeat(40), state: "failed", failedStage, acceptedAt: iso(DOWN_AT - (index + 1) * 10 * SECOND) });
+      return { ...summary, href: `/deploys?selected=${summary.requestId}` };
+    });
+    return evidenceWith(logLines(3, (index) => `메시지 ${index}`), {
+      deployments: { state: "value", value: { kind: "window", from: iso(DOWN_AT - HOUR), to: iso(DOWN_AT), coversWindow: true, deployments } },
+    });
+  }
+
+  it("배포 200건 × 긴 실패 단계 — 값마다 500자로 자르고, 그래도 넘으면 끝을 잘라 맞춘다(둘 다 줄인 것에)", () => {
+    const fitted = fitIncidentEvidence(longStageDeployments());
+    const text = expectFittedText(fitted);
+    expect(fitted.reductions.some((reduction) => VALUE_CUT_REDUCTION.test(reduction))).toBe(true);
+    expect(fitted.reductions).toContain(END_CUT_REDUCTION);
+    expect(sectionOf(text, "배포").split("\n")).toContain(`- ${iso(DOWN_AT - 10 * SECOND)} backend ${"e".repeat(40)} failed ${"가😀".repeat(250)} req-000`);
+  });
+
+  it.each([0, 1, 2, 3, 4, 5, 6])("끝을 자른 자리가 멀티바이트 글자의 어느 바이트여도 깨진 글자가 없다(상한 30000 + %i)", (offset) => {
+    const maximumBytes = 30_000 + offset;
+    const fitted = fitIncidentEvidence(longStageDeployments(), maximumBytes);
+    expectFittedText(fitted, maximumBytes);
+    expect(fitted.reductions).toContain(END_CUT_REDUCTION);
   });
 });

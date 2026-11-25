@@ -86,6 +86,8 @@ export interface IncidentList {
   incidents: OpenIncident[];
   unchecked: IncidentSourceFailure[];
   errorLogsTruncated: boolean;
+  /** 목록이 확인한 범위의 줄(명세 ⑫ §11 5) — 뼈대: 구현 전에는 언제나 []. */
+  scopeNotes: string[];
   emptyText: string | null;
 }
 
@@ -184,7 +186,7 @@ export function openIncidentsFrom(sources: IncidentSources): IncidentList {
   collect("errorLogs", sources.errorLogs, errorLogIncidents);
   incidents.sort(compareIncidents);
   const emptyText = incidents.length > 0 ? null : unchecked.length === 0 ? INCIDENT_LIST_TEXT.empty : INCIDENT_LIST_TEXT.emptyWithinChecked;
-  return { incidents, unchecked, errorLogsTruncated: sources.errorLogs.ok && sources.errorLogs.value.nextBefore !== null, emptyText };
+  return { incidents, unchecked, errorLogsTruncated: sources.errorLogs.ok && sources.errorLogs.value.nextBefore !== null, scopeNotes: [], emptyText };
 }
 
 /** 오류 수의 글 — `오류 N건` · 상한이면 `오류 N건 이상`. */

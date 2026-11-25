@@ -121,6 +121,18 @@ describe("서버 자원 카드 — 울리는 임계값에서 그 문제로", () 
     expect(card).toContain('href="/incidents?incident=resource%3A158%3Adisk_critical"');
   });
 
+  it("임계값 링크에 접근 가능한 이름 — `<서버> <규칙의 이름> 문제 보기`(감시 대상 줄의 '문제 보기'와 같은 낱말)", async () => {
+    latestResponse = () => observeLatestBody([observeLatestServer("158")], [
+      observeFiring({ server: "158", rule: "disk_warning", severity: "warning" }), observeFiring({ server: "158", rule: "disk_critical", severity: "critical" }),
+    ]);
+    const html = await render();
+    const card = /<section[^>]*aria-labelledby="status-card-resources"[^>]*>([\s\S]*?)<\/section>/.exec(html)![1];
+    const href = escapedHref(incidentHref(resourceIncidentId("158", "disk_critical", null)));
+    const anchors = [...card.matchAll(/<a\b[^>]*>/g)].map((match) => match[0]).filter((tag) => tag.includes(href));
+    expect(anchors).toHaveLength(1);
+    expect(anchors[0]).toContain('aria-label="158 디스크 위험 문제 보기"');
+  });
+
   it("울리는 것도 DOWN 도 없으면 문제 화면으로 가는 링크가 없다(내비게이션의 /incidents 만)", async () => {
     expect(await render()).not.toContain('href="/incidents?incident=');
   });

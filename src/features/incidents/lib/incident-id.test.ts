@@ -96,6 +96,34 @@ describe("길이 상한 · 허용 밖 글자 → 줄인 꼴(sha256-<16자>)", ()
   });
 });
 
+describe("줄인 꼴의 해시는 부분의 경계를 지킨다(부분 안의 줄바꿈으로 경계가 섞이지 않는다)", () => {
+  it("resourceIncidentId(\"a\\nb\", \"c\", null) 과 resourceIncidentId(\"a\", \"b\\nc\", null) 은 다르다", () => {
+    const left = resourceIncidentId("a\nb", "c", null);
+    const right = resourceIncidentId("a", "b\nc", null);
+    expect(left).toMatch(HASHED_PATTERN("resource"));
+    expect(right).toMatch(HASHED_PATTERN("resource"));
+    expect(left).not.toBe(right);
+    expectUsableId(left);
+    expectUsableId(right);
+  });
+
+  it("대상이 있는 꼴 · 배포 실패의 꼴도 줄바꿈의 자리가 다르면 다른 식별자", () => {
+    const ids = [resourceIncidentId("a\nb", "c", null), resourceIncidentId("a", "b\nc", null), resourceIncidentId("a b", "c", "d\ne"), resourceIncidentId("a b", "c\nd", "e")];
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(deployIncidentId("a\nb", "c")).not.toBe(deployIncidentId("a", "b\nc"));
+  });
+
+  it("깨끗한 식별자(해시를 쓰지 않는 것)는 그대로", () => {
+    expect(resourceIncidentId("s158", "restarts", "front-app-green")).toBe("resource:s158:restarts:front-app-green");
+    expect(deployIncidentId("backend", "req-1")).toBe("deploy:backend:req-1");
+    expect(monitorIncidentId("front")).toBe("monitor:front");
+  });
+
+  it("같은 입력은 언제나 같은 줄인 꼴", () => {
+    expect(resourceIncidentId("a\nb", "c", null)).toBe(resourceIncidentId("a\nb", "c", null));
+  });
+});
+
 describe("isIncidentId — 주소로 받은 글자의 검사", () => {
   it.each([
     ["monitor:front", true], ["errors:llm", true], ["resource:sha256-0123456789abcdef", true],
