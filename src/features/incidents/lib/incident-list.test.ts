@@ -1,7 +1,8 @@
 /** 열린 문제의 목록(순수) — 명세 ⑫ §2 "열린 문제의 출처는 넷 … 급증 판정을 꾸며 내지 않는다" · "조회가 실패한 칸은 그 칸만 확인하지 못함". */
 import { describe, expect, it } from "vitest";
 import {
-  INCIDENT_LIST_TEXT, errorCountText, openIncidentsFrom, type IncidentList, type OpenIncident,
+  INCIDENT_LIST_TEXT, errorCountText, isUncovered, openIncidentsFrom, scopeNotesFrom, uncoveredScopes,
+  type IncidentList, type IncidentSources, type OpenIncident, type UncoveredScopes,
 } from "@/features/incidents/lib/incident-list";
 import { deployIncidentId, errorLogsIncidentId, monitorIncidentId, resourceIncidentId } from "@/features/incidents/lib/incident-id";
 import {
@@ -252,6 +253,168 @@ describe("목록이 확인한 범위를 드러낸다(scopeNotes — 감시 대�
 
   it("출처가 실패했으면 그 출처의 범위 줄은 없다(확인하지 못함 줄이 이미 있다)", () => {
     expect(openIncidentsFrom(quietSources({ monitors: UNREACHABLE, deployments: UNREACHABLE })).scopeNotes).toEqual([]);
+  });
+});
+
+// ── 덮지 못한 범위(명세 ⑫ §12 1) ─────────────────────────
+
+const NONE = { all: false, names: [] };
+function scopes(overrides: Partial<Record<keyof UncoveredScopes, { all: boolean; names: string[] }>> = {}): UncoveredScopes {
+  return { monitor_down: NONE, deploy_failed: NONE, resource_threshold: NONE, error_logs: NONE, ...overrides };
+}
+
+function serviceDeployments(services: string[], count: number) {
+  return Array.from({ length: count }, (_, index) => deployment({ service: services[index % services.length], acceptedAt: iso(NOW - HOUR - index * MINUTE) }));
+}
+
+const FULL_ERROR_PAGE = logPage(Array.from({ length: 500 }, () => logLine({ service: "llm" })), { nextBefore: "cursor" });
+
+describe("uncoveredScopes — 출처마다 덮지 못한 범위를 한 값으로", () => {
+  it("출처가 모두 성공이고 상한 · 모르는 상태가 없으면 어느 종류도 덮지 못한 범위가 없다", () => {
+    expect(uncoveredScopes(quietSources())).toEqual(scopes());
+  });
+
+  it("출처 전체 실패 → 그 종류 all · firing 칸이 없어도 자원 임계값 all", () => {
+    expect(uncoveredScopes(quietSources({ monitors: UNREACHABLE }))).toEqual(scopes({ monitor_down: { all: true, names: [] } }));
+    expect(uncoveredScopes(quietSources({ deployments: UNREACHABLE }))).toEqual(scopes({ deploy_failed: { all: true, names: [] } }));
+    expect(uncoveredScopes(quietSources({ latest: UNREACHABLE }))).toEqual(scopes({ resource_threshold: { all: true, names: [] } }));
+    expect(uncoveredScopes(quietSources({ latest: ok(latest([], null)) }))).toEqual(scopes({ resource_threshold: { all: true, names: [] } }));
+    expect(uncoveredScopes(quietSources({ errorLogs: UNREACHABLE }))).toEqual(scopes({ error_logs: { all: true, names: [] } }));
+  });
+
+  it("오류 로그가 상한을 채웠으면 오류 로그 all(목록에 없는 서비스는 셈에서 빠졌을 수 있다)", () => {
+    expect(uncoveredScopes(quietSources({ errorLogs: ok(FULL_ERROR_PAGE) }))).toEqual(scopes({ error_logs: { all: true, names: [] } }));
+  });
+
+  it("배포 이력이 200건이면 그 안에 보이지 않은 서비스(DEPLOY_SERVICES 차례) · 199건이면 없음 · 모두 보였으면 없음", () => {
+    expect(uncoveredScopes(quietSources({ deployments: ok(serviceDeployments(["observe", "front"], 200)) })).deploy_failed)
+      .toEqual({ all: false, names: ["backend", "llm", "alert", "admin"] });
+    expect(uncoveredScopes(quietSources({ deployments: ok(serviceDeployments(["front"], 199)) })).deploy_failed).toEqual(NONE);
+    expect(uncoveredScopes(quietSources({ deployments: ok(serviceDeployments(["front", "backend", "llm", "alert", "observe", "admin"], 200)) })).deploy_failed).toEqual(NONE);
+  });
+
+  it("상태를 모르는 감시 대상(UNKNOWN)의 이름(받은 차례) — UP · DOWN 은 아니다", () => {
+    const sources = quietSources({ monitors: ok(monitors([
+      monitor({ name: "llm", status: "UNKNOWN" }), monitor({ name: "front", status: "UP" }), monitor({ name: "backend", status: "DOWN" }), monitor({ name: "alert", status: "UNKNOWN" }),
+    ])) });
+    expect(uncoveredScopes(sources).monitor_down).toEqual({ all: false, names: ["llm", "alert"] });
+  });
+
+  it("목록은 같은 값을 싣는다(list.uncovered = uncoveredScopes(sources))", () => {
+    const sources = quietSources({ monitors: ok(monitors([monitor({ name: "front", status: "UNKNOWN" })])), deployments: ok(serviceDeployments(["front"], 200)), errorLogs: UNREACHABLE });
+    expect(openIncidentsFrom(sources).uncovered).toEqual(uncoveredScopes(sources));
+  });
+});
+
+describe("scopeNotesFrom — 목록의 범위 줄은 덮지 못한 범위의 값에서 나온다", () => {
+  it("값이 비면 줄이 없다", () => {
+    expect(scopeNotesFrom(scopes())).toEqual([]);
+  });
+
+  it("감시 대상 이름 수 → '감시 대상 N개는 아직 상태를 모름'(값을 바꾸면 글이 바뀐다)", () => {
+    expect(scopeNotesFrom(scopes({ monitor_down: { all: false, names: ["a"] } }))).toEqual(["감시 대상 1개는 아직 상태를 모름"]);
+    expect(scopeNotesFrom(scopes({ monitor_down: { all: false, names: ["a", "b", "c"] } }))).toEqual(["감시 대상 3개는 아직 상태를 모름"]);
+  });
+
+  it("배포의 이름 → 그 서비스들(DEPLOY_SERVICES 차례), 감시 대상 줄 다음", () => {
+    expect(scopeNotesFrom(scopes({ deploy_failed: { all: false, names: ["llm"] } }))).toEqual(["배포: 최근 200건 안에서만 확인 — llm 은 확인하지 못함"]);
+    expect(scopeNotesFrom(scopes({ monitor_down: { all: false, names: ["x", "y"] }, deploy_failed: { all: false, names: ["admin", "backend"] } }))).toEqual([
+      "감시 대상 2개는 아직 상태를 모름", "배포: 최근 200건 안에서만 확인 — backend, admin 은 확인하지 못함",
+    ]);
+  });
+
+  it("종류 전체(all)는 범위 줄이 아니라 확인하지 못한 출처의 줄로 드러난다 — scopeNotes 에 더하지 않는다", () => {
+    expect(scopeNotesFrom(scopes({ monitor_down: { all: true, names: [] }, deploy_failed: { all: true, names: [] }, error_logs: { all: true, names: [] } }))).toEqual([]);
+  });
+
+  it("목록의 scopeNotes = scopeNotesFrom(list.uncovered)", () => {
+    const sources = quietSources({ monitors: ok(monitors([monitor({ name: "front", status: "UNKNOWN" }), monitor({ name: "llm", status: "UNKNOWN" })])), deployments: ok(serviceDeployments(["front"], 200)) });
+    const list = openIncidentsFrom(sources);
+    expect(list.scopeNotes).toEqual(scopeNotesFrom(list.uncovered));
+    expect(list.scopeNotes).toEqual(["감시 대상 2개는 아직 상태를 모름", "배포: 최근 200건 안에서만 확인 — backend, llm, alert, observe, admin 은 확인하지 못함"]);
+  });
+});
+
+describe("isUncovered — 고른 식별자가 덮지 못한 범위에 드는가", () => {
+  it.each([
+    ["종류 전체 — 그 종류의 어떤 식별자든", scopes({ deploy_failed: { all: true, names: [] } }), deployIncidentId("front", "r1"), true],
+    ["종류 전체 — 다른 종류는 아니다", scopes({ deploy_failed: { all: true, names: [] } }), monitorIncidentId("front"), false],
+    ["보이지 않은 서비스의 배포", scopes({ deploy_failed: { all: false, names: ["llm"] } }), deployIncidentId("llm", "r999"), true],
+    ["보인 서비스의 배포", scopes({ deploy_failed: { all: false, names: ["llm"] } }), deployIncidentId("front", "r1"), false],
+    ["해시 꼴 배포(서비스를 알 수 없음) · 보이지 않은 서비스가 있다", scopes({ deploy_failed: { all: false, names: ["llm"] } }), deployIncidentId("front", "r".repeat(70)), true],
+    ["해시 꼴 배포 · 보이지 않은 서비스가 없다", scopes(), deployIncidentId("front", "r".repeat(70)), false],
+    ["상태를 모르는 감시 대상", scopes({ monitor_down: { all: false, names: ["front"] } }), monitorIncidentId("front"), true],
+    ["상태를 아는 다른 감시 대상", scopes({ monitor_down: { all: false, names: ["front"] } }), monitorIncidentId("backend"), false],
+    ["해시 꼴 감시 대상 이름도 그 이름이면", scopes({ monitor_down: { all: false, names: ["front app"] } }), monitorIncidentId("front app"), true],
+    ["오류 로그 all", scopes({ error_logs: { all: true, names: [] } }), errorLogsIncidentId("backend"), true],
+    ["자원 임계값 all", scopes({ resource_threshold: { all: true, names: [] } }), resourceIncidentId("s9", "cpu", null), true],
+    ["아무 범위도 없음", scopes(), errorLogsIncidentId("backend"), false],
+  ] as [string, UncoveredScopes, string, boolean][])("%s", (_label, value, id, expected) => {
+    expect(isUncovered(value, id)).toBe(expected);
+  });
+});
+
+describe("목록과 판정이 어긋나지 않는다 — 목록이 '확인하지 못함'이라 말한 범위의 식별자는 덮지 못한 범위, 말하지 않았으면 덮었다", () => {
+  const MONITOR_CHOICES: [string, IncidentSources["monitors"], string[]][] = [
+    ["감시 대상 모두 앎", ok(monitors([monitor({ name: "front" }), monitor({ name: "backend" })])), []],
+    ["front 상태 모름", ok(monitors([monitor({ name: "front", status: "UNKNOWN" }), monitor({ name: "backend" })])), ["front"]],
+    ["감시 대상 실패", UNREACHABLE, []],
+  ];
+  const DEPLOY_CHOICES: [string, IncidentSources["deployments"]][] = [
+    ["배포 2건", ok([deployment({ service: "front" }), deployment({ service: "backend" })])],
+    ["배포 200건 front 만", ok(serviceDeployments(["front"], 200))],
+    ["배포 200건 모든 서비스", ok(serviceDeployments(["front", "backend", "llm", "alert", "observe", "admin"], 200))],
+    ["배포 199건 front 만", ok(serviceDeployments(["front"], 199))],
+    ["배포 실패", UNREACHABLE],
+  ];
+  const ERROR_CHOICES: [string, IncidentSources["errorLogs"]][] = [
+    ["오류 로그 1건", ok(logPage([logLine({ service: "llm" })]))], ["오류 로그 500건", ok(FULL_ERROR_PAGE)], ["오류 로그 실패", UNREACHABLE],
+  ];
+  const LATEST_CHOICES: [string, IncidentSources["latest"]][] = [
+    ["임계값 정상", ok(latest([serverLatest("s158")], []))], ["firing 칸 없음", ok(latest([serverLatest("s158")], null))], ["latest 실패", UNREACHABLE],
+  ];
+  /** 목록에 없는 문제의 식별자 — 감시 대상(이름) · 배포(서비스) · 해시 꼴 배포 · 오류 로그 · 자원 임계값. */
+  const CANDIDATES: { id: string; kind: OpenIncident["kind"]; name: string | null }[] = [
+    { id: monitorIncidentId("front"), kind: "monitor_down", name: "front" }, { id: monitorIncidentId("backend"), kind: "monitor_down", name: "backend" },
+    { id: deployIncidentId("front", "r-old"), kind: "deploy_failed", name: "front" }, { id: deployIncidentId("llm", "r999"), kind: "deploy_failed", name: "llm" },
+    { id: deployIncidentId("admin", "r".repeat(70)), kind: "deploy_failed", name: null },
+    { id: errorLogsIncidentId("backend"), kind: "error_logs", name: "backend" }, { id: resourceIncidentId("s9", "cpu", null), kind: "resource_threshold", name: null },
+  ];
+  const SOURCE_OF_KIND = { monitor_down: "monitors", deploy_failed: "deployments", resource_threshold: "thresholds", error_logs: "errorLogs" } as const;
+
+  /** 목록이 말한 것만으로 — 그 식별자의 범위를 확인하지 못했다고 말했는가. */
+  function listSaysUnchecked(list: IncidentList, unknownMonitors: string[], candidate: (typeof CANDIDATES)[number]): boolean {
+    if (list.unchecked.some((failure) => failure.source === SOURCE_OF_KIND[candidate.kind])) return true;
+    if (candidate.kind === "error_logs") return list.errorLogsTruncated;
+    if (candidate.kind === "monitor_down") {
+      return list.scopeNotes.includes(`감시 대상 ${unknownMonitors.length}개는 아직 상태를 모름`) && unknownMonitors.includes(candidate.name!);
+    }
+    if (candidate.kind === "deploy_failed") {
+      const note = list.scopeNotes.find((line) => line.startsWith("배포: 최근 200건 안에서만 확인 — "));
+      if (note === undefined) return false;
+      const unseen = note.slice("배포: 최근 200건 안에서만 확인 — ".length, -" 은 확인하지 못함".length).split(", ");
+      return candidate.name === null || unseen.includes(candidate.name);
+    }
+    return false;
+  }
+
+  const combinations = MONITOR_CHOICES.flatMap((monitorChoice) => DEPLOY_CHOICES.flatMap((deployChoice) => ERROR_CHOICES.flatMap((errorChoice) =>
+    LATEST_CHOICES.map((latestChoice) => [monitorChoice, deployChoice, errorChoice, latestChoice] as const))));
+
+  it(`조합이 비지 않았다(${combinations.length}개)`, () => {
+    expect(combinations.length).toBe(135);
+  });
+
+  it.each(combinations.map((combination) => [combination.map(([label]) => label).join(" · "), combination] as const))("%s", (_label, combination) => {
+    const [[, monitorsResult, unknownMonitors], [, deploymentsResult], [, errorLogsResult], [, latestResult]] = combination;
+    const list = openIncidentsFrom({ monitors: monitorsResult, deployments: deploymentsResult, errorLogs: errorLogsResult, latest: latestResult });
+    const listSaysNothing = list.unchecked.length === 0 && !list.errorLogsTruncated && list.scopeNotes.length === 0;
+    for (const candidate of CANDIDATES) {
+      if (list.incidents.some((incident) => incident.id === candidate.id)) continue;
+      const expected = listSaysUnchecked(list, unknownMonitors, candidate);
+      expect(isUncovered(list.uncovered, candidate.id), candidate.id).toBe(expected);
+      if (listSaysNothing) expect(isUncovered(list.uncovered, candidate.id), `${candidate.id} — 목록이 아무 범위도 말하지 않았다`).toBe(false);
+    }
   });
 });
 

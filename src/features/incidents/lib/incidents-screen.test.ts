@@ -3,6 +3,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { INCIDENT_LIST_CALLS, SELECTED_INCIDENT_TEXT, collectIncidentsScreen, type IncidentsScreenOptions } from "@/features/incidents/lib/incidents-screen";
 import { INCIDENT_EVIDENCE_MAXIMUM_CALLS } from "@/features/incidents/lib/incident-evidence";
+import { isUncovered } from "@/features/incidents/lib/incident-list";
 import { fitIncidentEvidence, incidentEvidenceText } from "@/features/incidents/lib/incident-evidence-text";
 import { deployIncidentId, errorLogsIncidentId, monitorIncidentId, resourceIncidentId } from "@/features/incidents/lib/incident-id";
 import {
@@ -280,5 +281,97 @@ describe("고른 문제가 지금은 목록에 없을 때", () => {
     const fetch = fakeServers({ [`${FAKE_OBSERVE_URL}/metrics/latest`]: () => jsonBody({ success: true, data: { servers: [latestServerRow("s158")] } }) });
     const data = await collectIncidentsScreen(options(fetch), resourceIncidentId("s158", "disk_warning", null));
     expect(data.selected?.kind).toBe("unchecked");
+  });
+});
+
+describe("덮지 못한 범위의 문제를 고르면 '닫힘'이 아니라 '확인하지 못함' — 목록과 같은 값을 읽는다(명세 ⑫ §12 1)", () => {
+  const FRONT_ONLY_200 = () => jsonBody(deploymentsBody([
+    deploymentRow({ request_id: "req-front-new", service: "front", state: "succeeded", accepted_at: iso(NOW - 2 * 60 * MINUTE) }),
+    deploymentRow({ request_id: "req-front-old", service: "front", state: "failed", failed_stage: "ci_test", accepted_at: iso(NOW - 3 * 60 * MINUTE) }),
+    ...Array.from({ length: 198 }, (_, index) => deploymentRow({ request_id: `req-front-${index}`, service: "front", accepted_at: iso(NOW - 4 * 60 * MINUTE - index * MINUTE) })),
+  ]));
+  const ALL_SERVICES_200 = () => jsonBody(deploymentsBody(Array.from({ length: 200 }, (_, index) => deploymentRow({
+    request_id: `req-${index}`, service: ["front", "backend", "llm", "alert", "observe", "admin"][index % 6], accepted_at: iso(NOW - 2 * 60 * MINUTE - index * MINUTE),
+  }))));
+  const FRONT_UNKNOWN = () => jsonBody(monitorsBody([
+    { name: "front", status: "UNKNOWN", down_since: "", reason: "연결 실패" }, { name: "backend", status: "UP", down_since: "", reason: "" },
+  ]));
+  const HASHED_DEPLOY = deployIncidentId("llm", "r".repeat(70));
+
+  it("재현 — 배포 이력이 front 200건이면 deploy:llm:r999 는 unchecked(목록은 llm 을 확인하지 못했다고 말한다)", async () => {
+    const fetch = fakeServers({ [`${FAKE_DEPLOY_MASTER_URL}/deploys`]: FRONT_ONLY_200 });
+    const data = await collectIncidentsScreen(options(fetch), "deploy:llm:r999");
+    expect(data.list.scopeNotes).toContain("배포: 최근 200건 안에서만 확인 — backend, llm, alert, observe, admin 은 확인하지 못함");
+    expect(data.selected).toEqual({ kind: "unchecked", incidentId: "deploy:llm:r999" });
+    expect(fetch).toHaveBeenCalledTimes(INCIDENT_LIST_CALLS);
+  });
+
+  it("재현 — front 가 UNKNOWN 이면 monitor:front 는 unchecked(목록은 상태를 모른다고 말한다)", async () => {
+    const fetch = fakeServers({ [`${FAKE_ALERT_URL}/monitors`]: FRONT_UNKNOWN });
+    const data = await collectIncidentsScreen(options(fetch), monitorIncidentId("front"));
+    expect(data.list.scopeNotes).toContain("감시 대상 1개는 아직 상태를 모름");
+    expect(data.selected).toEqual({ kind: "unchecked", incidentId: monitorIncidentId("front") });
+  });
+
+  it.each([
+    ["배포 200건 안에 보인 서비스의 지난 실패 — 실제로 확인했다", "closed", FRONT_ONLY_200, deployIncidentId("front", "req-front-old")],
+    ["보이지 않은 서비스가 있고 식별자가 해시 꼴(서비스를 알 수 없음)", "unchecked", FRONT_ONLY_200, HASHED_DEPLOY],
+    ["모든 서비스가 보인 200건 — 해시 꼴도", "closed", ALL_SERVICES_200, HASHED_DEPLOY],
+    ["모든 서비스가 보인 200건 — llm 의 없는 배포", "closed", ALL_SERVICES_200, "deploy:llm:r999"],
+  ] as const)("배포 — %s → %s", async (_label, expected, deploys, id) => {
+    const data = await collectIncidentsScreen(options(fakeServers({ [`${FAKE_DEPLOY_MASTER_URL}/deploys`]: deploys })), id);
+    expect(data.selected).toEqual({ kind: expected, incidentId: id });
+  });
+
+  it.each([
+    ["deploy:llm:r999"], ["deploy:front:r1"], [HASHED_DEPLOY],
+  ])("배포가 200건 미만(전부 확인)이면 %s 는 closed", async (id) => {
+    const data = await collectIncidentsScreen(options(fakeServers()), id);
+    expect(data.selected).toEqual({ kind: "closed", incidentId: id });
+  });
+
+  it("UNKNOWN 이 아닌 감시 대상(UP)은 closed · A 가 UNKNOWN 이어도 B 를 고르면 closed", async () => {
+    const quiet = await collectIncidentsScreen(options(fakeServers()), monitorIncidentId("backend"));
+    expect(quiet.selected).toEqual({ kind: "closed", incidentId: monitorIncidentId("backend") });
+    const withUnknown = await collectIncidentsScreen(options(fakeServers({ [`${FAKE_ALERT_URL}/monitors`]: FRONT_UNKNOWN })), monitorIncidentId("backend"));
+    expect(withUnknown.selected).toEqual({ kind: "closed", incidentId: monitorIncidentId("backend") });
+  });
+
+  /** 목록이 말한 범위 ↔ 고른 결과. 기존의 두 경우(출처 실패 · 오류 로그 500건)를 함께 둔다. */
+  const FULL_ERRORS: Handler = (url) => {
+    const listing = url.searchParams.get("level") === "error" && url.searchParams.get("service") === null;
+    const rows = listing ? Array.from({ length: 500 }, (_, index) => logRow({ id: `${NOW - MINUTE}-${index}`, service: "llm" })) : [];
+    return jsonBody(logsBody(rows, url.searchParams.get("from")!, url.searchParams.get("to")!, listing ? `${NOW - 10 * MINUTE}-0` : ""));
+  };
+  const FAILING: Handler = () => textResponse("", 503);
+  const SCENARIOS: [label: string, overrides: Record<string, Handler>, uncheckedIds: string[]][] = [
+    ["모두 정상", {}, []],
+    ["배포 front 200건", { [`${FAKE_DEPLOY_MASTER_URL}/deploys`]: FRONT_ONLY_200 }, ["deploy:llm:r999", HASHED_DEPLOY]],
+    ["배포 모든 서비스 200건", { [`${FAKE_DEPLOY_MASTER_URL}/deploys`]: ALL_SERVICES_200 }, []],
+    ["front UNKNOWN", { [`${FAKE_ALERT_URL}/monitors`]: FRONT_UNKNOWN }, [monitorIncidentId("front")]],
+    ["감시 대상 실패", { [`${FAKE_ALERT_URL}/monitors`]: FAILING }, [monitorIncidentId("front"), monitorIncidentId("backend")]],
+    ["배포 이력 실패", { [`${FAKE_DEPLOY_MASTER_URL}/deploys`]: FAILING }, ["deploy:llm:r999", deployIncidentId("front", "req-front-old"), HASHED_DEPLOY]],
+    ["오류 로그 500건", { [`${FAKE_OBSERVE_URL}/logs`]: FULL_ERRORS }, [errorLogsIncidentId("backend")]],
+    ["firing 칸 없음", { [`${FAKE_OBSERVE_URL}/metrics/latest`]: () => jsonBody({ success: true, data: { servers: [latestServerRow("s158")] } }) }, [resourceIncidentId("s9", "cpu", null)]],
+    ["배포 front 200건 + front UNKNOWN + 오류 로그 500건", {
+      [`${FAKE_DEPLOY_MASTER_URL}/deploys`]: FRONT_ONLY_200, [`${FAKE_ALERT_URL}/monitors`]: FRONT_UNKNOWN, [`${FAKE_OBSERVE_URL}/logs`]: FULL_ERRORS,
+    }, ["deploy:llm:r999", HASHED_DEPLOY, monitorIncidentId("front"), errorLogsIncidentId("backend")]],
+  ];
+  const CANDIDATES = [
+    monitorIncidentId("front"), monitorIncidentId("backend"), "deploy:llm:r999", deployIncidentId("front", "req-front-old"), HASHED_DEPLOY,
+    errorLogsIncidentId("backend"), resourceIncidentId("s9", "cpu", null),
+  ];
+
+  it.each(SCENARIOS)("목록과 판정이 같은 값 — %s", async (_label, overrides, uncheckedIds) => {
+    for (const id of CANDIDATES) {
+      const data = await collectIncidentsScreen(options(fakeServers(overrides)), id);
+      if (data.selected?.kind === "evidence") continue;   // 열려 있는 문제(목록에 있음)
+      const expected = uncheckedIds.includes(id) ? "unchecked" : "closed";
+      expect(data.selected, id).toEqual({ kind: expected, incidentId: id });
+      // 판정은 목록이 실은 값에서 나온다
+      expect(data.selected?.kind, `${id} — list.uncovered 와 다름`).toBe(isUncovered(data.list.uncovered, id) ? "unchecked" : "closed");
+      // 목록이 아무 범위도 말하지 않으면 없는 식별자는 closed
+      if (data.list.unchecked.length === 0 && !data.list.errorLogsTruncated && data.list.scopeNotes.length === 0) expect(data.selected?.kind, id).toBe("closed");
+    }
   });
 });

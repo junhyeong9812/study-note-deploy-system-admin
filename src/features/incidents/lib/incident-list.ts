@@ -93,7 +93,37 @@ export interface IncidentList {
   errorLogsTruncated: boolean;
   /** 목록이 확인한 범위의 줄(감시 대상 줄 · 배포 줄 차례 — 머리 주석) */
   scopeNotes: string[];
+  /** 종류마다 덮지 못한 범위(명세 ⑫ §12 1) — 목록의 줄과 고른 문제의 판정이 이 값을 읽는다. 뼈대: 구현 전. */
+  uncovered: UncoveredScopes;
   emptyText: string | null;
+}
+
+/** 한 종류에서 확인하지 못한 범위 — all: 그 종류 전체(출처 실패 · 오류 로그 상한) · names: 그 종류 안에서 확인하지 못한 이름
+ * (monitor_down = 상태를 모르는 감시 대상 이름(받은 차례) · deploy_failed = 배포 이력 상한 안에 보이지 않은 서비스(DEPLOY_SERVICES 차례) · 그 밖은 []). */
+export interface UncoveredScope {
+  all: boolean;
+  names: string[];
+}
+
+export type UncoveredScopes = Readonly<Record<IncidentKind, UncoveredScope>>;
+
+/** 뼈대(명세 ⑫ §12 1) — 구현 전에는 아무 범위도 덮지 못했다고 말하지 않는다. */
+export function uncoveredScopes(sources: IncidentSources): UncoveredScopes {
+  void sources;
+  const none = (): UncoveredScope => ({ all: false, names: [] });
+  return { monitor_down: none(), deploy_failed: none(), resource_threshold: none(), error_logs: none() };
+}
+
+/** 뼈대 — 고른 식별자가 덮지 못한 범위에 드는가. */
+export function isUncovered(scopes: UncoveredScopes, incidentId: string): boolean {
+  void scopes; void incidentId;
+  return false;
+}
+
+/** 뼈대 — 덮지 못한 범위의 값 → 목록의 scopeNotes 줄. */
+export function scopeNotesFrom(scopes: UncoveredScopes): string[] {
+  void scopes;
+  return [];
 }
 
 export interface IncidentSources {
@@ -207,7 +237,7 @@ export function openIncidentsFrom(sources: IncidentSources): IncidentList {
   incidents.sort(compareIncidents);
   const scopeNotes = scopeNotesOf(sources);
   const emptyText = incidents.length > 0 ? null : unchecked.length === 0 && scopeNotes.length === 0 ? INCIDENT_LIST_TEXT.empty : INCIDENT_LIST_TEXT.emptyWithinChecked;
-  return { incidents, unchecked, errorLogsTruncated: sources.errorLogs.ok && sources.errorLogs.value.nextBefore !== null, scopeNotes, emptyText };
+  return { incidents, unchecked, errorLogsTruncated: sources.errorLogs.ok && sources.errorLogs.value.nextBefore !== null, scopeNotes, uncovered: uncoveredScopes(sources), emptyText };
 }
 
 /** 오류 수의 글 — `오류 N건` · 상한이면 `오류 N건 이상`. */
