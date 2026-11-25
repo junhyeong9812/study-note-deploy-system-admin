@@ -1,8 +1,12 @@
-/** 요청 추적의 화면 모델(순수) — 요청 ID 하나의 로그 줄 → 서비스별 시간 줄 · 거친 차례 · 가장 긴 틈. 뼈대 — 구현 전(꼴과 이름만). */
+/** 요청 추적의 화면 모델(순수) — 요청 ID 하나의 로그 줄 → 서비스별 시간 줄 · 거친 차례 · 가장 긴 틈.
+ * 관측 서버 조회: `GET /logs?request_id&from=지금−30일&to=지금&limit=500` 한 번 → 꽉 찼으면(next_before) 더 있는지 확인 1회(limit 1) → 있으면 truncated.
+ * 확인이 실패하면 전체가 그 실패(잘리지 않았다고 두지 않는다). 이어 받기는 하지 않는다 — 보이는 것은 최근 500줄. */
+import { LOG_ID_PATTERN } from "@/features/log-trace/lib/log-trace-query";
 import type { LogClient } from "@/features/logs/lib/log-client";
-import type { LogEntryView } from "@/features/logs/lib/log-query";
+import type { LogEntryView, LogQuery } from "@/features/logs/lib/log-query";
 import type { RequestTraceQuery } from "@/features/request-trace/lib/request-trace-query";
-import type { UpstreamResult } from "@/shared/lib/upstream-result";
+import { parseIsoUtc } from "@/shared/lib/query-input";
+import { upstreamFailure, type UpstreamResult } from "@/shared/lib/upstream-result";
 
 /** 한 번에 받는 줄 수 = 관측 서버의 상한(LogController.kt MAX_LIMIT 500). */
 export const REQUEST_TRACE_MAXIMUM_LINES = 500;
@@ -23,6 +27,8 @@ export interface ServiceSegment {
   startOffsetMilliseconds: number;
   durationMilliseconds: number;
   lineCount: number;
+  /** 이 구간의 error 줄 수(막대의 모양으로 구분한다) */
+  errorCount: number;
   /** 전체 기간 대비 시작 위치 · 길이(0~1, 전체 기간이 0 이면 둘 다 0) */
   startFraction: number;
   lengthFraction: number;
@@ -87,14 +93,98 @@ export interface RequestTraceView {
   trace: UpstreamResult<RequestTrace> | null;
 }
 
-/** 줄(어떤 순서든) → 시간 줄. 줄이 없으면 null. 시각(at)은 parseIsoUtc 로 읽히는 줄만 넘긴다. */
+/** 로그 id(`밀리초-순번`)의 순번 — 같은 밀리초 안의 차례(관측 서버의 정렬 열쇠). */
+function sequenceOf(logId: string): number {
+  return Number(logId.slice(logId.indexOf("-") + 1));
+}
+
+function fractionOf(milliseconds: number, totalMilliseconds: number): number {
+  return totalMilliseconds === 0 ? 0 : milliseconds / totalMilliseconds;
+}
+
+/** 줄(어떤 순서든) → 시간 줄. 줄이 없으면 null. 시각(at)은 parseIsoUtc 로 읽히고 id 는 `밀리초-순번` 꼴인 줄만 넘긴다(buildRequestTrace 가 먼저 거른다). */
 export function buildRequestTimeline(lines: readonly LogEntryView[]): RequestTimeline | null {
-  void lines;
-  throw new Error("구현 전");
+  if (lines.length === 0) return null;
+  const ordered = lines
+    .map((entry) => ({ entry, milliseconds: parseIsoUtc(entry.at) ?? 0, sequence: sequenceOf(entry.id) }))
+    .sort((left, right) => left.milliseconds - right.milliseconds || left.sequence - right.sequence);
+  const startMilliseconds = ordered[0].milliseconds;
+  const totalMilliseconds = ordered[ordered.length - 1].milliseconds - startMilliseconds;
+  const timelineLines: RequestTimelineLine[] = ordered.map(({ entry, milliseconds }) => ({ ...entry, offsetMilliseconds: milliseconds - startMilliseconds }));
+
+  const lanes: ServiceLane[] = [];
+  const visits: string[] = [];
+  const gaps: TimelineGap[] = [];
+  let previous: RequestTimelineLine | null = null;
+  for (const line of timelineLines) {
+    let lane = lanes.find((candidate) => candidate.service === line.service);
+    if (lane === undefined) {
+      lane = {
+        service: line.service, firstAt: line.at, lastAt: line.at, startOffsetMilliseconds: line.offsetMilliseconds, durationMilliseconds: 0,
+        lineCount: 0, errorCount: 0, warningCount: 0, startFraction: 0, lengthFraction: 0, segments: [],
+      };
+      lanes.push(lane);
+    }
+    const isError = line.level === "error";
+    lane.lastAt = line.at;
+    lane.durationMilliseconds = line.offsetMilliseconds - lane.startOffsetMilliseconds;
+    lane.lineCount += 1;
+    if (isError) lane.errorCount += 1;
+    if (line.level === "warning") lane.warningCount += 1;
+    if (previous === null || previous.service !== line.service) {
+      // 다른 서비스의 줄 뒤에 다시 나타나면 새 구간 — 사이의 빈 곳을 한 구간으로 메우지 않는다
+      visits.push(line.service);
+      lane.segments.push({
+        firstAt: line.at, lastAt: line.at, startOffsetMilliseconds: line.offsetMilliseconds, durationMilliseconds: 0,
+        lineCount: 0, errorCount: 0, startFraction: 0, lengthFraction: 0,
+      });
+    }
+    const segment = lane.segments[lane.segments.length - 1];
+    segment.lastAt = line.at;
+    segment.durationMilliseconds = line.offsetMilliseconds - segment.startOffsetMilliseconds;
+    segment.lineCount += 1;
+    if (isError) segment.errorCount += 1;
+    if (previous !== null && line.offsetMilliseconds > previous.offsetMilliseconds) {
+      gaps.push({
+        beforeService: previous.service, afterService: line.service, beforeAt: previous.at, afterAt: line.at,
+        startOffsetMilliseconds: previous.offsetMilliseconds, durationMilliseconds: line.offsetMilliseconds - previous.offsetMilliseconds,
+      });
+    }
+    previous = line;
+  }
+  for (const lane of lanes) {
+    lane.startFraction = fractionOf(lane.startOffsetMilliseconds, totalMilliseconds);
+    lane.lengthFraction = fractionOf(lane.durationMilliseconds, totalMilliseconds);
+    for (const segment of lane.segments) {
+      segment.startFraction = fractionOf(segment.startOffsetMilliseconds, totalMilliseconds);
+      segment.lengthFraction = fractionOf(segment.durationMilliseconds, totalMilliseconds);
+    }
+  }
+  const longestGaps = gaps
+    .sort((left, right) => right.durationMilliseconds - left.durationMilliseconds || left.startOffsetMilliseconds - right.startOffsetMilliseconds)
+    .slice(0, TIMELINE_LONGEST_GAP_COUNT);
+  return {
+    startAt: timelineLines[0].at, endAt: timelineLines[timelineLines.length - 1].at, durationMilliseconds: totalMilliseconds,
+    lineCount: timelineLines.length, lanes, visits, lines: timelineLines, longestGaps,
+  };
 }
 
 /** 관측 서버 조회 + 시간 줄. logs 가 null 이면 not_configured(호출 없음). 거부(reject)하지 않는다. */
 export async function buildRequestTrace(logs: LogClient | null, query: RequestTraceQuery, now: number): Promise<UpstreamResult<RequestTrace>> {
-  void logs; void query; void now;
-  throw new Error("구현 전");
+  if (logs === null) return upstreamFailure("not_configured");
+  const traceQuery: LogQuery = {
+    from: new Date(now - REQUEST_TRACE_LOOKBACK_MILLISECONDS).toISOString(), to: new Date(now).toISOString(),
+    service: null, level: null, requestId: query.requestId, text: null, before: null, limit: REQUEST_TRACE_MAXIMUM_LINES,
+  };
+  const page = await logs.searchLogs(traceQuery);
+  if (!page.ok) return page;
+  // 시각 · id(정렬 열쇠)가 읽히지 않는 줄이 하나라도 있으면 시간 차 · 차례를 잴 수 없다 — 0 으로 숨기지 않는다
+  if (page.value.logs.some((entry) => parseIsoUtc(entry.at) === null || !LOG_ID_PATTERN.test(entry.id))) return upstreamFailure("unparseable");
+  let truncated = false;
+  if (page.value.nextBefore !== null) {
+    const probe = await logs.searchLogs({ ...traceQuery, before: page.value.nextBefore, from: page.value.from, to: page.value.to, limit: 1 });
+    if (!probe.ok) return probe;   // 조용히 "잘리지 않음"으로 두지 않는다
+    truncated = probe.value.logs.length > 0;
+  }
+  return { ok: true, value: { from: page.value.from, to: page.value.to, truncated, timeline: buildRequestTimeline(page.value.logs) } };
 }

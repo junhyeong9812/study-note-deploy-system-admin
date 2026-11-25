@@ -14,6 +14,7 @@ import type { TraceResourcesView } from "@/features/log-trace/lib/trace-resource
 import { TraceResourcesBlock } from "@/features/log-trace/ui/TraceResourcesBlock";
 import type { LogEntryView } from "@/features/logs/lib/log-query";
 import { LevelBadge, formatKoreanLogTime } from "@/features/logs/ui/LogTable";
+import { requestTraceHref } from "@/features/request-trace/ui/request-trace-address";
 import type { UpstreamFailure, UpstreamResult } from "@/shared/lib/upstream-result";
 import styles from "@/features/log-trace/ui/LogTracePanel.module.css";
 
@@ -100,6 +101,7 @@ function SelectedLogSection({ selected, requestHref, relatedRange }: {
                     <code className={styles.code}>{selected.value.requestId}</code>
                   </a>
                 )}
+              {selected.value.requestId !== "" && <> · <a href={requestTraceHref(selected.value.requestId)}>이 요청 추적</a></>}
             </dd>
           </dl>
           <pre className={styles.message}>{selected.value.message}</pre>
