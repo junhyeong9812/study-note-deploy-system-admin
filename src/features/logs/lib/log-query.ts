@@ -38,7 +38,7 @@ export interface LogQuery {
  * - limit: 없음·빈 값 = 100, 1~500 의 10진 정수 글자만.
  * - 같은 이름이 여러 번(배열)이면 거절. */
 const LOG_SERVICE_PATTERN = /^[a-z0-9-]{1,40}$/;
-const LOG_REQUEST_ID_PATTERN = /^[A-Za-z0-9_.-]{1,80}$/;
+export const LOG_REQUEST_ID_PATTERN = /^[A-Za-z0-9_.-]{1,80}$/;
 const LOG_CURSOR_PATTERN = /^\d{1,15}-\d{1,9}$/;
 /** to 만 있을 때 관측 서버가 쓰는 기간(그 앞 1시간). */
 const LOG_DEFAULT_RANGE_MILLISECONDS = 60 * 60 * 1000;

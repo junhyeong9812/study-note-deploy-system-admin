@@ -2,6 +2,7 @@
  * 관측 서버 조회: `GET /logs?request_id&from=지금−30일&to=지금&limit=500` 한 번 → 꽉 찼으면(next_before) 더 있는지 확인 1회(limit 1) → 있으면 truncated.
  * 확인이 실패하면 전체가 그 실패(잘리지 않았다고 두지 않는다). 이어 받기는 하지 않는다 — 보이는 것은 최근 500줄. */
 import { LOG_ID_PATTERN } from "@/features/log-trace/lib/log-trace-query";
+import { hasLinesBefore } from "@/features/log-trace/lib/log-trace-view";
 import type { LogClient } from "@/features/logs/lib/log-client";
 import type { LogEntryView, LogQuery } from "@/features/logs/lib/log-query";
 import type { RequestTraceQuery } from "@/features/request-trace/lib/request-trace-query";
@@ -64,7 +65,8 @@ export interface TimelineGap {
 export interface RequestTimeline {
   startAt: string;
   endAt: string;
-  durationMilliseconds: number;
+  /** 첫 줄부터 마지막 줄까지(밀리초). 줄이 하나뿐이면 잴 수 없어 null(0 으로 두지 않는다) */
+  durationMilliseconds: number | null;
   lineCount: number;
   /** 처음 나타난 차례 */
   lanes: ServiceLane[];
@@ -164,7 +166,7 @@ export function buildRequestTimeline(lines: readonly LogEntryView[]): RequestTim
     .sort((left, right) => right.durationMilliseconds - left.durationMilliseconds || left.startOffsetMilliseconds - right.startOffsetMilliseconds)
     .slice(0, TIMELINE_LONGEST_GAP_COUNT);
   return {
-    startAt: timelineLines[0].at, endAt: timelineLines[timelineLines.length - 1].at, durationMilliseconds: totalMilliseconds,
+    startAt: timelineLines[0].at, endAt: timelineLines[timelineLines.length - 1].at, durationMilliseconds: timelineLines.length === 1 ? null : totalMilliseconds,
     lineCount: timelineLines.length, lanes, visits, lines: timelineLines, longestGaps,
   };
 }
@@ -180,11 +182,7 @@ export async function buildRequestTrace(logs: LogClient | null, query: RequestTr
   if (!page.ok) return page;
   // 시각 · id(정렬 열쇠)가 읽히지 않는 줄이 하나라도 있으면 시간 차 · 차례를 잴 수 없다 — 0 으로 숨기지 않는다
   if (page.value.logs.some((entry) => parseIsoUtc(entry.at) === null || !LOG_ID_PATTERN.test(entry.id))) return upstreamFailure("unparseable");
-  let truncated = false;
-  if (page.value.nextBefore !== null) {
-    const probe = await logs.searchLogs({ ...traceQuery, before: page.value.nextBefore, from: page.value.from, to: page.value.to, limit: 1 });
-    if (!probe.ok) return probe;   // 조용히 "잘리지 않음"으로 두지 않는다
-    truncated = probe.value.logs.length > 0;
-  }
-  return { ok: true, value: { from: page.value.from, to: page.value.to, truncated, timeline: buildRequestTimeline(page.value.logs) } };
+  const truncated = await hasLinesBefore(logs, traceQuery, page.value);
+  if (!truncated.ok) return truncated;   // 조용히 "잘리지 않음"으로 두지 않는다
+  return { ok: true, value: { from: page.value.from, to: page.value.to, truncated: truncated.value, timeline: buildRequestTimeline(page.value.logs) } };
 }

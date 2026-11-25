@@ -1,4 +1,4 @@
-/** 요청 추적 화면의 본문(서버 컴포넌트) — 폼 · 잘못된 입력 · 실패 · 요약(전체 걸린 시간 · 줄 수 · 거친 차례) · 서비스별 시간 줄 표 · 가장 긴 틈 · 그 요청의 로그 · 한계 안내.
+/** 요청 추적 화면의 본문(서버 컴포넌트) — 폼 · 잘못된 입력 · 실패 · 요약(첫 줄부터 마지막 줄까지 · 줄 수 · 거친 차례) · 서비스별 시간 줄 표 · 가장 긴 틈 · 그 요청의 로그 · 한계 안내.
  * 받은 값(진입 함수의 결과)과 주소의 글자만 그린다 — 다른 서버를 부르지 않고, 서버 모듈 · 클라이언트 · 설정을 임포트하지 않는다.
  * 폼은 GET 제출, 로그 화면으로 가는 것은 링크라 브라우저 스크립트 없이 동작한다.
  * 막대는 꾸밈(aria-hidden) — 시작 · 걸린 시간 · 줄 수 · 오류 · 경고는 표의 글자로 다 있다. 구간마다 막대 조각 하나(다시 나타난 서비스는 줄 안에서 끊겨 보인다),
@@ -52,7 +52,7 @@ function LimitNotes() {
   return (
     <ul className={styles.notes}>
       <li>요청 ID 를 남기지 않는 서비스 · 구간은 여기에 나오지 않습니다 — 지금은 채팅의 front → backend 구간(backend 가 새 ID 를 만든다) · backend → llm 구간 · alert.</li>
-      <li>시각은 각 줄이 관측 서버(중앙)에 닿은 시각입니다 — 서비스 사이의 차례 · 간격은 실제와 어긋날 수 있습니다.</li>
+      <li>시각은 각 줄이 수집 스트림에 실린 시각입니다 — 서비스 사이의 차례 · 간격은 실제와 어긋날 수 있습니다.</li>
     </ul>
   );
 }
@@ -65,7 +65,9 @@ function Timeline({ requestId, timeline, truncated }: { requestId: string; timel
     <>
       <dl className={styles.summary}>
         <dt>처음 ~ 마지막(KST)</dt><dd><KoreanTime value={timeline.startAt} /> ~ <KoreanTime value={timeline.endAt} /></dd>
-        <dt>전체 걸린 시간</dt><dd>{formatElapsed(timeline.durationMilliseconds)}</dd>
+        {timeline.durationMilliseconds === null
+          ? <><dt>걸린 시간</dt><dd>줄이 하나뿐이라 알 수 없음</dd></>
+          : <><dt>첫 줄부터 마지막 줄까지</dt><dd>{formatElapsed(timeline.durationMilliseconds)}</dd></>}
         <dt>줄 수</dt><dd>{truncated ? `${timeline.lineCount}줄 이상` : `${timeline.lineCount}줄`}</dd>
         <dt>거친 차례</dt><dd>{timeline.visits.join(" → ")}</dd>
       </dl>
@@ -80,7 +82,7 @@ function Timeline({ requestId, timeline, truncated }: { requestId: string; timel
               <th scope="col">줄 수</th>
               <th scope="col">오류</th>
               <th scope="col">경고</th>
-              <th scope="col" className={styles.barHeader}>시간 줄(0 ~ {formatElapsed(timeline.durationMilliseconds)})</th>
+              <th scope="col" className={styles.barHeader}>{timeline.durationMilliseconds === null ? "시간 줄" : `시간 줄(0 ~ ${formatElapsed(timeline.durationMilliseconds)})`}</th>
             </tr>
           </thead>
           <tbody>

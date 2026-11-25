@@ -196,7 +196,7 @@ async function locateSelected(logs: LogClient, query: LogTraceQuery): Promise<Up
 }
 
 /** 꽉 찬 응답(nextBefore 가 null 이 아님) 뒤에 줄이 더 있는지 확인 1회(limit 1, from · to = 그 응답의 값). 꽉 차지 않았으면 false. */
-async function hasLinesBefore(logs: LogClient, relatedQuery: LogQuery, page: LogPage): Promise<UpstreamResult<boolean>> {
+export async function hasLinesBefore(logs: LogClient, relatedQuery: LogQuery, page: LogPage): Promise<UpstreamResult<boolean>> {
   if (page.nextBefore === null) return { ok: true, value: false };
   const probe = await logs.searchLogs({ ...relatedQuery, before: page.nextBefore, from: page.from, to: page.to, limit: 1 });
   if (!probe.ok) return probe;   // 조용히 false 로 두지 않는다
