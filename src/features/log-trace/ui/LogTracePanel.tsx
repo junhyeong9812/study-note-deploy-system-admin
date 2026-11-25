@@ -10,6 +10,8 @@ import { DEPLOY_HISTORY_DEFAULT_LIMIT } from "@/features/deploys/lib/deploy-hist
 import type {
   DeploymentsAround, IncidentsAround, LevelCounts, LogTraceOutcome, LogTraceView, RelatedLogs, RequestSummary,
 } from "@/features/log-trace/lib/log-trace-view";
+import type { TraceResourcesView } from "@/features/log-trace/lib/trace-resources";
+import { TraceResourcesBlock } from "@/features/log-trace/ui/TraceResourcesBlock";
 import type { LogEntryView } from "@/features/logs/lib/log-query";
 import { LevelBadge, formatKoreanLogTime } from "@/features/logs/ui/LogTable";
 import type { UpstreamFailure, UpstreamResult } from "@/shared/lib/upstream-result";
@@ -23,6 +25,8 @@ export interface LogTracePanelProps {
   selectHref: (logId: string) => string;
   /** 그 요청 ID 로 목록을 다시 조회하는 주소(범위 = 연관 로그의 창) */
   requestHref: (requestId: string, range: { from: string; to: string }) => string;
+  /** 그때 서버 자원(loadLogTraceWithResources) — null · 없음이면 그 칸을 그리지 않는다(기존 진입 · 고른 로그를 확인하지 못함) */
+  resources?: TraceResourcesView | null;
 }
 
 /** 출처 → 화면 이름(실패 표시 "<출처>: <가린 이유>"). */
@@ -263,7 +267,7 @@ function IncidentsBlock({ incidents }: { incidents: UpstreamResult<IncidentsArou
   );
 }
 
-function TraceBody({ view, selectHref, requestHref }: { view: LogTraceView } & Pick<LogTracePanelProps, "selectHref" | "requestHref">) {
+function TraceBody({ view, selectHref, requestHref, resources }: { view: LogTraceView } & Pick<LogTracePanelProps, "selectHref" | "requestHref" | "resources">) {
   const relatedRange = view.relatedLogs.ok ? { from: view.relatedLogs.value.from, to: view.relatedLogs.value.to } : null;
   const scope: RelatedLogs["scope"] = view.relatedLogs.ok
     ? view.relatedLogs.value.scope
@@ -277,12 +281,13 @@ function TraceBody({ view, selectHref, requestHref }: { view: LogTraceView } & P
         <LevelCountsBlock counts={view.serverState.levelCounts} />
         <DeploymentsBlock deployments={view.serverState.deployments} />
         <IncidentsBlock incidents={view.serverState.incidents} />
+        {resources !== undefined && resources !== null && <TraceResourcesBlock resources={resources} nowMilliseconds={Date.now()} />}
       </Section>
     </>
   );
 }
 
-function TraceOutcome({ outcome, closeHref, selectHref, requestHref }: LogTracePanelProps) {
+function TraceOutcome({ outcome, closeHref, selectHref, requestHref, resources }: LogTracePanelProps) {
   if (outcome.kind === "invalid_input") {
     return (
       <div className={styles.problemBox} role="alert">
@@ -299,7 +304,7 @@ function TraceOutcome({ outcome, closeHref, selectHref, requestHref }: LogTraceP
       </div>
     );
   }
-  return <TraceBody view={outcome.view} selectHref={selectHref} requestHref={requestHref} />;
+  return <TraceBody view={outcome.view} selectHref={selectHref} requestHref={requestHref} resources={resources} />;
 }
 
 export function LogTracePanel(props: LogTracePanelProps) {
