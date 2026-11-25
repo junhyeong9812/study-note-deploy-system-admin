@@ -12,7 +12,9 @@ import {
   STATUS_CARD_ORDER, STATUS_PATH, TONE_LABELS, TONE_MARKS, describeMonitor, healthTone, serviceLinksOf, sortMonitors, summarizeStatus,
   type HealthWordDescription, type StatusSummary, type StatusTone,
 } from "@/features/status/ui/status-view";
-import type { UpstreamFailure } from "@/shared/lib/upstream-result";
+import { statusResourceSummaryItems, type StatusResourcesSummary } from "@/features/status/lib/status-resources";
+import { StatusResourcesCard } from "@/features/status/ui/StatusResourcesCard";
+import type { UpstreamFailure, UpstreamResult } from "@/shared/lib/upstream-result";
 import parts from "@/shared/ui/screen-parts.module.css";
 import styles from "@/features/status/ui/StatusScreen.module.css";
 
@@ -233,9 +235,23 @@ export interface StatusScreenProps {
   overview: StatusOverview;
   /** 조회를 마친 시각(ISO-8601 UTC) — 요약의 조회 시각 · 문제가 이어진 시간의 기준 */
   checkedAt: string;
+  /** 서버 자원 요약(loadStatusScreen) — 있으면 기존 카드들 아래에 "서버 자원" 카드, 맨 위 요약에 그 줄을 더한다. 없으면(기존 진입) 그리지 않는다. */
+  resources?: UpstreamResult<StatusResourcesSummary>;
 }
 
-export function StatusScreen({ overview, checkedAt }: StatusScreenProps) {
+/** 맨 위 요약에 자원 요약의 줄을 더한다(statusResourceSummaryItems). 단 설정이 없어 부르지 않은 경우(not_configured)는 더하지 않는다 —
+ * OBSERVE_SECRET 은 시작 검사의 필수 설정이라 운영에서는 생기지 않고, 그 사정은 카드 안의 "확인하지 못함 — 설정 없음"이 보인다. */
+function withResourceItems(summary: StatusSummary, resources: UpstreamResult<StatusResourcesSummary> | undefined): StatusSummary {
+  if (resources === undefined || (!resources.ok && resources.reason === "not_configured")) return summary;
+  const items = statusResourceSummaryItems(resources);
+  const merged: StatusSummary = {
+    problems: [...summary.problems, ...items.problems], unreachable: [...summary.unreachable, ...items.unreachable], pending: summary.pending, allHealthy: false,
+  };
+  merged.allHealthy = merged.problems.length === 0 && merged.unreachable.length === 0 && merged.pending.length === 0;
+  return merged;
+}
+
+export function StatusScreen({ overview, checkedAt, resources }: StatusScreenProps) {
   const cards: Record<StatusCheckName, ReactNode> = {
     alertMonitors: <MonitorsCard cell={overview.alertMonitors} checkedAt={checkedAt} />,
     alertHealth: <HealthCard name="alertHealth" cell={overview.alertHealth} words={ALERT_HEALTH_WORDS} />,
@@ -248,9 +264,10 @@ export function StatusScreen({ overview, checkedAt }: StatusScreenProps) {
       <div className={parts.heading}>
         <h1 className={parts.title}>상태 한눈에</h1>
       </div>
-      <Summary summary={summarizeStatus(overview)} checkedAt={checkedAt} />
+      <Summary summary={withResourceItems(summarizeStatus(overview), resources)} checkedAt={checkedAt} />
       <div className={styles.cards}>
         {STATUS_CARD_ORDER.map((name) => <div key={name} className={name === "alertMonitors" ? styles.cardWide : undefined}>{cards[name]}</div>)}
+        {resources !== undefined && <div className={styles.cardWide}><StatusResourcesCard resources={resources} /></div>}
       </div>
     </main>
   );

@@ -3,6 +3,7 @@
  * 폼은 GET 제출, 더 보기 · 요청 ID · 최신부터 · 조건 지우기는 링크라 브라우저 스크립트 없이 동작한다.
  * 줄을 누르면 연관 로그(§11.2)가 열린다 — 넓은 화면(1100px 이상)은 왼쪽 목록 | 오른쪽 상세, 좁은 화면은 상세가 화면 전체를 덮는다. */
 import type { LogTraceOutcome } from "@/features/log-trace/lib/log-trace-view";
+import type { TraceResourcesView } from "@/features/log-trace/lib/trace-resources";
 import { LogTracePanel } from "@/features/log-trace/ui/LogTracePanel";
 import type { LogSearchView } from "@/features/logs/server/log-search";
 import {
@@ -100,11 +101,13 @@ export interface LogSearchScreenProps {
   formValues: LogFormValues;
   /** 연관 로그(주소에 selected 가 있을 때) — 없으면 null */
   trace: LogTraceOutcome | null;
+  /** 연관 로그의 그때 서버 자원(없으면 그 칸을 그리지 않는다) */
+  traceResources?: TraceResourcesView | null;
   /** 목록에서 강조할 로그 id(주소의 selected) */
   selectedLogId: string | null;
 }
 
-export function LogSearchScreen({ view, formValues, trace, selectedLogId }: LogSearchScreenProps) {
+export function LogSearchScreen({ view, formValues, trace, selectedLogId, traceResources = null }: LogSearchScreenProps) {
   const { logs, query, nextPageQuery } = view;
   const invalidField = !logs.ok && logs.reason === "invalid_input" ? logs.field ?? "" : null;
   const page = logs.ok ? logs.value : null;
@@ -115,7 +118,7 @@ export function LogSearchScreen({ view, formValues, trace, selectedLogId }: LogS
   const listQuery = query === null ? null : page === null ? query : pinnedListQuery(query, page);
   const listHref = (selected: string | null) => (listQuery === null ? (selected === null ? LOGS_PATH : `${LOGS_PATH}?selected=${encodeURIComponent(selected)}`) : logsHref(listQuery, selected));
   const tracePanel = trace === null ? null : (
-    <LogTracePanel outcome={trace} closeHref={listHref(null)} selectHref={(logId) => listHref(logId)}
+    <LogTracePanel outcome={trace} resources={traceResources} closeHref={listHref(null)} selectHref={(logId) => listHref(logId)}
       requestHref={(requestId, range) => logsHref({ requestId, from: range.from, to: range.to, service: null, level: null, text: null, before: null, limit }, trace.kind === "view" ? trace.view.query.selectedLogId : null)} />
   );
   const resultsArea = (

@@ -27,7 +27,7 @@ function configured(baseUrl: string, secret: string): boolean {
   return isHttpBaseUrl(baseUrl) && secret.length > 0;
 }
 
-function currentDependencies(): LogTraceDependencies {
+export function currentDependencies(): LogTraceDependencies {
   const config = readServerConfig();
   const networkFetch = (input: string, init: RequestInit) => fetch(input, init);
   return {
@@ -40,7 +40,7 @@ function currentDependencies(): LogTraceDependencies {
   };
 }
 
-function logFailedCells(outcome: LogTraceOutcome) {
+export function logFailedCells(outcome: LogTraceOutcome) {
   if (outcome.kind !== "view") return;
   const { view } = outcome;
   const cells = [

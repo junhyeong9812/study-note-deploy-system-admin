@@ -1,0 +1,101 @@
+/* 서버 자원 — 색은 전부 globals.css 토큰(다크 모드 포함). 제목 줄 · 빈 상태는 공통 조각(src/shared/ui/screen-parts.module.css). */
+.main { max-width: var(--content-width); margin: 0 auto; padding: var(--space-6) var(--space-4); display: flex; flex-direction: column; gap: var(--space-4); }
+.meta { font-size: var(--text-sm); color: var(--muted); font-variant-numeric: tabular-nums; }
+.metaNote { margin-left: var(--space-2); font-size: var(--text-xs); }
+.refresh { font-weight: 600; }
+.refresh:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.failure {
+  padding: var(--space-2) var(--space-3); font-size: var(--text-sm); color: var(--fg);
+  background: var(--warning-bg); border-left: 3px solid var(--warning-fg); border-radius: var(--radius-sm);
+}
+
+/* 서버마다 한 묶음 — 세로로 쌓는다 */
+.servers { display: flex; flex-direction: column; gap: var(--space-4); }
+.server {
+  min-width: 0; padding: var(--space-4); display: flex; flex-direction: column; gap: var(--space-3);
+  border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--bg);
+}
+.serverHeading { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-4); }
+.serverName { font-size: var(--text-lg); }
+.freshnessLine { display: inline-flex; flex-wrap: wrap; align-items: center; gap: var(--space-1) var(--space-3); font-size: var(--text-sm); }
+.freshness { display: inline-flex; align-items: center; gap: var(--space-1); padding: 0 var(--space-2); border-radius: var(--radius-pill); font-weight: 600; }
+.freshnessFresh { color: var(--success-fg); background: var(--success-bg); }
+.freshnessStale { color: var(--warning-fg); background: var(--warning-bg); }
+.measuredAt { color: var(--muted); font-variant-numeric: tabular-nums; }
+.staleNote { font-size: var(--text-sm); color: var(--warning-fg); }
+
+/* 지표 카드 — 이름 → 수치 → 그래프. 넓으면 셋씩 나란히, 좁으면 세로로 */
+.cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-3); }
+.card { min-width: 0; padding: var(--space-3); display: flex; flex-direction: column; gap: var(--space-2); border: 1px solid var(--line); border-radius: var(--radius-md); }
+.cardFiring { border-color: var(--warning-fg); box-shadow: inset 3px 0 0 var(--warning-fg); }
+.cardTitle { font-size: var(--text-sm); font-weight: 700; }
+.cardReadings { display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-4); }
+.readingsStale .value { color: var(--muted); }
+.reading { min-width: 0; }
+.readingLabel { font-size: var(--text-xs); color: var(--muted); }
+.readingValue { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-1) var(--space-2); font-variant-numeric: tabular-nums; }
+.value { font-size: var(--text-md); font-weight: 600; }
+.noValue { font-size: var(--text-sm); color: var(--muted); }
+.detail { font-size: var(--text-xs); color: var(--muted); }
+
+/* 울리는 임계값 — 표식 + 글(색만으로 전하지 않는다) */
+.firing {
+  display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 0 var(--space-2);
+  padding: 0 var(--space-2); font-size: var(--text-xs); border-radius: var(--radius-sm); border: 1px solid currentColor;
+}
+.firingWarning { color: var(--warning-fg); background: var(--warning-bg); }
+.firingCritical { color: var(--danger); background: var(--danger-bg); }
+.firingMark { font-weight: 700; }
+.firingSince { color: var(--fg); font-variant-numeric: tabular-nums; }
+.firingList { list-style: none; display: flex; flex-direction: column; gap: var(--space-1); }
+.others { display: flex; flex-direction: column; gap: var(--space-1); }
+.othersTitle { font-size: var(--text-sm); font-weight: 600; }
+.elsewhere {
+  display: flex; flex-direction: column; gap: var(--space-1); padding: var(--space-2) var(--space-3); font-size: var(--text-sm);
+  border: 1px solid var(--warning-fg); border-radius: var(--radius-md);
+}
+
+@media (max-width: 640px) {
+  .main { padding: var(--space-4) var(--space-3); }
+}
+
+/* 기간 · 자동 갱신 */
+.controls { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-4); }
+.ranges { list-style: none; display: flex; flex-wrap: wrap; gap: var(--space-1); }
+.range { display: inline-block; padding: 0 var(--space-3); font-size: var(--text-sm); border: 1px solid var(--line); border-radius: var(--radius-pill); }
+.rangeSelected { font-weight: 700; color: var(--fg); background: var(--accent-bg); border-color: var(--accent); text-decoration: underline; }
+.range:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.visuallyHidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* 그래프 — 넓으면 셋을 나란히, 좁으면 세로로 */
+.more { border-top: 1px solid var(--line); padding-top: var(--space-2); display: flex; flex-direction: column; gap: var(--space-2); }
+.moreHeading { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-1) var(--space-3); }
+.moreTitle { font-size: var(--text-sm); font-weight: 600; }
+.moreLink { font-size: var(--text-sm); font-weight: 600; }
+.moreLink:focus-visible, .containerName a:focus-visible, .scroller:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.graphsTwo { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-4); }
+
+/* 컨테이너 표 — 좁은 화면에서는 표만 가로 스크롤(상태 한눈에의 감시 대상 표와 같은 관례) */
+.containers { border-top: 1px solid var(--line); padding-top: var(--space-2); display: flex; flex-direction: column; gap: var(--space-2); }
+.containersTitle { font-size: var(--text-sm); font-weight: 600; }
+.truncated { font-weight: 400; color: var(--warning-fg); }
+.scroller { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius-md); }
+.table { width: 100%; min-width: 640px; border-collapse: collapse; font-size: var(--text-sm); }
+.table th, .table td { padding: var(--space-2) var(--space-3); text-align: left; vertical-align: top; border-bottom: 1px solid var(--line); }
+.table th { font-size: var(--text-xs); font-weight: 600; color: var(--muted); background: var(--code-bg); white-space: nowrap; }
+.table tbody tr:last-child td { border-bottom: none; }
+.rowFiring td:first-child { box-shadow: inset 3px 0 0 var(--warning-fg); }
+.containerName { font-weight: 600; white-space: nowrap; }
+.containerSelected { text-decoration: underline; text-decoration-thickness: 2px; }
+.selectedMark { font-size: var(--text-xs); font-weight: 400; color: var(--muted); }
+.actualName { display: block; font-size: var(--text-xs); font-weight: 400; color: var(--muted); }
+.number { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.selected { border: 1px solid var(--accent); border-radius: var(--radius-md); padding: var(--space-3); display: flex; flex-direction: column; gap: var(--space-2); }
+
+@media (max-width: 900px) {
+  .graphsTwo, .cards { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* 값이 없는 서버 — 한 줄 */
+.serverEmpty { padding: var(--space-2) var(--space-4); gap: var(--space-1); }
