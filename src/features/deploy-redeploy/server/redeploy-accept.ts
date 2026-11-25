@@ -134,7 +134,7 @@ function escapeHtml(text: string): string {
 }
 
 /** 실패 화면 — 서버에서 그린 최소한의 HTML(스크립트 없음). query 를 알면 확인 화면과 그 서비스의 배포 이력으로, 모르면 배포 이력으로 돌아가는 링크. */
-function failurePage(status: number, title: string, detail: string, query: RedeployPreviewQuery | null, extraHtml = ""): Response {
+export function failurePage(status: number, title: string, detail: string, query: RedeployPreviewQuery | null, extraHtml = ""): Response {
   const links = query === null
     ? `<a href="${escapeHtml(deploysHref({ service: null, limit: DEPLOY_HISTORY_DEFAULT_LIMIT }))}">배포 이력</a>`
     : `<a href="${escapeHtml(redeployPreviewHref(query.service, query.commitSha))}">확인 화면으로 돌아가기</a>`
@@ -148,7 +148,7 @@ function failurePage(status: number, title: string, detail: string, query: Redep
 }
 
 /** 접수 여부 모름 — 같은 확인 값(같은 요청 ID)으로 다시 내는 폼. 받은 값은 속성 값으로 이스케이프한다. */
-function retryFormHtml(form: AcceptForm): string {
+export function retryFormHtml(form: AcceptForm): string {
   const hidden = (name: string, value: string) => `<input type="hidden" name="${name}" value="${escapeHtml(value)}">`;
   return `<form method="post" action="${REDEPLOY_ACCEPT_ACTION}">`
     + hidden("service", form.query.service) + hidden("commit", form.query.commitSha) + hidden("confirmation", form.confirmation)

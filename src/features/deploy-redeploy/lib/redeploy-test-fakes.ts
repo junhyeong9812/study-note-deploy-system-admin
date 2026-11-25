@@ -7,6 +7,7 @@ import { gitCommitDetailJson, gitCommitJson, gitCommitRangeJson, masterGitFailur
 import {
   MASTER_GIT_COMMITS_PATH, MASTER_GIT_COMMIT_PATH, uniqueSha, type FakeMaster,
 } from "@/features/deploy-versions/lib/deploy-versions-test-fakes";
+import { FAKE_DEPLOY_MASTER_URL, UPSTREAM_RAW_MARKER } from "@/shared/lib/upstream-test-fakes";
 
 export interface GraphCommit {
   sha: string;
@@ -60,4 +61,36 @@ export function rangeRequestsBetween(master: FakeMaster, firstSha: string, secon
   const pair = [firstSha, secondSha].sort().join(" ");
   return master.gitRequests().filter((url) => url.pathname === MASTER_GIT_COMMITS_PATH
     && [url.searchParams.get("from") ?? "", url.searchParams.get("to") ?? ""].sort().join(" ") === pair);
+}
+
+// ---- 접수 요청의 실패 — Node 20 의 fetch(undici)가 실제로 던지는 꼴 ----
+// 연결 실패: TypeError("fetch failed") + cause(시스템 오류 · code). 보낸 뒤 끊김: cause 가 SocketError(code UND_ERR_SOCKET).
+// 본문을 읽다 끊김: 응답은 왔고 본문 스트림이 TypeError("terminated") + cause SocketError 로 실패한다.
+// 메시지에는 원문 표식 · 주소를 일부러 넣는다(결과 · 응답에 나오면 원문을 흘린 것이다).
+
+const LEAKY_CAUSE_TEXT = `${UPSTREAM_RAW_MARKER} ${FAKE_DEPLOY_MASTER_URL}`;
+
+/** `TypeError("fetch failed")` 에 `cause.code` 가 실린 실패. aggregate 면 cause 가 AggregateError(IPv4 · IPv6 를 모두 시도한 연결 거부의 꼴). */
+export function undiciFetchFailure(code: string, options: { aggregate?: boolean } = {}): TypeError {
+  const cause = options.aggregate === true
+    ? Object.assign(new AggregateError([Object.assign(new Error(`connect ${code} ${LEAKY_CAUSE_TEXT}`), { code })], LEAKY_CAUSE_TEXT), { code })
+    : Object.assign(new Error(`${code} ${LEAKY_CAUSE_TEXT}`), { code });
+  return new TypeError("fetch failed", { cause });
+}
+
+/** cause 가 없는 TypeError — 어디서 실패했는지 알 수 없다. */
+export function fetchFailureWithoutCause(): TypeError {
+  return new TypeError(`fetch failed ${LEAKY_CAUSE_TEXT}`);
+}
+
+/** 상태 · 머리글은 왔는데 본문을 읽는 중에 소켓이 끊긴 응답. */
+export function bodyCutResponse(status: number): Response {
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode("{\"success\":true,\"data\":{\"request_id\":"));
+      const cause = Object.assign(new Error(`other side closed ${LEAKY_CAUSE_TEXT}`), { name: "SocketError", code: "UND_ERR_SOCKET" });
+      queueMicrotask(() => controller.error(new TypeError("terminated", { cause })));
+    },
+  });
+  return new Response(stream, { status, headers: { "Content-Type": "application/json" } });
 }

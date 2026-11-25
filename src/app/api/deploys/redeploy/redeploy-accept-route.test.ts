@@ -18,14 +18,21 @@ vi.mock("next/headers", () => ({
 }));
 vi.mock("next/navigation", () => ({ redirect: (location: string) => { throw new Error(`redirect:${location}`); } }));
 
+import { NextRequest } from "next/server";
+
 import { hash } from "@node-rs/argon2";
 import { POST } from "@/app/api/deploys/redeploy/route";
 import { SESSION_COOKIE_NAME, SESSION_LIFETIME_MILLISECONDS, issueSessionToken } from "@/features/auth/lib/session";
 import { FAKE_ADMIN_ID, FAKE_ORIGIN, FAKE_PASSWORD, FAKE_SIGNING_KEY } from "@/features/auth/lib/test-fakes";
 import { issueRedeployConfirmation, newRedeployRequestId } from "@/features/deploy-redeploy/lib/redeploy-confirmation";
-import { branchFrom, installCommitGraph, type GraphCommit } from "@/features/deploy-redeploy/lib/redeploy-test-fakes";
+import {
+  bodyCutResponse, branchFrom, fetchFailureWithoutCause, installCommitGraph, undiciFetchFailure, type GraphCommit,
+} from "@/features/deploy-redeploy/lib/redeploy-test-fakes";
 import { REDEPLOY_BODY_MAX_BYTES, REDEPLOY_RATE_LIMIT_PER_MINUTE } from "@/features/deploy-redeploy/server/redeploy-accept";
-import { MASTER_DEPLOYS_PATH, createFakeMaster, deploymentJson, minutesAfterStart, type FakeMaster } from "@/features/deploy-versions/lib/deploy-versions-test-fakes";
+import {
+  MASTER_DEPLOYS_PATH, MASTER_GIT_COMMITS_PATH, MASTER_GIT_COMMIT_PATH, createFakeMaster, deploymentJson, minutesAfterStart, type FakeMaster,
+} from "@/features/deploy-versions/lib/deploy-versions-test-fakes";
+import { middleware } from "@/middleware";
 import type { RoutedFetchHandler } from "@/shared/lib/upstream-test-fakes";
 import {
   FAKE_ALERT_SECRET, FAKE_ALERT_URL, FAKE_DEPLOY_MASTER_URL, FAKE_DEPLOY_SECRET, FAKE_OBSERVE_SECRET, FAKE_OBSERVE_URL, expectNoForbiddenText, headersOf,
@@ -75,12 +82,14 @@ interface AcceptRequestOptions {
   fields?: Record<string, string | string[]>;
   origin?: string | null;
   referer?: string;
-  contentType?: string;
+  /** null 이면 Content-Type 머리글이 없다(본문을 바이트로 실어 Request 가 text/plain 을 붙이지 않게) */
+  contentType?: string | null;
   rawBody?: string;
 }
 
 function acceptRequest(options: AcceptRequestOptions = {}): Request {
-  const headers = new Headers({ "content-type": options.contentType ?? "application/x-www-form-urlencoded", "x-real-ip": "198.51.100.77", "user-agent": "FakeBrowser/1.0" });
+  const headers = new Headers({ "x-real-ip": "198.51.100.77", "user-agent": "FakeBrowser/1.0" });
+  if (options.contentType !== null) headers.set("content-type", options.contentType ?? "application/x-www-form-urlencoded");
   if (options.origin !== null) headers.set("origin", options.origin ?? FAKE_ORIGIN);
   if (options.referer !== undefined) headers.set("referer", options.referer);
   let body = options.rawBody;
@@ -89,7 +98,7 @@ function acceptRequest(options: AcceptRequestOptions = {}): Request {
     for (const [name, value] of Object.entries(options.fields ?? defaultFields())) for (const each of Array.isArray(value) ? value : [value]) search.append(name, each);
     body = search.toString();
   }
-  return new Request(new URL("/api/deploys/redeploy", FAKE_ORIGIN), { method: "POST", headers, body });
+  return new Request(new URL("/api/deploys/redeploy", FAKE_ORIGIN), { method: "POST", headers, body: options.contentType === null ? new TextEncoder().encode(body) : body });
 }
 
 function defaultFields(overrides: Record<string, string> = {}): Record<string, string> {
@@ -195,7 +204,7 @@ describe("1 출처 — 로그인 · 로그아웃과 같은 검사(ADMIN_ORIGIN �
     expectNoDownstreamCalls();
   });
 
-  it("출처가 세션보다 먼저 — 세션도 없고 출처도 틀리면 403", async () => {
+  it("route 단위(middleware 를 거치지 않고 route 를 바로 부를 때) — 출처가 세션보다 먼저: 세션도 없고 출처도 틀리면 403", async () => {
     expect((await POST(acceptRequest({ origin: "https://evil.example.test" }))).status).toBe(403);
   });
 });
@@ -454,7 +463,7 @@ describe("9 master 접수 — 한 번 · requested_by · 결과를 가른다", (
     ["401(접수 비밀값 거절)", () => textResponse(JSON.stringify({ success: false, error: { code: "unauthorized" } }), 401),
       502, "배포 서버가 이 접수를 받지 않았습니다", []],
     ["503", () => textResponse(leakyErrorBody(), 503), 502, "접수하지 못함", []],
-    ["연결 실패", () => Promise.reject(leakyNetworkError()), 502, "접수하지 못함", []],
+    ["연결 거부(ECONNREFUSED)", () => Promise.reject(undiciFetchFailure("ECONNREFUSED")), 502, "접수하지 못함", []],
   ];
   for (const [label, behavior, status, words, absent] of outcomes) {
     it(`${label} → ${status} '${words}' · 원시 코드 · 원문 없음 · master 1회`, async () => {
@@ -536,5 +545,207 @@ describe("10 로그 — 접수 한 건에 한 줄(누가 · 서비스 · 커밋 
     for (const secret of [FAKE_PASSWORD, WRONG_PASSWORD, accepted.confirmation, wrongPassword.confirmation, wrongConfirmation.confirmation, FAKE_DEPLOY_SECRET, FAKE_SIGNING_KEY, passwordHash]) {
       expect(everything).not.toContain(secret);
     }
+  });
+});
+
+describe("접수 여부의 갈래 — '모름'이면 504 와 같은 확인 값의 다시 보내기 폼, '접수되지 않음'이면 폼이 없다", () => {
+  const unknownCases: [string, RoutedFetchHandler][] = [
+    ["보낸 뒤 소켓이 끊김(UND_ERR_SOCKET)", () => Promise.reject(undiciFetchFailure("UND_ERR_SOCKET"))],
+    ["ECONNRESET", () => Promise.reject(undiciFetchFailure("ECONNRESET"))],
+    ["cause 가 없는 TypeError", () => Promise.reject(fetchFailureWithoutCause())],
+    ["응답은 왔는데 본문을 읽다 끊김", () => bodyCutResponse(202)],
+  ];
+  for (const [label, behavior] of unknownCases) {
+    it(`${label} → 504 · 같은 확인 값의 다시 보내기 폼 · '접수되지 않았습니다'라고 단정하지 않는다 · 원문 없음`, async () => {
+      acceptBehavior = behavior;
+      validSession();
+      const fields = defaultFields();
+      const response = await POST(acceptRequest({ fields }));
+      expect(response.status).toBe(504);
+      expectHtml(response);
+      const text = await response.text();
+      expect(text).toContain("접수됐는지 확인하지 못했습니다");
+      expect(text).not.toContain("접수되지 않았습니다");
+      expect(text).toMatch(/<form[^>]*action="\/api\/deploys\/redeploy"/);
+      const confirmationValues = [...text.matchAll(/<input[^>]*name="confirmation"[^>]*value="([^"]*)"/g)].map((match) => match[1]);
+      expect(confirmationValues).toEqual([fields.confirmation]);
+      expectNoForbiddenText(text);
+      expect(acceptCalls()).toHaveLength(1);
+    });
+  }
+
+  const notAcceptedCases: [string, RoutedFetchHandler][] = [
+    ["ECONNREFUSED", () => Promise.reject(undiciFetchFailure("ECONNREFUSED"))],
+    ["ENOTFOUND", () => Promise.reject(undiciFetchFailure("ENOTFOUND"))],
+    ["연결 기한(UND_ERR_CONNECT_TIMEOUT)", () => Promise.reject(undiciFetchFailure("UND_ERR_CONNECT_TIMEOUT"))],
+    ["503 답", () => textResponse(leakyErrorBody(), 503)],
+  ];
+  for (const [label, behavior] of notAcceptedCases) {
+    it(`${label} → 502 '접수하지 못함' · 다시 보내기 폼 없음`, async () => {
+      acceptBehavior = behavior;
+      validSession();
+      const response = await POST(acceptRequest());
+      expect(response.status).toBe(502);
+      const text = await response.text();
+      expect(text).toContain("접수하지 못함");
+      expect(text).not.toMatch(/<form/i);
+      expect(text).not.toContain('name="confirmation"');
+      expectNoForbiddenText(text);
+      expect(acceptCalls()).toHaveLength(1);
+    });
+  }
+});
+
+describe("이력 재확인은 배포 이력만 읽는다 — git 조회를 하지 않는다", () => {
+  it("접수 한 번에 이력 조회 한 번(service · limit 200) · git 조회(커밋 범위 · 커밋 하나) 0", async () => {
+    validSession();
+    const response = await POST(acceptRequest());
+    expect(response.status).toBe(303);
+    expect(historyCalls()).toHaveLength(1);
+    expect(historyCalls()[0].searchParams.get("service")).toBe("backend");
+    expect(historyCalls()[0].searchParams.get("limit")).toBe("200");
+    expect(master.gitRequests()).toEqual([]);
+    expect(callOrder.filter((path) => path.endsWith(MASTER_GIT_COMMITS_PATH) || path.endsWith(MASTER_GIT_COMMIT_PATH))).toEqual([]);
+    expect(acceptCalls()).toHaveLength(1);
+  });
+
+  it("git 중계가 실패해도(503 · 연결 거부) 접수된다", async () => {
+    master.override[MASTER_GIT_COMMITS_PATH] = () => textResponse(leakyErrorBody(), 503);
+    master.override[MASTER_GIT_COMMIT_PATH] = () => Promise.reject(undiciFetchFailure("ECONNREFUSED"));
+    validSession();
+    const fields = defaultFields();
+    const response = await POST(acceptRequest({ fields }));
+    expect(response.status).toBe(303);
+    expect(locationPath(response)).toBe(progressPath(requestIdOf(fields.confirmation)));
+    expect(acceptCalls()).toHaveLength(1);
+  });
+
+  it("성공 이력에 없는 커밋은 여전히 409 · git 조회 0 · master 접수 0", async () => {
+    validSession();
+    const response = await POST(acceptRequest({ fields: defaultFields({ commit: main[2].sha, confirmation: confirmationFor(main[2].sha) }) }));
+    expect(response.status).toBe(409);
+    expect(await response.text()).toContain("배포된 적 없는 버전은 고를 수 없습니다");
+    expect(master.gitRequests()).toEqual([]);
+    expect(acceptCalls()).toHaveLength(0);
+  });
+
+  it.each([
+    ["503", (): Response | Promise<Response> => textResponse(leakyErrorBody(), 503)],
+    ["연결 거부", (): Response | Promise<Response> => Promise.reject(undiciFetchFailure("ECONNREFUSED"))],
+  ] as const)("이력 조회가 실패하면(%s) 접수하지 않는다 — 502 · git 조회 0 · master 접수 0", async (_label, respond) => {
+    master.override[MASTER_DEPLOYS_PATH] = () => respond();
+    validSession();
+    const response = await POST(acceptRequest());
+    expect(response.status).toBe(502);
+    const text = await response.text();
+    expect(text).toContain("배포 이력을 확인하지 못해 접수하지 않았습니다");
+    expectNoForbiddenText(text);
+    expect(master.gitRequests()).toEqual([]);
+    expect(acceptCalls()).toHaveLength(0);
+  });
+});
+
+describe("배포 서버가 돌려준 요청 번호 — 꼴(^[A-Za-z0-9_-]{1,64}$)이 맞을 때만 로그 · 주소에 쓴다", () => {
+  function acceptReturning(requestId: unknown, duplicate = false) {
+    acceptBehavior = () => jsonBody({ success: true, data: { request_id: requestId, service: "backend", state: "ci_running", ...(duplicate ? { duplicate: true } : {}) } }, 202);
+  }
+
+  /** 접수 결과를 남긴 로그(console 한 번 = 한 항목). */
+  const outcomeLines = () => consoleLines.filter((line) => /redeploy:(accepted|duplicate)/.test(line));
+
+  it.each([
+    ["줄바꿈을 실은 값", "abc\r\nX: y"],
+    ["65자", "a".repeat(65)],
+    ["빈 글자", ""],
+    ["숫자(글자가 아닌 형)", 12_345],
+    ["null", null],
+    ["허용 밖 글자(점 · 슬래시)", "../adm.other"],
+  ] as const)("%s → 303 주소와 로그의 요청 번호 자리는 어드민이 보낸 번호 · 로그는 한 줄로 남는다", async (_label, returned) => {
+    acceptReturning(returned, true);
+    validSession();
+    const fields = defaultFields();
+    const sentRequestId = requestIdOf(fields.confirmation);
+    const response = await POST(acceptRequest({ fields }));
+    expect(response.status).toBe(303);
+    expect(locationPath(response)).toBe(progressPath(sentRequestId));
+    expect(outcomeLines()).toHaveLength(1);
+    expect(outcomeLines()[0].startsWith(`${sentRequestId}:`)).toBe(true);
+    for (const line of consoleLines) expect(line).not.toMatch(/[\r\n]/);
+    if (typeof returned === "string" && returned.length > 0) {
+      expect(consoleLines.join("\n")).not.toContain(returned);
+      expect(response.headers.get("location") ?? "").not.toContain(encodeURIComponent(returned));
+    }
+  });
+
+  it.each([
+    ["옛 요청 번호(duplicate)", "adm-OldRequest_01", true],
+    ["64자(경계 안)", "b".repeat(64), false],
+  ] as const)("꼴이 맞으면 돌려받은 번호를 쓴다 — %s", async (_label, returned, duplicate) => {
+    acceptReturning(returned, duplicate);
+    validSession();
+    const response = await POST(acceptRequest());
+    expect(response.status).toBe(303);
+    expect(locationPath(response)).toBe(progressPath(returned));
+    expect(outcomeLines()).toHaveLength(1);
+    expect(outcomeLines()[0].startsWith(`${returned}:`)).toBe(true);
+  });
+});
+
+describe("Content-Type — 매체 종류가 정확히 application/x-www-form-urlencoded 일 때만(뒤의 매개변수는 허용 · 접두 일치는 거절)", () => {
+  it.each([
+    "application/x-www-form-urlencoded",
+    "application/x-www-form-urlencoded; charset=UTF-8",
+    "application/x-www-form-urlencoded;charset=utf-8",
+    "APPLICATION/X-WWW-FORM-URLENCODED",
+    "Application/X-Www-Form-Urlencoded; Charset=UTF-8",
+  ])("%j → 받는다(303)", async (contentType) => {
+    validSession();
+    const response = await POST(acceptRequest({ contentType }));
+    expect(response.status).toBe(303);
+    expect(acceptCalls()).toHaveLength(1);
+  });
+
+  it.each([
+    ["접두만 같음(evil)", "application/x-www-form-urlencodedevil"],
+    ["접두만 같음(-x)", "application/x-www-form-urlencoded-x"],
+    ["접두만 같음(+json)", "application/x-www-form-urlencoded+json; charset=UTF-8"],
+    ["text/plain", "text/plain"],
+    ["머리글 없음", null],
+  ] as const)("%s → 400 · 비밀번호 확인 · 이력 · master 0", async (_label, contentType) => {
+    validSession();
+    const response = await POST(acceptRequest({ contentType }));
+    expect(response.status).toBe(400);
+    expectHtml(response);
+    expect(await response.text()).toContain("요청의 꼴이 맞지 않습니다");
+    expectNoDownstreamCalls();
+  });
+});
+
+describe("배포된 서버의 차례 — middleware 가 route 앞에 선다", () => {
+  /** 배포된 서버처럼 middleware 를 먼저 지나고(세션 쿠키는 요청의 Cookie 머리글로), 통과할 때만 route 를 부른다. */
+  async function throughMiddleware(request: Request): Promise<{ response: Response; reachedRoute: boolean }> {
+    const headers = new Headers(request.headers);
+    const sessionToken = cookieJar.get(SESSION_COOKIE_NAME);
+    if (sessionToken !== undefined) headers.set("cookie", `${SESSION_COOKIE_NAME}=${sessionToken}`);
+    const gate = await middleware(new NextRequest(request.url, { method: request.method, headers, body: await request.clone().text() }));
+    if (gate.headers.get("x-middleware-next") !== "1") return { response: gate, reachedRoute: false };
+    return { response: await POST(request), reachedRoute: true };
+  }
+
+  it("세션 없음 + 틀린 출처 → middleware 가 먼저 401(JSON unauthorized) · route 에 닿지 않는다", async () => {
+    const { response, reachedRoute } = await throughMiddleware(acceptRequest({ origin: "https://evil.example.test" }));
+    expect(reachedRoute).toBe(false);
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({ success: false, error: { code: "unauthorized" } });
+    expect(consoleLines.filter((line) => line.includes("redeploy:"))).toEqual([]);
+    expectNoDownstreamCalls();
+  });
+
+  it("세션 있음 + 틀린 출처 → middleware 는 통과시키고 route 가 403", async () => {
+    validSession();
+    const { response, reachedRoute } = await throughMiddleware(acceptRequest({ origin: "https://evil.example.test" }));
+    expect(reachedRoute).toBe(true);
+    expect(response.status).toBe(403);
+    expectNoDownstreamCalls();
   });
 });
