@@ -52,3 +52,8 @@ services:
       # + edge-allow.conf(엣지 IP — 저장소에 적지 않는다, deploy/nginx/edge-allow.conf.example 참고. 없으면 nginx 가 뜨지 않는다).
       - ./deploy/active:/etc/nginx:ro
     restart: unless-stopped
+    logging:   # 접속 기록(통신 규약 v1)이 표준 출력으로 가므로 크기를 묶는다 — 에이전트는 json-file 을 도커 API 로 읽는다
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
