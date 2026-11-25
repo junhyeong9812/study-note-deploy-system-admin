@@ -16,7 +16,7 @@
  * 관련 알림(알림 서버 `GET /incidents?limit=200` 한 번 — 최신 기록부터. 거를 질의가 없어 받은 200건 안에서 거른다):
  * - 감시 대상 DOWN: kind 가 `monitor_` 로 시작하고 key 를 `,` 로 나눈 것 중 하나가 대상 이름과 같은 기록, at ∈ [T − 1시간, T + 1시간].
  * - 배포 실패: key 가 `deploy-failed:<서비스>:<커밋>`(마스터가 보내는 key) 인 기록, at ∈ [acceptedAt, (finishedAt ?? acceptedAt) + 10분].
- * - 자원 임계값: key 가 `resource:<서버>:<규칙>` 이거나 그 뒤에 `:` 로 이어지는 기록(관측 서버의 key — 대상 · `:resolved`), at ∈ [since − 1시간, now].
+ * - 자원 임계값: key 가 `resource:<서버>:<규칙>[:<대상>]`(관측 서버의 key — 대상이 있는 규칙이면 대상까지) 이거나 그 뒤에 `:resolved` 가 붙은 기록, at ∈ [since − 1시간, now].
  * - 오류 로그: 해당 없음(not_applicable — 이 문제에는 알림이 없다).
  * 양끝 포함. 알림 서버 순서 그대로. coversWindow = 받은 기록이 200건 미만이거나 가장 이른 at < from(아니면 200건이 창의 앞쪽에 닿지 못했다 — 화면 · 글에 드러낸다).
  *
@@ -26,7 +26,8 @@
  *   받은 줄 가운데 requestId 가 그 요청 ID 와 같은 줄만 남긴다(다른 요청의 줄을 섞지 않는다).
  * - 자원 임계값: warning · error 두 번(서비스 거름 없음), [T − 10분, T + 10분] → 그 서버의 서비스들의 줄만 남긴다. 그 서버의 서비스 = DEPLOY_SERVICES 가운데
  *   sources.latest 의 그 서버 컨테이너(계열 이름)에 containerBelongsToService 가 참인 것(DEPLOY_SERVICES 순서). services 에 그 이름들.
- *   서버가 latest 에 없거나 컨테이너를 모르면(latest 실패 포함) services [] 이고 줄도 없다(그래도 두 번 부른다 — 칸의 실패를 드러내려고).
+ *   그 서버의 서비스를 하나도 찾지 못하면(서버가 latest 에 없음 · 컨테이너 목록이 빔 · 배포 서비스의 컨테이너가 없음) 칸은 services_not_found
+ *   (EVIDENCE_TEXT.servicesNotFound — "없음"이라고 말하지 않는다, 부르지 않는다).
  * - 오류 로그: 그 서비스의 error 한 번, [now − 10분, now].
  * 두 번 부르는 칸은 하나라도 실패면 칸 전체가 그 실패(warning 쪽을 먼저 본다). 받은 줄을 합쳐 최신 EVIDENCE_LOG_LINE_LIMIT 줄만 남기고 시간순(옛것부터)으로 —
  * 합친 줄이 상한을 넘거나 어느 응답이 limit 을 채웠으면(nextBefore 가 null 이 아님) truncated true, noticeText `최근 ${EVIDENCE_LOG_LINE_LIMIT}줄만 보입니다 — 더 있음`.
@@ -97,12 +98,14 @@ export const EVIDENCE_TEXT = {
   noPreviousDeploy: "앞 성공 배포가 배포 이력 최근 200건 안에 없습니다",
   sameCommit: "앞 성공 배포와 같은 커밋입니다",
   noRecords: "없음",
+  servicesNotFound: "확인할 수 없음 — 그 서버의 서비스를 찾지 못함",
 } as const;
 
 export type EvidenceCell<Value> =
   | { state: "value"; value: Value }
   | { state: "failed"; failure: UpstreamFailure }
   | { state: "unmapped" }
+  | { state: "services_not_found" }
   | { state: "not_applicable" };
 
 export interface EvidenceFact {
@@ -173,6 +176,10 @@ export interface IncidentEvidence {
   resources: EvidenceCell<EvidenceResourcesView>;
   /** 크기 상한 때문에 줄인 것(fitIncidentEvidence 가 채운다 — 처음에는 []) */
   reductions: string[];
+  /** 크기 상한 때문에 글에 싣는 값 하나를 이 길이(코드 포인트)까지로(fitIncidentEvidence 가 채운다 — 없으면 자르지 않는다) */
+  valueMaximumLength?: number;
+  /** 크기 상한 때문에 글을 이 바이트(UTF-8)에 맞춰 끝을 자른다 — "줄인 것" 구역은 남긴다(fitIncidentEvidence 가 채운다 — 없으면 자르지 않는다) */
+  textMaximumBytes?: number;
 }
 
 export interface IncidentEvidenceDependencies {
@@ -195,6 +202,7 @@ export function evidenceCellNotice(cell: EvidenceCell<unknown>): string | null {
     case "value": return null;
     case "failed": return `${EVIDENCE_TEXT.failed}${cell.failure.message}`;
     case "unmapped": return EVIDENCE_TEXT.unmapped;
+    case "services_not_found": return EVIDENCE_TEXT.servicesNotFound;
     case "not_applicable": return EVIDENCE_TEXT.notApplicable;
   }
 }
@@ -293,10 +301,11 @@ function alertFilterOf(incident: OpenIncident, referenceAt: number, nowMilliseco
       };
     }
     case "resource_threshold": {
-      const key = `resource:${incident.firing.server}:${incident.firing.rule}`;
+      const { server, rule, target } = incident.firing;
+      const key = `resource:${server}:${rule}${target === null ? "" : `:${target}`}`;
       return {
         fromMilliseconds: referenceAt - EVIDENCE_ALERT_WINDOW_MILLISECONDS, toMilliseconds: nowMilliseconds,
-        matches: (record) => record.key === key || record.key.startsWith(`${key}:`),
+        matches: (record) => record.key === key || record.key === `${key}:resolved`,
       };
     }
     case "error_logs": return null;
@@ -337,11 +346,14 @@ function servicesOnServer(latest: UpstreamResult<LatestResources>, server: strin
   return DEPLOY_SERVICES.filter((service) => containers.some((container) => containerBelongsToService(container.seriesName, service)));
 }
 
-function logPlanOf(incident: OpenIncident, referenceAt: number, sources: IncidentSources, nowMilliseconds: number): LogPlan | null {
+/** 로그를 부르지 않는 칸 — 대응 표에 없음 · 그 서버의 서비스를 찾지 못함. */
+type LogCellWithoutCall = Extract<EvidenceCell<never>, { state: "unmapped" | "services_not_found" }>;
+
+function logPlanOf(incident: OpenIncident, referenceAt: number, sources: IncidentSources, nowMilliseconds: number): LogPlan | LogCellWithoutCall {
   const around = { fromMilliseconds: referenceAt - EVIDENCE_LOG_WINDOW_MILLISECONDS, toMilliseconds: referenceAt + EVIDENCE_LOG_WINDOW_MILLISECONDS };
   switch (incident.kind) {
     case "monitor_down":
-      if (incident.service === null) return null;
+      if (incident.service === null) return { state: "unmapped" };
       return { scope: "levels", ...around, service: incident.service, levels: ["warning", "error"], requestId: null, services: [incident.service], keep: () => true };
     case "deploy_failed": {
       const { requestId } = incident.deployment;
@@ -353,6 +365,7 @@ function logPlanOf(incident: OpenIncident, referenceAt: number, sources: Inciden
     }
     case "resource_threshold": {
       const services = servicesOnServer(sources.latest, incident.firing.server);
+      if (services.length === 0) return { state: "services_not_found" };
       return { scope: "levels", ...around, service: null, levels: ["warning", "error"], requestId: null, services, keep: (line) => services.includes(line.service) };
     }
     case "error_logs":
@@ -472,7 +485,7 @@ export async function buildIncidentEvidence(dependencies: IncidentEvidenceDepend
   // 칸들을 한꺼번에 시작한다(서로 기다리지 않는다)
   const [alertHistory, logs, deployments, resources] = await Promise.all([
     settledCell(async (): Promise<EvidenceCell<AlertHistoryView>> => (alertFilter === null ? { state: "not_applicable" } : alertHistoryCell(dependencies.alertRecords, alertFilter))),
-    settledCell(async (): Promise<EvidenceCell<EvidenceLogsView>> => (logPlan === null ? { state: "unmapped" } : logsCell(dependencies.logs, logPlan))),
+    settledCell(async (): Promise<EvidenceCell<EvidenceLogsView>> => ("state" in logPlan ? logPlan : logsCell(dependencies.logs, logPlan))),
     settledCell(async (): Promise<EvidenceCell<EvidenceDeploymentsView>> => (incident.kind === "deploy_failed"
       ? deploymentRangeCell(dependencies.deployGit, sources.deployments, incident.deployment)
       : deploymentWindowCell(sources.deployments, referenceAt))),

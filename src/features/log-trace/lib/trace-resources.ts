@@ -102,6 +102,43 @@ export interface TraceResourcesView {
   container: UpstreamResult<TraceSeriesView> | null;
 }
 
+// ── 화면(TraceResourcesBlock)과 글(문제 화면의 근거 글)이 같이 쓰는 판정 · 문구 ──────────────
+
+const ROLLUP_STEP_MILLISECONDS = 5 * 60 * 1000;
+/** readsRollup 일 때 덧붙이는 글. */
+export const TRACE_ROLLUP_TEXT = "5분 평균 값(고른 로그가 7일보다 오래됨)";
+
+/** 5분 평균(고른 로그가 7일보다 오래됨)에서 읽은 값인가 — 서버 · 컨테이너 계열 가운데 하나라도 source 가 rollup · mixed 이거나 step 이 5분 이상. */
+export function readsRollup(resources: TraceResourcesView): boolean {
+  const isRollup = (series: UpstreamResult<TraceSeriesView> | null) => series !== null && series.ok
+    && (series.value.source === "rollup" || series.value.source === "mixed" || series.value.stepMilliseconds >= ROLLUP_STEP_MILLISECONDS);
+  return isRollup(resources.host) || isRollup(resources.container);
+}
+
+/** 묻지 못한 · 묻지 않은(상한 밖) · 이름을 읽지 못한 서버 — 조용히 자르지 않는다(§18). */
+function uncheckedServerParts(failedServers: string[], skippedServerCount: number, unreadableServerNameCount: number): string[] {
+  return [
+    ...(failedServers.length > 0 ? [`서버 ${failedServers.join(" · ")} 에 묻지 못했습니다`] : []),
+    ...(skippedServerCount > 0 ? [`확인하지 못한 서버 ${skippedServerCount}대(묻는 서버는 앞 ${TRACE_RESOURCE_SERVER_LIMIT}대까지)`] : []),
+    ...(unreadableServerNameCount > 0 ? [`이름을 읽지 못한 서버 ${unreadableServerNameCount}대`] : []),
+  ];
+}
+
+/** 고른 서버의 덧붙임 줄(끝의 마침표 없이 — 없으면 []): 같은 서비스가 보인 다른 서버 · 확인하지 못한 서버 · 묻지 않은 서버 수 · 이름을 읽지 못한 서버 수. */
+export function foundLocationNotes(location: Extract<TraceServerLocation, { kind: "found" }>): string[] {
+  const unchecked = uncheckedServerParts(location.uncheckedServers, location.skippedServerCount, location.unreadableServerNameCount);
+  return [
+    ...(location.alsoSeenOn.length > 0 ? [`같은 서비스가 서버 ${location.alsoSeenOn.join(" · ")} 에도 보였습니다`] : []),
+    // 확인하지 못한 서버는 "는 확인하지 못함" 으로 적으므로 "에 묻지 못했습니다" 부분은 뺀다
+    ...(location.uncheckedServers.length > 0 ? [`서버 ${location.uncheckedServers.join(" · ")} 는 확인하지 못함`, ...unchecked.slice(1)] : unchecked),
+  ];
+}
+
+/** 어느 서버였는지 확인하지 못함 — <묻지 못한 · 묻지 않은 · 이름을 읽지 못한 서버>(끝의 마침표 없이). */
+export function unknownLocationText(location: Extract<TraceServerLocation, { kind: "unknown" }>): string {
+  return `${TRACE_RESOURCE_TEXT.unknownServer} — ${uncheckedServerParts(location.failedServers, location.skippedServerCount, location.unreadableServerNameCount).join(" · ")}`;
+}
+
 export interface TraceResourcesOptions {
   observeUrl: string;
   observeSecret: string;

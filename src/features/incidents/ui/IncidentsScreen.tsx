@@ -6,7 +6,7 @@
  * 테스트가 고정한 꼴(app/incidents/incidents-page.test.ts):
  * - 본문은 `<main>` 하나. 목록은 `<section aria-labelledby="incident-list">` 안의 표 — 머리 칸 `<th scope="col">` 종류 · 대상 · 언제부터 · 심한 정도.
  *   줄마다 대상 칸에 그 문제로 가는 링크(incidentHref). 언제부터 = formatKoreanTime(since), since 가 없으면 감시 대상은 "모름" · 오류 로그는 "최근 10분".
- *   오류 로그의 대상 칸은 `<서비스> — <errorCountText>`. 확인하지 못한 출처의 줄(text) · errorLogsTruncated 글 · emptyText 는 표 위에.
+ *   오류 로그의 대상 칸은 `<서비스> — <errorCountText>`. 확인하지 못한 출처의 줄(text) · errorLogsTruncated 글 · 확인한 범위의 줄(scopeNotes) · emptyText 는 표 위에.
  * - 문제 하나: 구역마다 `<section aria-labelledby="evidence-<칸>">` + `<h2 id="evidence-<칸>">` — 칸 = facts · alertHistory · logs · deployments · resources
  *   (이 차례), 줄인 것이 있으면 그 뒤에 evidence-reductions. facts 의 값 · 시각은 글과 같은 글자 그대로(KST 는 덧붙여도 된다). 커밋 · 요청 ID 는 전체 글자.
  * - 닫힘 · 확인하지 못함 · 입력 거절(UPSTREAM_FAILURE_MESSAGES.invalid_input)에는 `<a href="/incidents">문제 목록으로</a>`.
@@ -66,6 +66,7 @@ function IncidentListSection({ list, selectedId }: { list: IncidentList; selecte
       <h2 id="incident-list" className={styles.sectionTitle}>열린 문제</h2>
       {list.unchecked.map((failure) => <p key={failure.source} className={styles.failure}>{failure.text}</p>)}
       {list.errorLogsTruncated && <p className={styles.note} role="note">{INCIDENT_LIST_TEXT.errorLogsTruncated}</p>}
+      {list.scopeNotes.map((note) => <p key={note} className={styles.note} role="note">{note}</p>)}
       {list.emptyText !== null ? <p className={parts.empty}>{list.emptyText}</p> : (
         <div className={styles.scroller} tabIndex={0} role="region" aria-label="열린 문제 표">
           <table className={styles.table}>

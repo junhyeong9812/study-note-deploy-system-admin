@@ -37,7 +37,8 @@ function FreshnessCell({ row }: { row: StatusResourceRow }) {
   );
 }
 
-/** 임계값 — 가장 심한 것 하나 + 나머지 개수("! 디스크 경고(경고) 외 1건"). 없으면 "없음", 모르면 "확인하지 못함". */
+/** 임계값 — 가장 심한 것 하나 + 나머지 개수("! 디스크 경고(경고) 외 1건"). 없으면 "없음", 모르면 "확인하지 못함".
+ * 가장 심한 것은 그 문제로 가는 링크 — 이름(aria-label)은 `<서버> <규칙 이름>[ <대상>] 문제 보기`. */
 function FiringCell({ row, firingKnown }: { row: StatusResourceRow; firingKnown: boolean }) {
   if (!firingKnown) return <td><span className={styles.none}>확인하지 못함</span></td>;
   const worst = row.worstFiring;
@@ -45,7 +46,7 @@ function FiringCell({ row, firingKnown }: { row: StatusResourceRow; firingKnown:
   return (
     <td className={worst.severity === "critical" ? styles.undelivered : undefined}>
       <span aria-hidden="true" className={styles.badgeMark}>{SEVERITY_MARKS[worst.severity] ?? "?"} </span>
-      <a href={incidentHref(resourceIncidentId(row.server, worst.rule, worst.target))}><strong>{worst.ruleLabel}{worst.target !== null && <> {worst.target}</>}({worst.severityLabel})</strong></a>
+      <a href={incidentHref(resourceIncidentId(row.server, worst.rule, worst.target))} aria-label={`${row.server} ${worst.ruleLabel}${worst.target === null ? "" : ` ${worst.target}`} 문제 보기`}><strong>{worst.ruleLabel}{worst.target !== null && <> {worst.target}</>}({worst.severityLabel})</strong></a>
       {row.firingCount > 1 && <> 외 {row.firingCount - 1}건</>}
     </td>
   );

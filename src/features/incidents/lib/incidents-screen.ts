@@ -6,7 +6,8 @@
  *   관측 서버 `GET /logs?from=<now−10분>&to=<now>&level=error&limit=500`(createLogClient).
  *   → openIncidentsFrom. 설정이 빈 출처는 그 출처만 not_configured(호출 없음).
  * 2단계(incidentId 가 있을 때만) — 그 식별자가 목록에 있으면 buildIncidentEvidence → fitIncidentEvidence, 글은 incidentEvidenceText(맞춘 묶음).
- *   목록에 없으면: 그 종류의 출처가 실패했으면 { kind: "unchecked" }(열려 있는지 확인하지 못함), 아니면 { kind: "closed" }(지금 열려 있지 않음) — 2단계 호출 없음.
+ *   목록에 없으면: 그 종류의 출처가 실패했거나 오류 로그 문제인데 오류 로그가 상한(ERROR_LOG_COUNT_LIMIT)을 채웠으면(errorLogsTruncated — 빠진 서비스일 수 있다)
+ *   { kind: "unchecked" }(열려 있는지 확인하지 못함), 아니면 { kind: "closed" }(지금 열려 있지 않음) — 2단계 호출 없음.
  * 호출 수: 목록 INCIDENT_LIST_CALLS + 근거 INCIDENT_EVIDENCE_MAXIMUM_CALLS 이하. */
 import type { FetchLike, TimeoutSignalFactory } from "@/features/auth/lib/types";
 import { createDeployGitClient, type DeployGitClient } from "@/features/deploy-detail/lib/deploy-git-client";
@@ -148,7 +149,8 @@ async function selectedIncident(options: IncidentsScreenOptions, incidentId: str
   const incident = list.incidents.find((candidate) => candidate.id === incidentId);
   if (incident === undefined) {
     const kind = incidentKindOfId(incidentId);
-    const unchecked = kind !== null && list.unchecked.some((failure) => failure.source === SOURCE_OF_KIND[kind]);
+    const unchecked = kind !== null
+      && (list.unchecked.some((failure) => failure.source === SOURCE_OF_KIND[kind]) || (kind === "error_logs" && list.errorLogsTruncated));
     return { kind: unchecked ? "unchecked" : "closed", incidentId };
   }
   const evidence = fitIncidentEvidence(await buildIncidentEvidence(evidenceDependencies(options), { incident, sources, nowMilliseconds }));

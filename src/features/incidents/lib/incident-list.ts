@@ -13,9 +13,14 @@
  *   목록 전체에 errorLogsTruncated — 일부 서비스는 빠졌을 수 있다. since = null(언제부터인지 모른다 — "최근 10분"). 심한 정도 = 경고.
  * 한 출처의 실패는 그 출처의 문제만 "확인하지 못함"으로(unchecked — 출처 순서 monitors · thresholds · deployments · errorLogs) — 다른 출처의 문제는 그대로 보인다.
  * 정렬: 위험 먼저 → since 가 이른 것 먼저(since 가 없으면 뒤) → 종류 순서(INCIDENT_KINDS) → 식별자의 글자 코드 순.
- * 빈 목록: 출처가 모두 성공이면 emptyText "열린 문제가 없습니다", 하나라도 실패면 "확인된 범위에서는 열린 문제가 없습니다". 문제가 있으면 null. */
+ * 확인한 범위(scopeNotes — 이 차례, 해당하는 것만 한 줄씩. 출처가 실패했으면 그 출처의 줄은 없다 — 확인하지 못함 줄이 이미 있다):
+ * - 감시 대상 가운데 상태를 아직 모르는 것(UNKNOWN)이 N개면 `감시 대상 N개는 아직 상태를 모름`.
+ * - 배포 이력이 상한(INCIDENT_DEPLOY_LOOKUP_LIMIT)을 채웠고 그 안에 한 번도 보이지 않은 서비스가 있으면
+ *   `배포: 최근 200건 안에서만 확인 — <서비스들(DEPLOY_SERVICES 차례, ", ")> 은 확인하지 못함`(그 서비스의 실패는 목록에 나올 수 없다).
+ * 빈 목록: 출처가 모두 성공이고 확인한 범위의 줄도 없으면 emptyText "열린 문제가 없습니다", 아니면 "확인된 범위에서는 열린 문제가 없습니다". 문제가 있으면 null. */
 import type { AlertMonitorView, AlertMonitorsView } from "@/features/status/lib/status-overview";
 import type { DeploymentSummary } from "@/features/deploys/lib/deploy-history-client";
+import { DEPLOY_SERVICES } from "@/features/deploys/lib/deploy-history-query";
 import type { FiringRule, LatestResources } from "@/features/resources/lib/resource-metrics-client";
 import type { LogPage } from "@/features/logs/lib/log-query";
 import {
@@ -86,7 +91,7 @@ export interface IncidentList {
   incidents: OpenIncident[];
   unchecked: IncidentSourceFailure[];
   errorLogsTruncated: boolean;
-  /** 목록이 확인한 범위의 줄(명세 ⑫ §11 5) — 뼈대: 구현 전에는 언제나 []. */
+  /** 목록이 확인한 범위의 줄(감시 대상 줄 · 배포 줄 차례 — 머리 주석) */
   scopeNotes: string[];
   emptyText: string | null;
 }
@@ -142,6 +147,21 @@ function deployIncidents(deployments: DeploymentSummary[]): OpenIncident[] {
   return incidents;
 }
 
+/** 확인한 범위의 줄 — 상태를 모르는 감시 대상 · 배포 이력 상한 안에 보이지 않은 서비스(성공한 출처만). */
+function scopeNotesOf(sources: IncidentSources): string[] {
+  const notes: string[] = [];
+  if (sources.monitors.ok) {
+    const unknownCount = sources.monitors.value.monitors.filter((monitor) => monitor.status === "UNKNOWN").length;
+    if (unknownCount > 0) notes.push(`감시 대상 ${unknownCount}개는 아직 상태를 모름`);
+  }
+  if (sources.deployments.ok && sources.deployments.value.length >= INCIDENT_DEPLOY_LOOKUP_LIMIT) {
+    const seen = new Set(sources.deployments.value.map((deployment) => deployment.service));
+    const unseen = DEPLOY_SERVICES.filter((service) => !seen.has(service));
+    if (unseen.length > 0) notes.push(`배포: 최근 ${INCIDENT_DEPLOY_LOOKUP_LIMIT}건 안에서만 확인 — ${unseen.join(", ")} 은 확인하지 못함`);
+  }
+  return notes;
+}
+
 function errorLogIncidents(page: LogPage): OpenIncident[] {
   const counts = new Map<string, number>();
   for (const line of page.logs) counts.set(line.service, (counts.get(line.service) ?? 0) + 1);
@@ -185,8 +205,9 @@ export function openIncidentsFrom(sources: IncidentSources): IncidentList {
   collect("deployments", sources.deployments, deployIncidents);
   collect("errorLogs", sources.errorLogs, errorLogIncidents);
   incidents.sort(compareIncidents);
-  const emptyText = incidents.length > 0 ? null : unchecked.length === 0 ? INCIDENT_LIST_TEXT.empty : INCIDENT_LIST_TEXT.emptyWithinChecked;
-  return { incidents, unchecked, errorLogsTruncated: sources.errorLogs.ok && sources.errorLogs.value.nextBefore !== null, scopeNotes: [], emptyText };
+  const scopeNotes = scopeNotesOf(sources);
+  const emptyText = incidents.length > 0 ? null : unchecked.length === 0 && scopeNotes.length === 0 ? INCIDENT_LIST_TEXT.empty : INCIDENT_LIST_TEXT.emptyWithinChecked;
+  return { incidents, unchecked, errorLogsTruncated: sources.errorLogs.ok && sources.errorLogs.value.nextBefore !== null, scopeNotes, emptyText };
 }
 
 /** 오류 수의 글 — `오류 N건` · 상한이면 `오류 N건 이상`. */
