@@ -1,0 +1,235 @@
+/** 열린 문제의 목록(순수) — 명세 ⑫ §2 "열린 문제의 출처는 넷 … 급증 판정을 꾸며 내지 않는다" · "조회가 실패한 칸은 그 칸만 확인하지 못함". */
+import { describe, expect, it } from "vitest";
+import {
+  INCIDENT_LIST_TEXT, errorCountText, openIncidentsFrom, type IncidentList, type OpenIncident,
+} from "@/features/incidents/lib/incident-list";
+import { deployIncidentId, errorLogsIncidentId, monitorIncidentId, resourceIncidentId } from "@/features/incidents/lib/incident-id";
+import {
+  HOUR, MINUTE, NOW, UNREACHABLE, deployment, firing, iso, latest, logLine, logPage, monitor, monitors, ok, quietSources, serverLatest,
+} from "@/features/incidents/lib/incidents-test-fakes";
+import { upstreamFailure } from "@/shared/lib/upstream-result";
+
+function ids(list: IncidentList): string[] {
+  return list.incidents.map((incident) => incident.id);
+}
+
+function only<Kind extends OpenIncident["kind"]>(list: IncidentList, kind: Kind): Extract<OpenIncident, { kind: Kind }>[] {
+  return list.incidents.filter((incident): incident is Extract<OpenIncident, { kind: Kind }> => incident.kind === kind);
+}
+
+describe("감시 대상 DOWN — 상태가 DOWN 인 대상마다 하나", () => {
+  it("DOWN 둘 · UP · UNKNOWN(사유 있음) → DOWN 둘만", () => {
+    const list = openIncidentsFrom(quietSources({ monitors: ok(monitors([
+      monitor({ name: "front", status: "DOWN", downSince: iso(NOW - 20 * MINUTE), reason: "status 502" }),
+      monitor({ name: "backend", status: "UP", reason: "1번 실패" }),
+      monitor({ name: "llm", status: "UNKNOWN", reason: "연결 실패" }),
+      monitor({ name: "deploy-master", status: "DOWN", downSince: iso(NOW - 5 * MINUTE), reason: "꺼짐" }),
+    ])) }));
+    expect(ids(list)).toEqual([monitorIncidentId("front"), monitorIncidentId("deploy-master")]);
+    const [front, deployMaster] = only(list, "monitor_down");
+    expect(front).toMatchObject({ kindLabel: "감시 대상 DOWN", target: "front", severity: "critical", severityLabel: "위험", since: iso(NOW - 20 * MINUTE), service: "front" });
+    expect(front.monitor.reason).toBe("status 502");
+    expect(deployMaster.service).toBeNull();   // 대응 표에 없음 — 짐작하지 않는다
+  });
+
+  it("DOWN 시각이 없으면(down_since 빈 글자) since null — 지어내지 않는다", () => {
+    const list = openIncidentsFrom(quietSources({ monitors: ok(monitors([monitor({ name: "front", status: "DOWN", downSince: null })])) }));
+    expect(list.incidents[0].since).toBeNull();
+  });
+});
+
+describe("자원 임계값 — 지금 울리는 것마다 하나", () => {
+  it("울리는 규칙 셋 → 셋, 대상 · 심한 정도 · 언제부터는 받은 값", () => {
+    const list = openIncidentsFrom(quietSources({ latest: ok(latest([serverLatest("s158")], [
+      firing({ server: "s158", rule: "disk_critical", severity: "critical", since: iso(NOW - 3 * HOUR), lastValue: 96.1 }),
+      firing({ server: "s9", rule: "restarts", target: "front-app-green", severity: "warning", since: iso(NOW - 10 * MINUTE), lastValue: 4 }),
+      firing({ server: "s164", rule: "brand_new_rule", severity: "notice", since: iso(NOW - MINUTE), lastValue: null }),
+    ])) }));
+    expect(ids(list)).toEqual([
+      resourceIncidentId("s158", "disk_critical", null), resourceIncidentId("s9", "restarts", "front-app-green"), resourceIncidentId("s164", "brand_new_rule", null),
+    ]);
+    const [disk, restarts, unknownRule] = only(list, "resource_threshold");
+    expect(disk).toMatchObject({ kindLabel: "자원 임계값", target: "서버 s158 디스크 위험", severity: "critical", severityLabel: "위험", ruleLabel: "디스크 위험" });
+    expect(restarts).toMatchObject({ target: "서버 s9 컨테이너 재시작 반복 front-app-green", severity: "warning", severityLabel: "경고" });
+    // 모르는 규칙 · 심각도 낱말은 낱말 그대로 보이고, 심한 정도는 경고로 친다(위험으로 올리지 않는다)
+    expect(unknownRule).toMatchObject({ target: "서버 s164 brand_new_rule", severity: "warning", ruleLabel: "brand_new_rule" });
+  });
+
+  it("firing 칸이 없으면(null) 임계값 출처만 확인하지 못함 — 다른 출처의 문제는 보인다", () => {
+    const list = openIncidentsFrom(quietSources({
+      latest: ok(latest([serverLatest("s158")], null)),
+      monitors: ok(monitors([monitor({ name: "front", status: "DOWN", downSince: iso(NOW - MINUTE) })])),
+    }));
+    expect(ids(list)).toEqual([monitorIncidentId("front")]);
+    expect(list.unchecked).toEqual([{
+      source: "thresholds", label: "관측 서버(자원 임계값)", message: "임계값 칸 없음", text: "관측 서버(자원 임계값): 확인하지 못함 — 임계값 칸 없음",
+    }]);
+  });
+});
+
+describe("배포 실패 — 서비스의 가장 최근 배포가 실패일 때만", () => {
+  it("가장 최근이 실패 → 문제 하나(그 배포)", () => {
+    const failed = deployment({ service: "backend", state: "failed", failedStage: "ci_test", acceptedAt: iso(NOW - 30 * MINUTE), finishedAt: iso(NOW - 25 * MINUTE) });
+    const list = openIncidentsFrom(quietSources({ deployments: ok([failed, deployment({ service: "backend", state: "succeeded" })]) }));
+    expect(ids(list)).toEqual([deployIncidentId("backend", failed.requestId)]);
+    expect(only(list, "deploy_failed")[0]).toMatchObject({
+      kindLabel: "배포 실패", target: "backend", severity: "warning", severityLabel: "경고", since: iso(NOW - 25 * MINUTE), deployment: failed,
+    });
+  });
+
+  it("실패 뒤에 성공한 배포가 있으면 열린 문제가 아니다(가장 최근이 아닌 실패는 보지 않는다)", () => {
+    const list = openIncidentsFrom(quietSources({ deployments: ok([
+      deployment({ service: "backend", state: "succeeded", acceptedAt: iso(NOW - 10 * MINUTE) }),
+      deployment({ service: "backend", state: "failed", failedStage: "cd_health", acceptedAt: iso(NOW - 40 * MINUTE) }),
+      deployment({ service: "backend", state: "failed", failedStage: "ci_test", acceptedAt: iso(NOW - 50 * MINUTE) }),
+    ]) }));
+    expect(only(list, "deploy_failed")).toEqual([]);
+  });
+
+  it("가장 최근이 진행 중이면 열린 문제가 아니다 — 그 앞의 실패도 치지 않는다(다시 배포하는 중)", () => {
+    for (const state of ["accepted", "ci_running", "cd_running"] as const) {
+      const list = openIncidentsFrom(quietSources({ deployments: ok([
+        deployment({ service: "front", state, finishedAt: null, acceptedAt: iso(NOW - MINUTE) }),
+        deployment({ service: "front", state: "failed", failedStage: "ci_build", acceptedAt: iso(NOW - 20 * MINUTE) }),
+      ]) }));
+      expect(only(list, "deploy_failed"), state).toEqual([]);
+    }
+  });
+
+  it("서비스마다 따로 본다 — 다른 서비스의 성공이 이 서비스의 실패를 닫지 않는다", () => {
+    const frontFailed = deployment({ service: "front", state: "failed", failedStage: "ci_fetch", acceptedAt: iso(NOW - 30 * MINUTE), finishedAt: iso(NOW - 29 * MINUTE) });
+    const list = openIncidentsFrom(quietSources({ deployments: ok([
+      deployment({ service: "backend", state: "succeeded", acceptedAt: iso(NOW - MINUTE) }),
+      frontFailed,
+      deployment({ service: "backend", state: "failed", acceptedAt: iso(NOW - 2 * HOUR) }),
+    ]) }));
+    expect(ids(list)).toEqual([deployIncidentId("front", frontFailed.requestId)]);
+  });
+
+  it("끝난 시각이 없는 실패는 접수 시각을 언제부터로", () => {
+    const failed = deployment({ service: "llm", state: "failed", acceptedAt: iso(NOW - 7 * MINUTE), finishedAt: null });
+    const list = openIncidentsFrom(quietSources({ deployments: ok([failed]) }));
+    expect(list.incidents[0].since).toBe(iso(NOW - 7 * MINUTE));
+  });
+});
+
+describe("오류 로그 — 최근 10분의 오류 수가 0 보다 큰 서비스마다(수만 — 급증 판정 없음)", () => {
+  it("서비스별로 센다 · 0 인 서비스는 없다 · since 없음", () => {
+    const list = openIncidentsFrom(quietSources({ errorLogs: ok(logPage([
+      logLine({ service: "backend" }), logLine({ service: "backend" }), logLine({ service: "backend" }), logLine({ service: "llm" }),
+    ])) }));
+    expect(ids(list)).toEqual([errorLogsIncidentId("backend"), errorLogsIncidentId("llm")]);
+    const [backend, llm] = only(list, "error_logs");
+    expect(backend).toMatchObject({ kindLabel: "오류 로그", target: "backend", service: "backend", errorCount: 3, countIsLowerBound: false, since: null, severity: "warning" });
+    expect(llm.errorCount).toBe(1);
+    expect(list.errorLogsTruncated).toBe(false);
+  });
+
+  it("오류 줄이 없으면 오류 로그 문제는 없다", () => {
+    expect(only(openIncidentsFrom(quietSources()), "error_logs")).toEqual([]);
+  });
+
+  it("응답이 상한을 채웠으면(next_before 있음) 수는 '이상' · 목록에 일부만 셈을 드러낸다", () => {
+    const lines = Array.from({ length: 500 }, (_, index) => logLine({ service: index < 499 ? "backend" : "front" }));
+    const list = openIncidentsFrom(quietSources({ errorLogs: ok(logPage(lines, { nextBefore: "1764050000000-0" })) }));
+    expect(only(list, "error_logs").map((incident) => [incident.service, incident.errorCount, incident.countIsLowerBound])).toEqual([
+      ["backend", 499, true], ["front", 1, true],
+    ]);
+    expect(list.errorLogsTruncated).toBe(true);
+    expect(INCIDENT_LIST_TEXT.errorLogsTruncated).toBe("최근 10분의 오류가 500건을 넘어 일부 서비스만 셌습니다");
+  });
+
+  it("오류 수의 글 — 'N건' · 'N건 이상', '급증'이라는 낱말을 쓰지 않는다", () => {
+    expect(errorCountText(3, false)).toBe("오류 3건");
+    expect(errorCountText(500, true)).toBe("오류 500건 이상");
+    const list = openIncidentsFrom(quietSources({ errorLogs: ok(logPage(Array.from({ length: 300 }, () => logLine({ service: "backend" })))) }));
+    expect(JSON.stringify(list)).not.toContain("급증");
+  });
+});
+
+describe("한 출처의 실패는 그 출처만 '확인하지 못함'", () => {
+  const openEverywhere = () => quietSources({
+    monitors: ok(monitors([monitor({ name: "front", status: "DOWN", downSince: iso(NOW - MINUTE) })])),
+    latest: ok(latest([serverLatest("s158")], [firing({ server: "s158" })])),
+    deployments: ok([deployment({ service: "backend", state: "failed", acceptedAt: iso(NOW - 2 * MINUTE), finishedAt: iso(NOW - MINUTE) })]),
+    errorLogs: ok(logPage([logLine({ service: "llm" })])),
+  });
+
+  it.each([
+    ["monitors", "알림 서버(감시 대상)", "monitor_down"],
+    ["latest", "관측 서버(자원 임계값)", "resource_threshold"],
+    ["deployments", "배포 서버(배포 이력)", "deploy_failed"],
+    ["errorLogs", "관측 서버(오류 로그)", "error_logs"],
+  ] as const)("%s 실패 → 그 종류만 빠지고 나머지 셋은 보인다 · 목록 위에 '%s: 확인하지 못함 — 닿지 않음'", (source, label, missingKind) => {
+    const list = openIncidentsFrom({ ...openEverywhere(), [source]: UNREACHABLE });
+    expect(list.incidents.map((incident) => incident.kind).sort()).toEqual(
+      ["deploy_failed", "error_logs", "monitor_down", "resource_threshold"].filter((kind) => kind !== missingKind),
+    );
+    expect(list.unchecked.map((failure) => failure.text)).toEqual([`${label}: 확인하지 못함 — 닿지 않음`]);
+    expect(list.emptyText).toBeNull();
+  });
+
+  it("실패가 여럿이면 출처 순서(감시 대상 · 임계값 · 배포 · 오류 로그)대로, 실패의 고정 글자만", () => {
+    const list = openIncidentsFrom({
+      ...openEverywhere(), errorLogs: upstreamFailure("timeout"), monitors: upstreamFailure("unauthorized", { status: 401 }),
+    });
+    expect(list.unchecked.map((failure) => [failure.source, failure.message])).toEqual([["monitors", "비밀값 거절됨"], ["errorLogs", "닿지 않음(5초 초과)"]]);
+  });
+});
+
+describe("빈 목록의 말", () => {
+  it("출처가 모두 성공이고 문제가 없으면 '열린 문제가 없습니다'", () => {
+    const list = openIncidentsFrom(quietSources());
+    expect(list.incidents).toEqual([]);
+    expect(list.unchecked).toEqual([]);
+    expect(list.emptyText).toBe("열린 문제가 없습니다");
+  });
+
+  it("출처 가운데 실패가 있으면 그 말을 하지 않는다 — '확인된 범위에서는 열린 문제가 없습니다'", () => {
+    const list = openIncidentsFrom(quietSources({ deployments: UNREACHABLE }));
+    expect(list.emptyText).toBe("확인된 범위에서는 열린 문제가 없습니다");
+    expect(list.emptyText).not.toBe(INCIDENT_LIST_TEXT.empty);
+  });
+
+  it("firing 칸이 없는 것도 실패로 친다", () => {
+    expect(openIncidentsFrom(quietSources({ latest: ok(latest([], null)) })).emptyText).toBe("확인된 범위에서는 열린 문제가 없습니다");
+  });
+});
+
+describe("정렬 — 위험 먼저, 그 안에서 오래된 것 먼저(언제부터를 모르면 뒤)", () => {
+  it("정해진 순서", () => {
+    const failed = deployment({ service: "backend", state: "failed", acceptedAt: iso(NOW - 4 * HOUR), finishedAt: iso(NOW - 4 * HOUR + MINUTE) });
+    const list = openIncidentsFrom({
+      monitors: ok(monitors([
+        monitor({ name: "front", status: "DOWN", downSince: iso(NOW - 10 * MINUTE) }),
+        monitor({ name: "llm", status: "DOWN", downSince: null }),
+        monitor({ name: "admin", status: "DOWN", downSince: iso(NOW - HOUR) }),
+      ])),
+      latest: ok(latest([], [
+        firing({ server: "s1", rule: "cpu", severity: "warning", since: iso(NOW - 5 * HOUR) }),
+        firing({ server: "s2", rule: "disk_critical", severity: "critical", since: iso(NOW - 30 * MINUTE) }),
+      ])),
+      deployments: ok([failed]),
+      errorLogs: ok(logPage([logLine({ service: "observe" })])),
+    });
+    expect(ids(list)).toEqual([
+      monitorIncidentId("admin"),                        // 위험 · 1시간 전
+      resourceIncidentId("s2", "disk_critical", null),   // 위험 · 30분 전
+      monitorIncidentId("front"),                        // 위험 · 10분 전
+      monitorIncidentId("llm"),                          // 위험 · 언제부터 모름
+      resourceIncidentId("s1", "cpu", null),             // 경고 · 5시간 전
+      deployIncidentId("backend", failed.requestId),     // 경고 · 4시간 전
+      errorLogsIncidentId("observe"),                    // 경고 · 언제부터 모름
+    ]);
+  });
+
+  it("같은 심한 정도 · 같은 시각이면 종류 순서(감시 대상 · 배포 · 임계값 · 오류 로그), 그다음 식별자 순", () => {
+    const at = iso(NOW - 15 * MINUTE);
+    const failed = deployment({ service: "front", state: "failed", acceptedAt: iso(NOW - 16 * MINUTE), finishedAt: at });
+    const list = openIncidentsFrom(quietSources({
+      latest: ok(latest([], [firing({ server: "s2", rule: "cpu", since: at }), firing({ server: "s1", rule: "cpu", since: at })])),
+      deployments: ok([failed]),
+    }));
+    expect(ids(list)).toEqual([deployIncidentId("front", failed.requestId), resourceIncidentId("s1", "cpu", null), resourceIncidentId("s2", "cpu", null)]);
+  });
+});
