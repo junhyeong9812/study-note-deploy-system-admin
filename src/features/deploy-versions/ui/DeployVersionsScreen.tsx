@@ -1,7 +1,8 @@
 /** 버전 목록 화면의 본문(서버 컴포넌트) — 서비스 고르기 · 지금 버전 · 배포에 성공한 적 있는 버전들(커밋 제목 · 가장 최근 배포 시각 · 성공 횟수) ·
  * 배포 진행 중 한 줄 · 읽은 이력의 범위 · 다른 서버 실패 · 잘못된 입력.
  * 받은 값(진입 함수의 결과)만 그린다 — 다른 서버를 부르지 않고, 서버 모듈 · 클라이언트 · 설정을 임포트하지 않는다.
- * 읽기만 한다 — 폼 · 단추 · 스크립트가 없고, 서비스 고르기는 링크(GET)다. 표 · 낱말 · 색은 배포 이력 화면의 것을 그대로 쓴다. */
+ * 읽기만 한다 — 폼 · 단추 · 스크립트가 없고, 서비스 고르기와 줄마다의 재배포 확인(이 버전으로 · 다시 올리기)은 링크(GET)다. 표 · 낱말 · 색은 배포 이력 화면의 것을 그대로 쓴다. */
+import { redeployPreviewHref } from "@/features/deploy-redeploy/lib/redeploy-preview-query";
 import type { DeployVersionsView } from "@/features/deploy-versions/server/deploy-versions";
 import type { DeployVersionList } from "@/features/deploy-versions/lib/deploy-versions-view";
 import { describeDeployState, formatKoreanTime, shortPrefix } from "@/features/deploys/lib/deploy-format";
@@ -83,6 +84,7 @@ function VersionList({ list }: { list: DeployVersionList }) {
                   <th scope="col">커밋 제목</th>
                   <th scope="col">마지막 배포(KST)</th>
                   <th scope="col">성공 횟수</th>
+                  <th scope="col">재배포</th>
                 </tr>
               </thead>
               <tbody>
@@ -97,6 +99,7 @@ function VersionList({ list }: { list: DeployVersionList }) {
                       <time dateTime={version.lastDeployedAt} title={`UTC ${version.lastDeployedAt}`}>{formatKoreanTime(version.lastDeployedAt)}</time>
                     </td>
                     <td className={tableStyles.time}>{`${version.deployCount}번`}</td>
+                    <td><a href={redeployPreviewHref(list.service, version.commitSha)}>{version.current ? "다시 올리기" : "이 버전으로"}</a></td>
                   </tr>
                 ))}
               </tbody>
