@@ -3,6 +3,7 @@
  * 머리글 `X-Deploy-Secret` · `Content-Type: application/json` · redirect:"manual" · 기한 REDEPLOY_ACCEPT_TIMEOUT_MILLISECONDS(본문까지).
  * 오류 봉투의 error.code 는 결과를 가르는 데만 쓰고, 원문 · detail 은 결과에 담지 않는다. */
 import type { FetchLike, TimeoutSignalFactory } from "@/features/auth/lib/types";
+import { REDEPLOY_REQUEST_ID_PATTERN } from "@/features/deploy-redeploy/lib/redeploy-confirmation";
 import { isRecord, upstreamUrl } from "@/shared/lib/upstream-fetch";
 
 export const REDEPLOY_ACCEPT_PATH = "/deploy";
@@ -16,11 +17,12 @@ export interface RedeployAcceptRequest {
 }
 
 /** master 의 답 → 결과(원문 · 오류 detail 은 담지 않는다).
- * - accepted: 202(새 접수 · duplicate:true 면 같은 요청 ID 의 재접수). 본문을 해석하지 못해도 202 면 accepted(duplicate false · 보낸 요청 ID)
+ * - accepted: 202(새 접수 · duplicate:true 면 같은 요청 ID 의 재접수). 본문을 해석하지 못해도 202 면 accepted(duplicate false · 보낸 요청 ID).
+ *   돌려받은 요청 ID 는 꼴(REDEPLOY_REQUEST_ID_PATTERN)이 맞을 때만 쓰고, 아니면 보낸 요청 ID
  * - in_progress: 409 deploy_in_progress · request_id_conflict: 409 request_id_conflict
  * - rejected: 422 invalid_requested_by · invalid_sha · unknown_service · invalid_request, 401 unauthorized, 그 밖의 4xx · 3xx 는 unexpected
- * - not_accepted: 연결 실패(TypeError 등) · 5xx(status) — 접수되지 않았다
- * - unknown: 기한 초과(신호가 끊김 · AbortError · TimeoutError) — 요청은 나갔을 수 있다 */
+ * - not_accepted: 연결을 맺지 못함(cause 가 Error 이고 code 가 CONNECT_FAILURE_CODES) · 5xx(status) — 접수되지 않았다
+ * - unknown: 그 밖의 모든 실패 — 기한 초과 · 보낸 뒤 끊김 · 모르는 예외 · 2xx · 409 의 본문을 읽다 끊김. 요청은 나갔을 수 있다 */
 export type RedeployAcceptResult =
   | { kind: "accepted"; requestId: string; duplicate: boolean }
   | { kind: "in_progress" }
@@ -49,10 +51,14 @@ function defaultTimeoutSignal(milliseconds: number): AbortSignal {
   return AbortSignal.timeout(milliseconds);
 }
 
-/** 기한이 끊은 실패인가 — 요청이 이미 나갔을 수 있다(접수 여부 모름). */
-function isAbort(error: unknown, signal: AbortSignal): boolean {
-  if (signal.aborted) return true;
-  return error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError");
+/** 연결을 맺지 못한 쪽의 code(Node fetch — undici 가 TypeError 의 cause 에 싣는다). 이 밖은 요청이 나갔을 수 있다. */
+const CONNECT_FAILURE_CODES: readonly string[] = ["ECONNREFUSED", "ENOTFOUND", "EHOSTUNREACH", "ENETUNREACH", "UND_ERR_CONNECT_TIMEOUT"];
+
+/** 요청이 나가지 않았다고 말할 수 있는 실패인가 — 기한이 끊었으면 아니다. */
+function isConnectFailure(error: unknown, signal: AbortSignal): boolean {
+  if (signal.aborted || !(error instanceof Error) || !(error.cause instanceof Error)) return false;
+  const code = (error.cause as Error & { code?: unknown }).code;
+  return typeof code === "string" && CONNECT_FAILURE_CODES.includes(code);
 }
 
 /** 본문(JSON 이면 그 값, 아니면 null) — 기한 안에서 읽는다. 끊기면 그 예외를 던진다. */
@@ -73,9 +79,10 @@ function errorCodeOf(json: unknown): string | null {
 function resultForStatus(status: number, json: unknown, sentRequestId: string): RedeployAcceptResult {
   if (status === 202) {
     const data = isRecord(json) && isRecord(json.data) ? json.data : null;
-    const requestId = data !== null && typeof data.request_id === "string" && data.request_id.length > 0 ? data.request_id : sentRequestId;
+    const requestId = data !== null && typeof data.request_id === "string" && REDEPLOY_REQUEST_ID_PATTERN.test(data.request_id) ? data.request_id : sentRequestId;
     return { kind: "accepted", requestId, duplicate: data?.duplicate === true };
   }
+  // 5xx 를 "접수되지 않음"으로 두는 것은 어드민과 배포 서버 사이에 프록시가 없다는 전제다(5xx 는 배포 서버 자신의 답).
   if (status >= 500) return { kind: "not_accepted", status };
   const code = errorCodeOf(json);
   if (status === 409 && code === "deploy_in_progress") return { kind: "in_progress" };
@@ -101,13 +108,14 @@ export function createRedeployAcceptClient(options: RedeployAcceptClientOptions)
           cache: "no-store",
         });
       } catch (error) {
-        return isAbort(error, signal) ? { kind: "unknown" } : { kind: "not_accepted" };
+        return isConnectFailure(error, signal) ? { kind: "not_accepted" } : { kind: "unknown" };
       }
       let json: unknown = null;
       try {
         json = await readJson(response);
       } catch {
-        // 상태는 받았다(master 가 답했다) — 본문 없이 상태로 가른다
+        // 상태는 받았다. 2xx · 409 는 본문이 있어야 가를 수 있어 모름, 그 밖의 4xx · 5xx 는 상태로 이미 접수되지 않음이다
+        if ((response.status >= 200 && response.status < 300) || response.status === 409) return { kind: "unknown" };
       }
       return resultForStatus(response.status, json, request.requestId);
     },

@@ -1,12 +1,12 @@
 /** 재배포 접수의 서버 쪽 진입(POST /api/deploys/redeploy) — 어드민에서 운영을 바꾸는 유일한 경로.
- * 순서(앞 단계가 거절하면 뒤 단계의 호출이 없다):
+ * route 안의 순서(앞 단계가 거절하면 뒤 단계의 호출이 없다 — 배포된 서버에서는 세션이 없으면 middleware 가 이보다 먼저 401):
  *   출처(로그인과 같은 isAllowedOrigin — 403 JSON) → 세션(requireApiSession — 401 JSON) → 속도 제한(계정당 60초에 5번 — 세션을 통과한 POST 마다)
  *   → 입력의 꼴(urlencoded · 4KB · 칸마다 하나) → 계정 이름(requested_by 로 쓸 수 있는가) → 확인 값(서명 · 5분)
  *   → 비밀번호(로그인 흐름 — 잠금 판정 · 시도 기록 · 관측 서버 장애 때의 임시 제한이 로그인과 같다. 세션 쿠키는 놓지 않는다)
- *   → 이력 재확인(그 서비스의 성공한 버전인가) → master 접수 한 번(다시 보내지 않는다).
+ *   → 이력 재확인(그 서비스의 성공한 버전인가 — 배포 이력만 읽는다, git 조회 없음) → master 접수 한 번(다시 보내지 않는다).
  * 확인 값이 틀리면 비밀번호를 확인하지 않는다 — 잠금 횟수가 늘지 않는다.
  * 응답: 접수됨(새 · duplicate) 303 → 배포 이력의 그 배포 상세 / 그 밖의 실패는 HTML(no-store — 스크립트 없음).
- * 접수 여부를 모르면(10초) 504 와 같은 확인 값의 다시 보내기 폼 — 새 요청 ID 를 만들지 않는다(master 의 멱등 접수가 같은 배포로 답한다).
+ * 접수 여부를 모르면(10초 기한 · 보낸 뒤 끊김 등) 504 와 같은 확인 값의 다시 보내기 폼 — 새 요청 ID 를 만들지 않는다(master 의 멱등 접수가 같은 배포로 답한다).
  * 로그: 접수 한 건에 한 줄 `redeploy:<결과> service=… commit=<7자> account=…` — 비밀번호 · 확인 값 · 비밀값 · 해시는 로그 · 응답 · 주소 어디에도 없다. */
 import "server-only";
 import { clientIpOrUnknown } from "@/features/auth/lib/client-ip";
@@ -15,7 +15,6 @@ import { isAllowedOrigin } from "@/features/auth/lib/origin";
 import { createRateLimiter } from "@/features/auth/lib/rate-limit";
 import { loginService } from "@/features/auth/server/login-service";
 import { requireApiSession } from "@/features/auth/server/require-session";
-import { createDeployGitClient } from "@/features/deploy-detail/lib/deploy-git-client";
 import { isSameCommit } from "@/features/deploy-detail/lib/deploy-range";
 import { createRedeployAcceptClient, type RedeployAcceptResult } from "@/features/deploy-redeploy/lib/redeploy-accept-client";
 import { REDEPLOY_CONFIRMATION_MAX_LENGTH, verifyRedeployConfirmation } from "@/features/deploy-redeploy/lib/redeploy-confirmation";
@@ -23,7 +22,7 @@ import {
   REDEPLOY_ACCEPT_ACTION, parseRedeployPreviewQuery, redeployPreviewHref, type RedeployPreviewQuery,
 } from "@/features/deploy-redeploy/lib/redeploy-preview-query";
 import { requestedByFor } from "@/features/deploy-redeploy/lib/redeploy-requester";
-import { buildDeployVersionList } from "@/features/deploy-versions/lib/deploy-versions-view";
+import { DEPLOY_VERSIONS_HISTORY_LIMIT } from "@/features/deploy-versions/lib/deploy-versions-view";
 import { createDeployHistoryClient } from "@/features/deploys/lib/deploy-history-client";
 import { DEPLOY_HISTORY_DEFAULT_LIMIT } from "@/features/deploys/lib/deploy-history-query";
 import { deploysHref } from "@/features/deploys/ui/deploys-address";
@@ -36,6 +35,7 @@ import { isHttpBaseUrl } from "@/shared/lib/upstream-fetch";
 export const REDEPLOY_RATE_LIMIT_PER_MINUTE = 5;
 /** 본문(application/x-www-form-urlencoded) 상한. */
 export const REDEPLOY_BODY_MAX_BYTES = 4_096;
+const FORM_MEDIA_TYPE = "application/x-www-form-urlencoded";
 
 const RATE_LIMIT_WINDOW_MILLISECONDS = 60_000;
 const COMMIT_PREFIX_LENGTH = 7;
@@ -99,7 +99,8 @@ async function readBoundedBody(request: Request): Promise<Uint8Array | null> {
 
 /** urlencoded 본문의 네 칸 — 칸마다 정확히 하나. service · commit 은 확인 화면의 주소와 같은 검증(parseRedeployPreviewQuery). 아니면 null. */
 async function readAcceptForm(request: Request): Promise<AcceptForm | null> {
-  if (!(request.headers.get("content-type") ?? "").toLowerCase().startsWith("application/x-www-form-urlencoded")) {
+  // 매체 종류가 정확히 같아야 한다(뒤의 ; 매개변수는 허용 · 접두 일치는 거절)
+  if ((request.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase() !== FORM_MEDIA_TYPE) {
     request.body?.cancel().catch(() => undefined);
     return null;
   }
@@ -186,7 +187,7 @@ function responseForAccept(result: RedeployAcceptResult, form: AcceptForm, subje
     case "unknown":
       logOutcome(subject, "unknown");
       return failurePage(504, "접수됐는지 확인하지 못했습니다",
-        "배포 서버가 10초 안에 답하지 않았습니다. 배포 이력에서 이 배포가 보이는지 먼저 확인하세요. 보이지 않으면 아래 폼으로 같은 접수를 다시 보낼 수 있습니다(같은 접수 번호라 두 번 배포되지 않습니다).",
+        "배포 서버의 답을 받지 못했습니다(10초 기한 또는 연결이 끊김). 배포 이력에서 이 배포가 보이는지 먼저 확인하세요. 보이지 않으면 아래 폼으로 같은 접수를 다시 보낼 수 있습니다(같은 접수 번호라 두 번 배포되지 않습니다).",
         query, retryFormHtml(form));
   }
 }
@@ -251,18 +252,20 @@ export async function redeployAcceptResponse(request: Request): Promise<Response
     if (login.kind === "rate_limited") return failurePage(429, "비밀번호 확인이 너무 잦습니다", "잠시 뒤 다시 시도하세요.", form.query);
     return failurePage(401, "비밀번호가 맞지 않습니다", "로그인 비밀번호를 다시 넣어 주세요. 틀린 입력은 로그인의 잠금 횟수에 듭니다.", form.query);
   }
-  // 8 이력 재확인 — 그 서비스의 성공한 버전인가
+  // 8 이력 재확인 — 그 서비스의 성공한 버전인가(배포 이력만 읽는다 — 커밋 제목을 얻는 git 조회는 하지 않는다)
   if (!isHttpBaseUrl(config.deployMasterUrl) || config.deploySecret.length === 0) {
     logOutcome(subject, "history_not_configured");
     return failurePage(502, "배포 이력을 확인하지 못해 접수하지 않았습니다", "배포 서버 설정이 없습니다.", form.query);
   }
   const masterOptions = { baseUrl: config.deployMasterUrl, secret: config.deploySecret, fetch: (input: string, init: RequestInit) => fetch(input, init) };
-  const list = await buildDeployVersionList({ deployHistory: createDeployHistoryClient(masterOptions), deployGit: createDeployGitClient(masterOptions) }, form.query.service);
-  if (!list.ok) {
-    logOutcome(subject, `history_unavailable upstream=${list.reason}`);
-    return failurePage(502, "배포 이력을 확인하지 못해 접수하지 않았습니다", `배포 서버: ${list.message}`, form.query);
+  const history = await createDeployHistoryClient(masterOptions).listDeployments({ service: form.query.service, limit: DEPLOY_VERSIONS_HISTORY_LIMIT });
+  if (!history.ok) {
+    logOutcome(subject, `history_unavailable upstream=${history.reason}`);
+    return failurePage(502, "배포 이력을 확인하지 못해 접수하지 않았습니다", `배포 서버: ${history.message}`, form.query);
   }
-  if (!list.value.versions.some((version) => isSameCommit(version.commitSha, form.query.commitSha))) {
+  const deployable = history.value.some((deployment) => deployment.service === form.query.service && deployment.state === "succeeded"
+    && isSameCommit(deployment.commitSha, form.query.commitSha));
+  if (!deployable) {
     logOutcome(subject, "not_deployable");
     return failurePage(409, "배포된 적 없는 버전은 고를 수 없습니다", "이 커밋은 그 서비스의 성공한 배포 이력(최근 200건)에 없습니다.", form.query);
   }
