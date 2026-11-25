@@ -6,17 +6,17 @@
  *   관측 서버 `GET /logs?from=<now−10분>&to=<now>&level=error&limit=500`(createLogClient).
  *   → openIncidentsFrom. 설정이 빈 출처는 그 출처만 not_configured(호출 없음).
  * 2단계(incidentId 가 있을 때만) — 그 식별자가 목록에 있으면 buildIncidentEvidence → fitIncidentEvidence, 글은 incidentEvidenceText(맞춘 묶음).
- *   목록에 없으면: 그 종류의 출처가 실패했거나 오류 로그 문제인데 오류 로그가 상한(ERROR_LOG_COUNT_LIMIT)을 채웠으면(errorLogsTruncated — 빠진 서비스일 수 있다)
- *   { kind: "unchecked" }(열려 있는지 확인하지 못함), 아니면 { kind: "closed" }(지금 열려 있지 않음) — 2단계 호출 없음.
+ *   목록에 없으면: 그 식별자가 목록이 덮지 못한 범위(list.uncovered — 출처 실패 · 오류 로그 상한 · 상태를 모르는 감시 대상 · 배포 이력 상한 안에 보이지 않은 서비스)에
+ *   들면(isUncovered) { kind: "unchecked" }(열려 있는지 확인하지 못함), 아니면 { kind: "closed" }(그 범위를 확인했고 지금 열려 있지 않음) — 2단계 호출 없음.
+ *   목록의 범위 줄과 이 판정은 같은 값(list.uncovered)을 읽는다.
  * 호출 수: 목록 INCIDENT_LIST_CALLS + 근거 INCIDENT_EVIDENCE_MAXIMUM_CALLS 이하. */
 import type { FetchLike, TimeoutSignalFactory } from "@/features/auth/lib/types";
 import { createDeployGitClient, type DeployGitClient } from "@/features/deploy-detail/lib/deploy-git-client";
 import { createDeployHistoryClient } from "@/features/deploys/lib/deploy-history-client";
-import { INCIDENT_DEPLOY_LOOKUP_LIMIT, ERROR_LOG_COUNT_LIMIT, ERROR_LOG_WINDOW_MILLISECONDS, openIncidentsFrom } from "@/features/incidents/lib/incident-list";
-import type { IncidentList, IncidentSource, IncidentSources } from "@/features/incidents/lib/incident-list";
+import { INCIDENT_DEPLOY_LOOKUP_LIMIT, ERROR_LOG_COUNT_LIMIT, ERROR_LOG_WINDOW_MILLISECONDS, isUncovered, openIncidentsFrom } from "@/features/incidents/lib/incident-list";
+import type { IncidentList, IncidentSources } from "@/features/incidents/lib/incident-list";
 import { buildIncidentEvidence, type IncidentEvidence, type IncidentEvidenceDependencies } from "@/features/incidents/lib/incident-evidence";
 import { fitIncidentEvidence, incidentEvidenceText } from "@/features/incidents/lib/incident-evidence-text";
-import { incidentKindOfId, type IncidentKind } from "@/features/incidents/lib/incident-id";
 import { createIncidentClient, type IncidentClient } from "@/features/log-trace/lib/incident-client";
 import { collectTraceResources } from "@/features/log-trace/lib/trace-resources";
 import { createLogClient, type LogClient } from "@/features/logs/lib/log-client";
@@ -59,11 +59,6 @@ export interface IncidentsScreenOptions {
   /** 실패한 출처 · 칸마다 한 번(앱 로그용 — 칸 이름 · 실패). 없으면 남기지 않는다. */
   logFailure?: (cell: string, failure: UpstreamFailure) => void;
 }
-
-/** 문제의 종류 → 그 종류를 낸 출처(목록에 없을 때 닫힘 · 확인하지 못함을 가른다). */
-const SOURCE_OF_KIND: Readonly<Record<IncidentKind, IncidentSource>> = {
-  monitor_down: "monitors", deploy_failed: "deployments", resource_threshold: "thresholds", error_logs: "errorLogs",
-};
 
 const NOT_CONFIGURED = upstreamFailure("not_configured");
 
@@ -148,10 +143,7 @@ async function selectedIncident(options: IncidentsScreenOptions, incidentId: str
                                  nowMilliseconds: number): Promise<SelectedIncident> {
   const incident = list.incidents.find((candidate) => candidate.id === incidentId);
   if (incident === undefined) {
-    const kind = incidentKindOfId(incidentId);
-    const unchecked = kind !== null
-      && (list.unchecked.some((failure) => failure.source === SOURCE_OF_KIND[kind]) || (kind === "error_logs" && list.errorLogsTruncated));
-    return { kind: unchecked ? "unchecked" : "closed", incidentId };
+    return { kind: isUncovered(list.uncovered, incidentId) ? "unchecked" : "closed", incidentId };
   }
   const evidence = fitIncidentEvidence(await buildIncidentEvidence(evidenceDependencies(options), { incident, sources, nowMilliseconds }));
   return { kind: "evidence", evidence, text: incidentEvidenceText(evidence) };

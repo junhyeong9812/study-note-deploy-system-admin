@@ -13,18 +13,21 @@
  *   목록 전체에 errorLogsTruncated — 일부 서비스는 빠졌을 수 있다. since = null(언제부터인지 모른다 — "최근 10분"). 심한 정도 = 경고.
  * 한 출처의 실패는 그 출처의 문제만 "확인하지 못함"으로(unchecked — 출처 순서 monitors · thresholds · deployments · errorLogs) — 다른 출처의 문제는 그대로 보인다.
  * 정렬: 위험 먼저 → since 가 이른 것 먼저(since 가 없으면 뒤) → 종류 순서(INCIDENT_KINDS) → 식별자의 글자 코드 순.
- * 확인한 범위(scopeNotes — 이 차례, 해당하는 것만 한 줄씩. 출처가 실패했으면 그 출처의 줄은 없다 — 확인하지 못함 줄이 이미 있다):
- * - 감시 대상 가운데 상태를 아직 모르는 것(UNKNOWN)이 N개면 `감시 대상 N개는 아직 상태를 모름`.
- * - 배포 이력이 상한(INCIDENT_DEPLOY_LOOKUP_LIMIT)을 채웠고 그 안에 한 번도 보이지 않은 서비스가 있으면
- *   `배포: 최근 200건 안에서만 확인 — <서비스들(DEPLOY_SERVICES 차례, ", ")> 은 확인하지 못함`(그 서비스의 실패는 목록에 나올 수 없다).
- * 빈 목록: 출처가 모두 성공이고 확인한 범위의 줄도 없으면 emptyText "열린 문제가 없습니다", 아니면 "확인된 범위에서는 열린 문제가 없습니다". 문제가 있으면 null. */
+ * 덮지 못한 범위(uncovered — uncoveredScopes, 종류마다 한 값): 목록의 범위 줄(scopeNotes)과 고른 문제의 판정(isUncovered — incidents-screen.ts)이 이 한 값을 읽는다.
+ * - 감시 대상 DOWN: 출처 실패면 all · 아니면 상태를 아직 모르는(UNKNOWN) 감시 대상의 이름(받은 차례).
+ * - 배포 실패: 출처 실패면 all · 아니면 이력이 상한(INCIDENT_DEPLOY_LOOKUP_LIMIT)을 채웠을 때 그 안에 한 번도 보이지 않은 서비스(DEPLOY_SERVICES 차례 — 그 서비스의 실패는 목록에 나올 수 없다).
+ * - 자원 임계값: latest 실패 · firing 칸 없음이면 all. 오류 로그: 출처 실패 · 상한을 채웠으면(nextBefore 가 null 이 아님) all.
+ * 확인한 범위의 줄(scopeNotes = scopeNotesFrom(uncovered) — 이 차례, 해당하는 것만 한 줄씩. all 은 줄이 아니라 확인하지 못한 출처의 줄 · errorLogsTruncated 글로 드러난다):
+ * - 감시 대상 이름이 N개면 `감시 대상 N개는 아직 상태를 모름`.
+ * - 배포의 이름이 있으면 `배포: 최근 200건 안에서만 확인 — <서비스들(DEPLOY_SERVICES 차례, ", ")> 은 확인하지 못함`.
+ * 빈 목록: 덮지 못한 범위가 하나도 없으면 emptyText "열린 문제가 없습니다", 아니면 "확인된 범위에서는 열린 문제가 없습니다". 문제가 있으면 null. */
 import type { AlertMonitorView, AlertMonitorsView } from "@/features/status/lib/status-overview";
 import type { DeploymentSummary } from "@/features/deploys/lib/deploy-history-client";
 import { DEPLOY_SERVICES } from "@/features/deploys/lib/deploy-history-query";
 import type { FiringRule, LatestResources } from "@/features/resources/lib/resource-metrics-client";
 import type { LogPage } from "@/features/logs/lib/log-query";
 import {
-  INCIDENT_KINDS, deployIncidentId, errorLogsIncidentId, monitorIncidentId, resourceIncidentId, type IncidentKind,
+  INCIDENT_KINDS, incidentKindOfId, deployIncidentId, errorLogsIncidentId, monitorIncidentId, resourceIncidentId, type IncidentKind,
 } from "@/features/incidents/lib/incident-id";
 import { serviceForMonitor } from "@/features/incidents/lib/monitor-services";
 import { FIRING_RULE_LABELS, byCharacterCode } from "@/features/resources/lib/resources-screen";
@@ -93,7 +96,7 @@ export interface IncidentList {
   errorLogsTruncated: boolean;
   /** 목록이 확인한 범위의 줄(감시 대상 줄 · 배포 줄 차례 — 머리 주석) */
   scopeNotes: string[];
-  /** 종류마다 덮지 못한 범위(명세 ⑫ §12 1) — 목록의 줄과 고른 문제의 판정이 이 값을 읽는다. 뼈대: 구현 전. */
+  /** 종류마다 덮지 못한 범위 — 목록의 줄과 고른 문제의 판정이 이 값을 읽는다(JSON 으로 나간다 — 일반 객체 · 배열만). */
   uncovered: UncoveredScopes;
   emptyText: string | null;
 }
@@ -107,23 +110,67 @@ export interface UncoveredScope {
 
 export type UncoveredScopes = Readonly<Record<IncidentKind, UncoveredScope>>;
 
-/** 뼈대(명세 ⑫ §12 1) — 구현 전에는 아무 범위도 덮지 못했다고 말하지 않는다. */
+const ALL_UNCOVERED: UncoveredScope = { all: true, names: [] };
+
+function namesScope(names: string[]): UncoveredScope {
+  return { all: false, names };
+}
+
+/** 종류마다 덮지 못한 범위(머리 주석) — 출처 실패 · 상한 · 모르는 상태. */
 export function uncoveredScopes(sources: IncidentSources): UncoveredScopes {
-  void sources;
-  const none = (): UncoveredScope => ({ all: false, names: [] });
-  return { monitor_down: none(), deploy_failed: none(), resource_threshold: none(), error_logs: none() };
+  const { monitors, deployments, latest, errorLogs } = sources;
+  const unseenServices = (history: DeploymentSummary[]): string[] => {
+    if (history.length < INCIDENT_DEPLOY_LOOKUP_LIMIT) return [];
+    const seen = new Set(history.map((deployment) => deployment.service));
+    return DEPLOY_SERVICES.filter((service) => !seen.has(service));
+  };
+  return {
+    monitor_down: monitors.ok ? namesScope(monitors.value.monitors.filter((monitor) => monitor.status === "UNKNOWN").map((monitor) => monitor.name)) : ALL_UNCOVERED,
+    deploy_failed: deployments.ok ? namesScope(unseenServices(deployments.value)) : ALL_UNCOVERED,
+    resource_threshold: latest.ok && latest.value.firing !== null ? namesScope([]) : ALL_UNCOVERED,
+    error_logs: errorLogs.ok && errorLogs.value.nextBefore === null ? namesScope([]) : ALL_UNCOVERED,
+  };
 }
 
-/** 뼈대 — 고른 식별자가 덮지 못한 범위에 드는가. */
+/** 배포 실패 식별자의 서비스 — 읽을 수 있는 꼴(`deploy:<서비스>:<요청 ID>`)이면 그 서비스, 해시 꼴(`deploy:sha256-…` — 부분이 하나)이면 null. */
+function deployServiceOfId(incidentId: string): string | null {
+  const parts = incidentId.split(":");
+  return parts.length >= 3 ? parts[1] : null;
+}
+
+/** 고른 식별자가 덮지 못한 범위에 드는가 — 그 종류 전체 · 감시 대상은 이름의 식별자가 같으면 · 배포는 그 서비스가 보이지 않았으면
+ * (해시 꼴이라 서비스를 알 수 없으면 보이지 않은 서비스가 하나라도 있을 때). 종류를 모르는 식별자는 거짓. */
 export function isUncovered(scopes: UncoveredScopes, incidentId: string): boolean {
-  void scopes; void incidentId;
-  return false;
+  const kind = incidentKindOfId(incidentId);
+  if (kind === null) return false;
+  const scope = scopes[kind];
+  if (scope.all) return true;
+  switch (kind) {
+    case "monitor_down": return scope.names.some((name) => monitorIncidentId(name) === incidentId);
+    case "deploy_failed": {
+      const service = deployServiceOfId(incidentId);
+      return service === null ? scope.names.length > 0 : scope.names.includes(service);
+    }
+    case "resource_threshold":
+    case "error_logs": return false;
+  }
 }
 
-/** 뼈대 — 덮지 못한 범위의 값 → 목록의 scopeNotes 줄. */
+/** 덮지 못한 범위의 값 → 목록의 범위 줄(감시 대상 줄 · 배포 줄 차례). all 은 줄을 만들지 않는다. */
 export function scopeNotesFrom(scopes: UncoveredScopes): string[] {
-  void scopes;
-  return [];
+  const notes: string[] = [];
+  const monitorsScope = scopes.monitor_down;
+  if (!monitorsScope.all && monitorsScope.names.length > 0) notes.push(`감시 대상 ${monitorsScope.names.length}개는 아직 상태를 모름`);
+  const deployScope = scopes.deploy_failed;
+  if (!deployScope.all && deployScope.names.length > 0) {
+    const order = (service: string) => {
+      const index = (DEPLOY_SERVICES as readonly string[]).indexOf(service);
+      return index < 0 ? DEPLOY_SERVICES.length : index;
+    };
+    const services = [...deployScope.names].sort((left, right) => order(left) - order(right));
+    notes.push(`배포: 최근 ${INCIDENT_DEPLOY_LOOKUP_LIMIT}건 안에서만 확인 — ${services.join(", ")} 은 확인하지 못함`);
+  }
+  return notes;
 }
 
 export interface IncidentSources {
@@ -177,21 +224,6 @@ function deployIncidents(deployments: DeploymentSummary[]): OpenIncident[] {
   return incidents;
 }
 
-/** 확인한 범위의 줄 — 상태를 모르는 감시 대상 · 배포 이력 상한 안에 보이지 않은 서비스(성공한 출처만). */
-function scopeNotesOf(sources: IncidentSources): string[] {
-  const notes: string[] = [];
-  if (sources.monitors.ok) {
-    const unknownCount = sources.monitors.value.monitors.filter((monitor) => monitor.status === "UNKNOWN").length;
-    if (unknownCount > 0) notes.push(`감시 대상 ${unknownCount}개는 아직 상태를 모름`);
-  }
-  if (sources.deployments.ok && sources.deployments.value.length >= INCIDENT_DEPLOY_LOOKUP_LIMIT) {
-    const seen = new Set(sources.deployments.value.map((deployment) => deployment.service));
-    const unseen = DEPLOY_SERVICES.filter((service) => !seen.has(service));
-    if (unseen.length > 0) notes.push(`배포: 최근 ${INCIDENT_DEPLOY_LOOKUP_LIMIT}건 안에서만 확인 — ${unseen.join(", ")} 은 확인하지 못함`);
-  }
-  return notes;
-}
-
 function errorLogIncidents(page: LogPage): OpenIncident[] {
   const counts = new Map<string, number>();
   for (const line of page.logs) counts.set(line.service, (counts.get(line.service) ?? 0) + 1);
@@ -235,9 +267,13 @@ export function openIncidentsFrom(sources: IncidentSources): IncidentList {
   collect("deployments", sources.deployments, deployIncidents);
   collect("errorLogs", sources.errorLogs, errorLogIncidents);
   incidents.sort(compareIncidents);
-  const scopeNotes = scopeNotesOf(sources);
-  const emptyText = incidents.length > 0 ? null : unchecked.length === 0 && scopeNotes.length === 0 ? INCIDENT_LIST_TEXT.empty : INCIDENT_LIST_TEXT.emptyWithinChecked;
-  return { incidents, unchecked, errorLogsTruncated: sources.errorLogs.ok && sources.errorLogs.value.nextBefore !== null, scopeNotes, uncovered: uncoveredScopes(sources), emptyText };
+  const uncovered = uncoveredScopes(sources);
+  const coveredAll = INCIDENT_KINDS.every((kind) => !uncovered[kind].all && uncovered[kind].names.length === 0);
+  const emptyText = incidents.length > 0 ? null : coveredAll ? INCIDENT_LIST_TEXT.empty : INCIDENT_LIST_TEXT.emptyWithinChecked;
+  return {
+    incidents, unchecked, errorLogsTruncated: sources.errorLogs.ok && sources.errorLogs.value.nextBefore !== null,
+    scopeNotes: scopeNotesFrom(uncovered), uncovered, emptyText,
+  };
 }
 
 /** 오류 수의 글 — `오류 N건` · 상한이면 `오류 N건 이상`. */
