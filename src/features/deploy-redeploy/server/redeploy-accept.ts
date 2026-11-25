@@ -66,9 +66,9 @@ function logOutcome(subject: LogSubject, outcome: string, level: "info" | "warni
 
 // ---- 본문 ----
 
-/** 상한 안에서 본문 바이트를 모은다. 넘으면 null(더 읽지 않고 스트림을 끊는다).
+/** 상한 안에서 본문 바이트를 모은다. 넘으면 null(더 읽지 않고 스트림을 끊는다). Claude 상한 바꾸기의 폼도 같은 함수로 읽는다.
  * 단순화: 읽기의 시간 기한은 두지 않는다 — 앞의 nginx 가 본문을 받아 넘긴다. 어드민을 nginx 없이 열게 되면 로그인 본문처럼 기한을 둔다. */
-async function readBoundedBody(request: Request): Promise<Uint8Array | null> {
+export async function readBoundedBody(request: Request, maximumBytes = REDEPLOY_BODY_MAX_BYTES): Promise<Uint8Array | null> {
   if (request.body === null) return new Uint8Array(0);
   const reader = request.body.getReader();
   const chunks: Uint8Array[] = [];
@@ -78,7 +78,7 @@ async function readBoundedBody(request: Request): Promise<Uint8Array | null> {
       const next = await reader.read();
       if (next.done) break;
       totalBytes += next.value.byteLength;
-      if (totalBytes > REDEPLOY_BODY_MAX_BYTES) {
+      if (totalBytes > maximumBytes) {
         reader.cancel().catch(() => undefined);
         return null;
       }
@@ -130,7 +130,7 @@ async function readAcceptForm(request: Request): Promise<AcceptForm | null> {
 
 // ---- HTML ----
 
-function escapeHtml(text: string): string {
+export function escapeHtml(text: string): string {
   return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#x27;");
 }
 

@@ -54,8 +54,8 @@ function defaultTimeoutSignal(milliseconds: number): AbortSignal {
 /** 연결을 맺지 못한 쪽의 code(Node fetch — undici 가 TypeError 의 cause 에 싣는다). 이 밖은 요청이 나갔을 수 있다. */
 const CONNECT_FAILURE_CODES: readonly string[] = ["ECONNREFUSED", "ENOTFOUND", "EHOSTUNREACH", "ENETUNREACH", "UND_ERR_CONNECT_TIMEOUT"];
 
-/** 요청이 나가지 않았다고 말할 수 있는 실패인가 — 기한이 끊었으면 아니다. */
-function isConnectFailure(error: unknown, signal: AbortSignal): boolean {
+/** 요청이 나가지 않았다고 말할 수 있는 실패인가 — 기한이 끊었으면 아니다. (Claude 상한의 PUT 도 같은 판정을 쓴다.) */
+export function isConnectFailure(error: unknown, signal: AbortSignal): boolean {
   if (signal.aborted || !(error instanceof Error) || !(error.cause instanceof Error)) return false;
   const code = (error.cause as Error & { code?: unknown }).code;
   return typeof code === "string" && CONNECT_FAILURE_CODES.includes(code);

@@ -1,5 +1,4 @@
 /** Claude 실행 자리의 상한 — 꼴 · 어드민 폼의 해석 · "올림"의 판정(순수 — 설정 · 환경 변수 · Next 를 읽지 않는다).
- * 뼈대: 테스트 설계 워커가 계약(이름 · 꼴 · 상수)만 고정했다. 함수의 몸은 구현 워커가 채운다.
  *
  * - 용도의 목록은 어드민에 박지 않는다 — **실행 자리의 응답에서** 온다. 이름의 꼴은 CLAUDE_PURPOSE_NAME_PATTERN,
  *   한 응답에 1개 이상 CLAUDE_PURPOSES_MAXIMUM 개 이하 · 중복 없음(isClaudePurposeList). 이 꼴을 벗어난 응답은 해석하지 않는다(unparseable).
@@ -10,6 +9,11 @@
  * - 올림: 꺼져 있던 것을 켜면 올림 · 전체 둘과 모든 용도의 하루 · 한 시간 가운데 하나라도 지금보다 크면 올림
  *   (지금 상한에 없는 용도가 next 에 있으면 올림 — 닫힌 쪽). 그 밖(내림 · 끔 · 같은 값)은 올림이 아니다.
  *   지금 값을 읽지 못한 경우는 이 함수에 오지 않는다 — 용도를 모르면 바꾸지 않는다(route 가 503). */
+import { LOGIN_PASSWORD_MAX_LENGTH } from "@/features/auth/lib/login-body";
+
+/** 화면의 주소 · 상한을 바꾸는 폼이 보내는 곳(결과 화면이 화면으로 돌아가는 링크도 이 주소). */
+export const CLAUDE_USAGE_PATH = "/claude-usage";
+export const CLAUDE_LIMITS_ACTION = "/api/claude-usage/limits";
 
 /** 용도 이름의 꼴 — 실행 자리가 준 이름은 이것으로 거른 뒤에만 화면 · 폼의 칸 이름에 싣는다. */
 export const CLAUDE_PURPOSE_NAME_PATTERN = /^[a-z][a-z0-9_]{0,31}$/;
@@ -55,8 +59,9 @@ export function claudeLimitFieldName(scope: "total" | { purpose: string }, windo
 }
 
 /** 용도 이름 목록의 꼴 — 1~8개 · 이름마다 CLAUDE_PURPOSE_NAME_PATTERN · 중복 없음. */
-export function isClaudePurposeList(_names: readonly string[]): boolean {
-  throw new Error("not implemented: isClaudePurposeList");
+export function isClaudePurposeList(names: readonly string[]): boolean {
+  return names.length >= 1 && names.length <= CLAUDE_PURPOSES_MAXIMUM && new Set(names).size === names.length
+    && names.every((name) => CLAUDE_PURPOSE_NAME_PATTERN.test(name));
 }
 
 export type ClaudeLimitsFormResult =
@@ -67,10 +72,45 @@ export type ClaudeLimitsFormResult =
   | { ok: false; reason: "invalid_value"; field: string };
 
 /** purposeNames = 서버가 방금 다시 읽은 지금 상한의 용도(그 차례가 change.purposes 의 차례). */
-export function parseClaudeLimitsForm(_fields: URLSearchParams, _purposeNames: readonly string[]): ClaudeLimitsFormResult {
-  throw new Error("not implemented: parseClaudeLimitsForm");
+export function parseClaudeLimitsForm(fields: URLSearchParams, purposeNames: readonly string[]): ClaudeLimitsFormResult {
+  const scopes: ("total" | { purpose: string })[] = ["total", ...purposeNames.map((purpose) => ({ purpose }))];
+  const numberFields = scopes.flatMap((scope) => [claudeLimitFieldName(scope, "perDay"), claudeLimitFieldName(scope, "perHour")]);
+  const allowed = new Set(["enabled", "password", ...numberFields]);
+  for (const name of fields.keys()) if (!allowed.has(name)) return { ok: false, reason: "malformed" };
+  for (const name of allowed) if (fields.getAll(name).length > 1) return { ok: false, reason: "malformed" };
+  const enabledText = fields.get("enabled");
+  if (enabledText !== "true" && enabledText !== "false") return { ok: false, reason: "malformed" };
+  const password = fields.get("password") ?? "";
+  if (password.length > LOGIN_PASSWORD_MAX_LENGTH) return { ok: false, reason: "malformed" };
+  if (numberFields.some((name) => !fields.has(name))) return { ok: false, reason: "malformed" };
+  const pairs: ClaudeLimitPair[] = [];
+  for (const scope of scopes) {
+    const pair: ClaudeLimitPair = { perDay: 0, perHour: 0 };
+    for (const window of ["perDay", "perHour"] as const) {
+      const name = claudeLimitFieldName(scope, window);
+      const value = limitValue(fields.get(name) ?? "");
+      if (value === null) return { ok: false, reason: "invalid_value", field: name };
+      pair[window] = value;
+    }
+    pairs.push(pair);
+  }
+  const [total, ...purposePairs] = pairs;
+  const purposes: Record<string, ClaudeLimitPair> = {};
+  purposeNames.forEach((name, index) => { purposes[name] = purposePairs[index]; });
+  return { ok: true, change: { enabled: enabledText === "true", total, purposes }, password };
 }
 
-export function isRaisingChange(_current: ClaudeLimitsChange, _next: ClaudeLimitsChange): boolean {
-  throw new Error("not implemented: isRaisingChange");
+/** 10진 숫자 1~4자리이고 범위(0~1000) 안이면 그 수, 아니면 null. */
+function limitValue(text: string): number | null {
+  if (!/^[0-9]{1,4}$/.test(text)) return null;
+  const value = Number(text);
+  return value >= CLAUDE_LIMIT_MINIMUM && value <= CLAUDE_LIMIT_MAXIMUM ? value : null;
+}
+
+export function isRaisingChange(current: ClaudeLimitsChange, next: ClaudeLimitsChange): boolean {
+  if (!current.enabled && next.enabled) return true;
+  const raises = (before: ClaudeLimitPair | undefined, after: ClaudeLimitPair) =>
+    before === undefined || after.perDay > before.perDay || after.perHour > before.perHour;
+  if (raises(current.total, next.total)) return true;
+  return Object.entries(next.purposes).some(([name, pair]) => raises(Object.hasOwn(current.purposes, name) ? current.purposes[name] : undefined, pair));
 }
