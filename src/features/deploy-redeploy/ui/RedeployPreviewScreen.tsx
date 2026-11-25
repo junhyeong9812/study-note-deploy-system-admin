@@ -1,16 +1,19 @@
 /** 재배포 확인 화면의 본문(서버 컴포넌트) — 지금 버전 → 고른 버전 · 방향(글이 먼저) · 사이의 커밋 표 · 되돌릴 때의 데이터 꼴 안내 ·
  * 100개 상한 · 얕은 경계 · 배포 진행 중 · 고를 수 없는 버전 · 틀린 입력 · 실패 · 버전 목록으로 돌아가는 링크.
  * 받은 값(진입 함수의 결과)만 그린다 — 다른 서버를 부르지 않고, 서버 모듈 · 클라이언트 · 설정을 임포트하지 않는다.
- * 읽기만 한다 — 폼 · 단추 · 입력 · 스크립트가 없다(접수는 다음 조각). 두 버전은 표의 줄로 그리지 않는다(표의 줄 = 사이의 커밋).
+ * 그리기만 한다 — 스크립트가 없다. 접수 폼(비교가 되고 진행 중인 배포가 없을 때만)은 POST /api/deploys/redeploy 하나(숨은 칸 서비스 · 커밋 · 확인 값 + 비밀번호).
+ * 두 버전은 표의 줄로 그리지 않는다(표의 줄 = 사이의 커밋).
  * 표 · 낱말 · 색은 배포 이력 화면의 것을 그대로 쓴다. */
 import type { BetweenCommits, RedeployDirection, RedeployPreview } from "@/features/deploy-redeploy/lib/redeploy-preview";
-import type { RedeployPreviewView } from "@/features/deploy-redeploy/server/redeploy-preview";
+import { REDEPLOY_ACCEPT_ACTION } from "@/features/deploy-redeploy/lib/redeploy-preview-query";
+import type { RedeployAcceptSubmission, RedeployPreviewView } from "@/features/deploy-redeploy/server/redeploy-preview";
 import type { DeployVersion } from "@/features/deploy-versions/lib/deploy-versions-view";
 import { deployVersionsHref } from "@/features/deploy-versions/ui/DeployVersionsScreen";
 import { formatKoreanTime, shortPrefix } from "@/features/deploys/lib/deploy-format";
 import { DEPLOY_SERVICES } from "@/features/deploys/lib/deploy-history-query";
 import screenStyles from "@/features/deploys/ui/DeployHistoryScreen.module.css";
 import tableStyles from "@/features/deploys/ui/DeployHistoryTable.module.css";
+import formStyles from "@/features/auth/ui/LoginForm.module.css";
 import parts from "@/shared/ui/screen-parts.module.css";
 
 const COMMIT_PREFIX_LENGTH = 7;
@@ -107,7 +110,45 @@ function Direction({ direction }: { direction: RedeployDirection }) {
   }
 }
 
-function Preview({ preview }: { preview: RedeployPreview }) {
+const PASSWORD_FIELD_ID = "redeploy-password";
+
+function AcceptForm({ service, commitSha, confirmation }: { service: string; commitSha: string; confirmation: string }) {
+  return (
+    <form className={formStyles.form} method="post" action={REDEPLOY_ACCEPT_ACTION}>
+      <input type="hidden" name="service" value={service} />
+      <input type="hidden" name="commit" value={commitSha} />
+      <input type="hidden" name="confirmation" value={confirmation} />
+      <div className={formStyles.field}>
+        <label className={formStyles.label} htmlFor={PASSWORD_FIELD_ID}>비밀번호</label>
+        <input className={formStyles.input} id={PASSWORD_FIELD_ID} type="password" name="password" autoComplete="current-password" required />
+      </div>
+      <button className={formStyles.button} type="submit">{`${service} 를 ${shortPrefix(commitSha, COMMIT_PREFIX_LENGTH)} 로 배포`}</button>
+    </form>
+  );
+}
+
+/** commitSha = 확인 값에 서명한 커밋(주소의 commit — 소문자 40자). */
+function Submission({ preview, submission, commitSha }: { preview: Extract<RedeployPreview, { kind: "comparison" }>; submission: RedeployAcceptSubmission; commitSha: string }) {
+  if (submission.kind === "account_not_allowed") {
+    return (
+      <div className={parts.problem} role="alert">
+        <p className={parts.problemTitle}>이 계정 이름으로는 배포를 일으킬 수 없습니다</p>
+        <p className={parts.problemDetail}>접수에 남기는 이름(admin:계정)은 영문 · 숫자 · . _ - 만 받습니다. 계정 이름(ADMIN_USER)을 바꾼 뒤 다시 여세요.</p>
+      </div>
+    );
+  }
+  return (
+    <>
+      {preview.direction.kind === "unknown" && (
+        <p className={parts.count}>그래도 올리려면 두 커밋을 따로 확인한 뒤 비밀번호를 넣어 접수하세요.</p>
+      )}
+      <p className={parts.count}>접수하면 배포 서버가 이 커밋을 다시 빌드해 올립니다. 비밀번호를 다시 확인합니다(이 확인 화면은 5분 동안만 쓸 수 있습니다).</p>
+      <AcceptForm service={preview.service} commitSha={commitSha} confirmation={submission.confirmation} />
+    </>
+  );
+}
+
+function Preview({ preview, submission, commitSha }: { preview: RedeployPreview; submission: RedeployAcceptSubmission | null; commitSha: string }) {
   if (preview.kind === "not_deployable") {
     return (
       <div className={parts.problem} role="alert">
@@ -132,12 +173,13 @@ function Preview({ preview }: { preview: RedeployPreview }) {
       <VersionLine label="지금 버전" version={preview.current} />
       <VersionLine label="고른 버전" version={preview.chosen} />
       <Direction direction={preview.direction} />
+      {submission !== null && <Submission preview={preview} submission={submission} commitSha={commitSha} />}
     </>
   );
 }
 
 export function RedeployPreviewScreen({ view }: { view: RedeployPreviewView }) {
-  const { preview, service } = view;
+  const { preview, service, submission } = view;
   return (
     <main className={screenStyles.main}>
       <div className={parts.heading}>
@@ -165,7 +207,7 @@ export function RedeployPreviewScreen({ view }: { view: RedeployPreviewView }) {
         </div>
       )}
 
-      {preview.ok && <Preview preview={preview.value} />}
+      {preview.ok && view.query !== null && <Preview preview={preview.value} submission={submission} commitSha={view.query.commitSha} />}
     </main>
   );
 }

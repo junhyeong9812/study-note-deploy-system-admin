@@ -1,24 +1,27 @@
 /** 재배포 확인 화면의 서버 쪽 진입 — 세션 검증을 **직접** 부른 뒤에만 입력을 해석하고 설정을 읽고 master 를 부른다.
  * 순서: 세션 → 입력(틀리면 invalid_input, 설정을 읽지 않고 부르지 않음) → 설정 → master 호출(전부 GET). 아무것도 바꾸지 않는다.
+ * 비교가 되면 접수 폼의 확인 값을 만든다(submission — 서명만, 저장하지 않는다). 접수는 redeploy-accept 가 한다.
  * 설정: DEPLOY_MASTER_URL · DEPLOY_SECRET(버전 목록과 같은 것 — readServerConfig, 부를 때마다 읽는다). 둘 중 하나라도 비었거나 주소가 http(s) 가 아니면
  * preview = not_configured(호출 없음). 네트워크는 부를 때의 전역 fetch. src/app 은 이 모듈만 쓴다.
  * 실패한 칸(이력 · 방향 조회)은 앱 로그 1줄(upstreamFailureLogLine — 이유 낱말 · 상태 코드만). */
 import "server-only";
 import { requireApiSession, requireSession } from "@/features/auth/server/require-session";
 import { createDeployGitClient } from "@/features/deploy-detail/lib/deploy-git-client";
+import { issueRedeployConfirmation, newRedeployRequestId } from "@/features/deploy-redeploy/lib/redeploy-confirmation";
 import { buildRedeployPreview, type RedeployPreview } from "@/features/deploy-redeploy/lib/redeploy-preview";
 import { parseRedeployPreviewQuery, type RedeployPreviewQuery } from "@/features/deploy-redeploy/lib/redeploy-preview-query";
+import { requestedByFor } from "@/features/deploy-redeploy/lib/redeploy-requester";
 import { createDeployHistoryClient } from "@/features/deploys/lib/deploy-history-client";
 import type { DeployService } from "@/features/deploys/lib/deploy-history-query";
-import { readServerConfig } from "@/shared/config/server-config";
+import { readServerConfig, sessionSigningKey, type ServerConfig } from "@/shared/config/server-config";
 import { log } from "@/shared/lib/logger";
 import { searchParamsInputFromUrl } from "@/shared/lib/query-input";
 import { invalidInputOf, screenDataResponse, upstreamFailureLogLine } from "@/shared/lib/screen-responses";
 import { isHttpBaseUrl } from "@/shared/lib/upstream-fetch";
 import { upstreamFailure, type SearchParamsInput, type UpstreamResult } from "@/shared/lib/upstream-result";
 
-/** 확인 화면의 접수 폼(6-4) — comparison 이고 진행 중인 배포가 없을 때만. 계정 이름이 requested_by 로 쓸 수 없으면 account_not_allowed(폼 대신 안내).
- * 뼈대: 구현 워커가 채운다(지금은 언제나 null). */
+/** 확인 화면의 접수 폼 — comparison 이고 진행 중인 배포가 없을 때만. 계정 이름이 requested_by 로 쓸 수 없으면 account_not_allowed(폼 대신 안내).
+ * 요청 ID 는 그릴 때마다 새로 정해 확인 값에 담는다(새로 고침 = 새 요청 ID). 세션 서명 키가 비면 폼을 내지 않는다(null). */
 export type RedeployAcceptSubmission =
   | { kind: "form"; confirmation: string; requestId: string }
   | { kind: "account_not_allowed" };
@@ -31,6 +34,19 @@ export interface RedeployPreviewView {
   preview: UpstreamResult<RedeployPreview>;
   /** 접수 폼 — 폼을 둘 수 없으면 null */
   submission: RedeployAcceptSubmission | null;
+}
+
+/** 접수 폼 — 폼을 둘 수 없으면 null. */
+function submissionFor(query: RedeployPreviewQuery, preview: UpstreamResult<RedeployPreview>, config: ServerConfig): RedeployAcceptSubmission | null {
+  if (!preview.ok || preview.value.kind !== "comparison" || preview.value.inProgress !== null) return null;
+  if (requestedByFor(config.adminUser) === null) return { kind: "account_not_allowed" };
+  const signingKey = sessionSigningKey();
+  if (signingKey.length === 0) return null;
+  const requestId = newRedeployRequestId();
+  const confirmation = issueRedeployConfirmation(signingKey, {
+    service: query.service, commitSha: query.commitSha, requestId, issuedAt: Date.now(), account: config.adminUser,
+  });
+  return { kind: "form", confirmation, requestId };
 }
 
 /** 세션 검증을 마친 뒤에만 부른다. */
@@ -56,7 +72,7 @@ async function buildRedeployPreviewView(searchParams: SearchParamsInput): Promis
     const logLine = upstreamFailureLogLine("deploy-redeploy", cell, result);
     if (logLine !== null) void log("screen-deploy-redeploy", logLine, "warning");
   }
-  return { query: parsed.query, service: parsed.query.service, preview, submission: null };
+  return { query: parsed.query, service: parsed.query.service, preview, submission: submissionFor(parsed.query, preview, config) };
 }
 
 /** 화면용 — 세션이 없으면 requireSession 이 /login 으로 보낸다(다른 서버를 한 번도 부르지 않는다). */
