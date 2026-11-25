@@ -11,7 +11,7 @@
  *     (틀림 401 · 잠김 423 · 잦음 429 — 세션 쿠키를 놓지 않는다). 올림이 아니면 비밀번호를 보지 않는다(로그인 흐름 0)
  *   → 실행 자리 PUT /limits 한 번(다시 보내지 않는다).
  * 응답(HTML · no-store · 스크립트 없음): 바뀜 200(실행 자리가 돌려준 값) · 실행 자리의 거절 422(code) · 실행 자리가 설정 비밀값 거절 502 ·
- *   바뀌지 않음 502 · 모름 504("다시 읽어 확인"). 로그: 한 번에 한 줄 `claude-limits:<결과> account=<계정> raise=<true|false|->`
+ *   바뀌지 않음 502(연결을 맺지 못했을 때만) · 모름 504(5xx 포함)("다시 읽어 확인"). 로그: 한 번에 한 줄 `claude-limits:<결과> account=<계정> raise=<true|false|->`
  *   (올림인지 아직 모르는 단계의 거절은 `-`). 비밀번호 · 비밀값 · 실행 자리의 주소 · 상한 값은 로그 · 응답에 싣지 않는다. */
 import "server-only";
 import { randomUUID } from "node:crypto";
@@ -98,13 +98,12 @@ function responseForReplace(result: ClaudeLimitsReplaceResult, subject: LogSubje
       }
       return resultPage(422, "바꾸지 못했습니다", `실행 자리가 값을 거절했습니다 (${result.code}). 실행 자리의 판과 어드민의 판이 맞는지 확인하세요.`);
     case "not_replaced":
-      logOutcome(subject, `not_replaced${result.status !== undefined ? ` status=${result.status}` : ""}`);
-      return resultPage(502, "바꾸지 못했습니다 — 바뀌지 않았습니다",
-        `실행 자리에 닿지 않았거나 실행 자리가 오류로 답했습니다${result.status !== undefined ? ` (HTTP ${result.status})` : ""}.`);
+      logOutcome(subject, "not_replaced");
+      return resultPage(502, "바꾸지 못했습니다 — 바뀌지 않았습니다", "실행 자리에 연결하지 못했습니다(요청이 나가지 않았습니다).");
     case "unknown":
-      logOutcome(subject, "unknown");
+      logOutcome(subject, `unknown${result.status !== undefined ? ` status=${result.status}` : ""}`);
       return resultPage(504, "바뀌었는지 모릅니다 — 다시 읽어 확인하세요",
-        "실행 자리의 답을 받지 못했습니다(기한 초과 또는 연결이 끊김). 같은 요청을 다시 보내지 않았습니다 — 화면을 다시 열어 지금 상한을 확인하세요.");
+        `실행 자리의 답을 받지 못했거나 실행 자리가 오류로 답했습니다${result.status !== undefined ? ` (HTTP ${result.status})` : ""}. 오류여도 값은 바뀌었을 수 있습니다. 같은 요청을 다시 보내지 않았습니다 — 화면을 다시 열어 지금 상한을 확인하세요.`);
   }
 }
 

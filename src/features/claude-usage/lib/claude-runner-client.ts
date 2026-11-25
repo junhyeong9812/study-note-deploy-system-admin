@@ -74,13 +74,14 @@ export interface ClaudeUsage {
  * - replaced: 200 이고 data 가 ClaudeLimits 의 꼴 — 실행 자리가 돌려준 값
  * - rejected: 422(code 가 invalid_limits · invalid_changed_by · unknown_field · invalid_body 면 그대로, 그 밖은 unexpected) ·
  *   401(unauthorized) · 그 밖의 4xx · 3xx(unexpected)
- * - not_replaced: 연결을 맺지 못함(cause.code 가 ECONNREFUSED · ENOTFOUND · EHOSTUNREACH · ENETUNREACH · UND_ERR_CONNECT_TIMEOUT) · 5xx — 바뀌지 않았다
- * - unknown: 그 밖 — 기한 초과 · 보낸 뒤 끊김 · cause 없는 실패 · 2xx 인데 본문을 읽다 끊김 · 200 인데 꼴이 틀림. 바뀌었을 수 있다 */
+ * - not_replaced: 연결을 맺지 못함(cause.code 가 ECONNREFUSED · ENOTFOUND · EHOSTUNREACH · ENETUNREACH · UND_ERR_CONNECT_TIMEOUT) — 요청이 나가지 않았다
+ * - unknown: 그 밖 — 5xx(status 를 싣는다 — 실행 자리는 값을 쓴 뒤 다시 읽기가 실패해도 503 을 낸다) · 기한 초과 · 보낸 뒤 끊김 · cause 없는 실패 ·
+ *   2xx 인데 본문을 읽다 끊김 · 200 인데 꼴이 틀림. 바뀌었을 수 있다 */
 export type ClaudeLimitsReplaceResult =
   | { kind: "replaced"; limits: ClaudeLimits }
   | { kind: "rejected"; code: "invalid_limits" | "invalid_changed_by" | "unknown_field" | "invalid_body" | "unauthorized" | "unexpected" }
-  | { kind: "not_replaced"; status?: number }
-  | { kind: "unknown" };
+  | { kind: "not_replaced" }
+  | { kind: "unknown"; status?: number };
 
 export interface ClaudeRunnerClientOptions {
   baseUrl: string;
@@ -202,8 +203,8 @@ function replaceResultFor(status: number, json: unknown): ClaudeLimitsReplaceRes
     return limits === null ? { kind: "unknown" } : { kind: "replaced", limits };
   }
   if (status >= 200 && status < 300) return { kind: "unknown" };
-  // 5xx 를 "바뀌지 않음"으로 두는 것은 어드민과 실행 자리 사이에 프록시가 없다는 전제다(5xx 는 실행 자리 자신의 답 — 바꾸기 전에 거절한다).
-  if (status >= 500) return { kind: "not_replaced", status };
+  // 5xx 는 바뀌었는지 모른다 — 실행 자리는 값을 쓴 뒤에도(다시 읽기 실패 등) 5xx 를 낼 수 있다. "바뀌지 않음"은 연결을 맺지 못했을 때만.
+  if (status >= 500) return { kind: "unknown", status };
   if (status === 401) return { kind: "rejected", code: "unauthorized" };
   const code = errorCodeOf(json);
   if (status === 422 && code !== null && (KNOWN_REJECTED_CODES as readonly string[]).includes(code)) return { kind: "rejected", code: code as RejectedCode };
@@ -249,7 +250,7 @@ export function createClaudeRunnerClient(options: ClaudeRunnerClientOptions): Cl
         const text = await response.text();
         try { json = JSON.parse(text) as unknown; } catch { json = null; }
       } catch {
-        // 상태는 받았다. 2xx 는 본문이 있어야 바뀐 값을 알 수 있어 모름, 그 밖은 상태로 이미 가른다
+        // 상태는 받았다. 2xx 는 본문이 있어야 바뀐 값을 알 수 있어 모름, 그 밖은 상태로 가른다(5xx 는 모름)
         if (response.status >= 200 && response.status < 300) return { kind: "unknown" };
       }
       return replaceResultFor(response.status, json);
