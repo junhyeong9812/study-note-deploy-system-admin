@@ -85,6 +85,13 @@ function laneRow(html: string, service: string): string {
   return row!;
 }
 
+/** 요약(첫 <dl>)의 글자. */
+function summaryText(html: string): string {
+  const summary = /<dl[\s>][\s\S]*?<\/dl>/.exec(html);
+  expect(summary, "요약(<dl>)이 없다").not.toBeNull();
+  return textOf(summary![0]);
+}
+
 function cellTexts(row: string): string[] {
   return [...row.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)].map((match) => textOf(match[1]).trim());
 }
@@ -192,11 +199,22 @@ describe("서비스별 시간 줄 — 글로 읽힌다", () => {
     expect(table.indexOf(">backend<")).toBeLessThan(table.indexOf(">llm<"));
   });
 
-  it("전체 걸린 시간 · 줄 수 · 거친 차례(다시 나타난 서비스가 드러난다)", async () => {
-    const text = textOf(await render({ request_id: TRACE_REQUEST_ID }));
-    expect(text).toMatch(/전체 걸린 시간\s*3\.6초/);
+  it("첫 줄부터 마지막 줄까지 · 줄 수 · 거친 차례(다시 나타난 서비스가 드러난다) — '전체 걸린 시간'이라 하지 않는다(요청이 끝났는지 이 화면은 모른다)", async () => {
+    const html = await render({ request_id: TRACE_REQUEST_ID });
+    const text = textOf(html);
+    expect(summaryText(html)).toMatch(/첫 줄부터 마지막 줄까지\s*3\.6초/);
     expect(text).toMatch(/줄 수\s*8줄/);
     expect(text).toContain("front → backend → llm → backend → front");
+    expect(text).not.toContain("전체 걸린 시간");
+    expect(text).not.toContain("줄이 하나뿐이라 알 수 없음");
+  });
+
+  it("두 줄이 같은 밀리초면 첫 줄부터 마지막 줄까지 0ms(줄이 둘이면 잰 값 그대로)", async () => {
+    useLines([0, 1].map((sequence) => fakeLogLine({ milliseconds: T, sequence, service: "front", level: "info", requestId: TRACE_REQUEST_ID, message: `순번 ${sequence}` })));
+    const html = await render({ request_id: TRACE_REQUEST_ID });
+    expect(summaryText(html)).toMatch(/첫 줄부터 마지막 줄까지\s*0ms/);
+    expect(textOf(html)).not.toContain("줄이 하나뿐이라 알 수 없음");
+    expect(textOf(html)).not.toContain("전체 걸린 시간");
   });
 
   it("가장 긴 틈이 글로 — 긴 것부터", async () => {
@@ -261,7 +279,9 @@ describe("한계를 드러낸다", () => {
     expect(text).toContain("요청 ID 를 남기지 않는");
     expect(text).toContain("채팅");
     expect(text).toContain("alert");
-    expect(text).toContain("닿은 시각");
+    expect(text).toContain("수집 스트림에 실린 시각");
+    expect(text).not.toContain("관측 서버(중앙)에 닿은 시각");
+    expect(text).not.toContain("닿은 시각");
     expect(text).toContain("어긋날 수 있습니다");
   });
 
@@ -293,9 +313,14 @@ describe("한계를 드러낸다", () => {
     expectTraceForm(html, "req-ffffffffffff");
   });
 
-  it("한 줄뿐이면 틈 없음 · 걸린 시간 0ms(NaN · — 아님)", async () => {
+  it("한 줄뿐이면 틈 없음 · 요약의 걸린 시간은 '줄이 하나뿐이라 알 수 없음'(0ms 로 보이지 않는다) · NaN 없음", async () => {
     useLines([fakeLogLine({ milliseconds: T, sequence: 0, service: "admin", level: "info", requestId: TRACE_REQUEST_ID, message: "하나뿐" })]);
     const html = await render({ request_id: TRACE_REQUEST_ID });
+    const summary = summaryText(html);
+    expect(summary).toContain("줄이 하나뿐이라 알 수 없음");
+    expect(summary).not.toContain("0ms");
+    expect(summary).toMatch(/줄 수\s*1줄/);
+    expect(textOf(html)).not.toContain("전체 걸린 시간");
     expect(cellTexts(laneRow(html, "admin")).slice(0, 5)).toEqual(["+0ms", "0ms", "1줄", "0건", "0건"]);
     expect(textOf(html)).not.toContain("동안 로그 없음");
     expect(html).not.toContain("NaN");

@@ -136,10 +136,10 @@ describe("시간 줄 — 같은 밀리초 · 한 줄 · 서비스 하나 · 틈�
     expect(timelineOf(lines.map(entryOf)).lines.map((line) => line.message)).toEqual(["순번 1", "순번 9", "순번 10"]);
   });
 
-  it("한 줄뿐 — 기간 0, 막대는 0 · 0(NaN 이 아니다), 틈 없음", () => {
+  it("한 줄뿐 — 첫 줄부터 마지막 줄까지의 시간은 알 수 없음(null — 0 으로 두지 않는다), 막대는 0 · 0(NaN 이 아니다), 틈 없음", () => {
     const timeline = timelineOf([entryOf(fakeLogLine({ milliseconds: T + 5, sequence: 0, service: "admin", level: "error", message: "하나" }))]);
     expect(timeline.startAt).toBe(timeline.endAt);
-    expect(timeline.durationMilliseconds).toBe(0);
+    expect(timeline.durationMilliseconds).toBeNull();
     expect(timeline.lineCount).toBe(1);
     expect(timeline.visits).toEqual(["admin"]);
     expect(timeline.longestGaps).toEqual([]);
@@ -148,6 +148,13 @@ describe("시간 줄 — 같은 밀리초 · 한 줄 · 서비스 하나 · 틈�
     expect(timeline.lanes[0].segments).toHaveLength(1);
     expect(timeline.lanes[0].segments[0]).toMatchObject({ startFraction: 0, lengthFraction: 0, lineCount: 1 });
     expect(timeline.lines[0].offsetMilliseconds).toBe(0);
+  });
+
+  it("두 줄이 같은 밀리초 — 첫 줄부터 마지막 줄까지 0ms(줄이 둘이면 잴 수 있다 — 알 수 없음이 아니다)", () => {
+    const lines = [0, 1].map((sequence) => fakeLogLine({ milliseconds: T, sequence, service: "front", level: "info", message: `순번 ${sequence}` }));
+    const timeline = timelineOf(lines.map(entryOf));
+    expect(timeline.lineCount).toBe(2);
+    expect(timeline.durationMilliseconds).toBe(0);
   });
 
   it("서비스 하나뿐 — 줄 하나 · 구간 하나 · 막대 전체", () => {
@@ -295,6 +302,22 @@ describe("관측 서버 조회 — 실패는 그 이유(고정 글자 · 원문 
     await vi.advanceTimersByTimeAsync(5_000);
     expectFailure(await pending, "timeout");
     expect(timer.requestedMilliseconds).toEqual([5_000]);
+  });
+
+  it.each([
+    ["글자", "x"],
+    ["순번 없음", "12-"],
+    ["빈 글자", ""],
+  ])("로그 id 가 `밀리초-순번` 꼴이 아닌 줄(%s %j)이 하나라도 있으면 읽을 수 없는 줄 — unparseable(차례를 정할 수 없다 · 나머지 줄로 시간 줄을 만들지 않는다)", async (_label, badId) => {
+    const goodLine = fakeLogLine({ milliseconds: T, sequence: 0, service: "front", level: "info", requestId: TRACE_REQUEST_ID, message: "읽히는 줄" });
+    const { client } = clientOver(() => jsonBody({ success: true, data: {
+      logs: [
+        { id: badId, at: javaInstantText(T + 100), level: "info", service: "backend", request_id: TRACE_REQUEST_ID, message: "id 가 틀린 줄" },
+        { id: logIdOf(goodLine), at: javaInstantText(T), level: "info", service: "front", request_id: TRACE_REQUEST_ID, message: "읽히는 줄" },
+      ],
+      next_before: "", from: "2026-10-26T04:00:00Z", to: "2026-11-25T04:00:00Z",
+    } }));
+    expectFailure(await buildRequestTrace(client, { requestId: TRACE_REQUEST_ID }, NOW), "unparseable");
   });
 
   it("줄의 시각이 읽히지 않으면 unparseable(시간 차를 잴 수 없다 — 0 으로 숨기지 않는다)", async () => {

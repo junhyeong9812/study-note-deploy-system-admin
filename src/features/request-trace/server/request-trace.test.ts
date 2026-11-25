@@ -1,6 +1,7 @@
 /** 요청 추적의 서버 쪽 진입 — 기존 화면의 인증 경계("다른 서버를 부르는 모든 서버 쪽 함수와 Route Handler 가 같은 세션 검증 함수를 직접 호출한다") ·
  * 세션 확인이 입력 검증 · 관측 서버 호출보다 먼저 · 입력이 틀리면 부르지 않는다 · 비밀값은 서버 쪽에만 · 설정이 비면 "설정 없음" · 실패는 앱 로그 1줄.
- * 전역 fetch 를 가짜 관측 서버로 바꾼다(실제 서버를 부르지 않는다). 소스 검사 — screen-data-imports.test 의 SCREEN_FEATURES 밖이므로 같은 규칙을 이 기능에 직접 건다. */
+ * 전역 fetch 를 가짜 관측 서버로 바꾼다(실제 서버를 부르지 않는다). 소스 검사 — server/ 의 세션 검증 · lib/ 의 순수함 · ui/ 와 src/app 의 임포트는
+ * 공용 검사(src/app/screen-data-imports.test.ts 의 SCREEN_FEATURES · SCREEN_ENTRY_MODULES)가 본다. 여기에는 이 기능에만 있는 검사만 둔다. */
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -288,55 +289,7 @@ function allImports(source: string): string[] {
   return [...source.matchAll(/(?:from\s+|import\s*\(?\s*)["']([^"']+)["']/g)].map((match) => match[1]);
 }
 
-/** 값 임포트(타입만 가져오는 `import type` 은 뺀다). */
-function valueImports(source: string): string[] {
-  const modules: string[] = [];
-  for (const match of source.matchAll(/^\s*import\s+(?!type\b)([^;]*?)\s+from\s+["']([^"']+)["']/gm)) modules.push(match[2]);
-  for (const match of source.matchAll(/^\s*import\s+["']([^"']+)["']/gm)) modules.push(match[1]);
-  for (const match of source.matchAll(/import\(\s*["']([^"']+)["']\s*\)/g)) modules.push(match[1]);
-  return modules;
-}
-
-describe("소스 검사 — request-trace 의 server/ 는 server-only 이고 세션 검증을 직접 부른다", () => {
-  const files = sourceFiles(join(FEATURE_DIRECTORY, "server"));
-
-  it("server/ 에 진입 모듈이 있다", () => {
-    expect(files.length).toBeGreaterThan(0);
-  });
-
-  for (const file of files) {
-    it(`${relative(SOURCE_DIRECTORY, file)} — "server-only" · requireSession · requireApiSession`, () => {
-      const source = readFileSync(file, "utf8");
-      expect(valueImports(source)).toContain("server-only");
-      expect(valueImports(source)).toContain("@/features/auth/server/require-session");
-      expect(source).toMatch(/\brequireSession\s*\(/);
-      expect(source).toMatch(/\brequireApiSession\s*\(/);
-    });
-  }
-});
-
-describe("소스 검사 — request-trace 의 lib/ 는 순수(설정 · 환경 변수 · Next · server-only 를 읽지 않는다)", () => {
-  const files = sourceFiles(join(FEATURE_DIRECTORY, "lib"));
-
-  it("lib/ 파일을 찾는다(빈 검사로 통과하지 않는다)", () => {
-    expect(files.length).toBeGreaterThanOrEqual(2);
-  });
-
-  for (const file of files) {
-    it(relative(SOURCE_DIRECTORY, file), () => {
-      const source = readFileSync(file, "utf8");
-      expect(source).not.toMatch(/process\.env/);
-      for (const module of allImports(source)) {
-        expect(module).not.toBe("server-only");
-        expect(module).not.toMatch(/^next(\/|$)/);
-        expect(module).not.toBe("@/shared/config/server-config");
-        expect(module).not.toMatch(/\/server\//);
-      }
-    });
-  }
-});
-
-describe("소스 검사 — 브라우저 스크립트 없음 · ui/ 는 진입 함수 · 클라이언트 · 설정을 값으로 임포트하지 않는다 · 새 의존성 없음", () => {
+describe("소스 검사 — 화면 · 데이터 경로 파일이 있다 · 브라우저 스크립트 없음 · 새 의존성 없음", () => {
   const featureFiles = sourceFiles(FEATURE_DIRECTORY);
   const appFiles = [...sourceFiles(join(SOURCE_DIRECTORY, "app", "trace")), ...sourceFiles(join(SOURCE_DIRECTORY, "app", "api", "trace"))];
 
@@ -346,30 +299,6 @@ describe("소스 검사 — 브라우저 스크립트 없음 · ui/ 는 진입 �
 
   it('"use client" 가 없다(이 화면은 서버에서만 그린다)', () => {
     for (const file of [...featureFiles, ...appFiles]) expect(readFileSync(file, "utf8"), file).not.toMatch(/["']use client["']/);
-  });
-
-  it("ui/ 는 server/ · *-client · 설정을 값으로 임포트하지 않는다", () => {
-    for (const file of sourceFiles(join(FEATURE_DIRECTORY, "ui"))) {
-      const source = readFileSync(file, "utf8");
-      for (const module of valueImports(source)) {
-        expect(module, file).not.toMatch(/\/server\//);
-        expect(module, file).not.toMatch(/-client$/);
-        expect(module, file).not.toBe("@/shared/config/server-config");
-      }
-      expect(source).not.toMatch(/process\.env/);
-    }
-  });
-
-  it("src/app/trace · api/trace 는 진입 함수(server/)와 ui/ 만 — 클라이언트를 만들거나 fetch 를 직접 부르지 않는다", () => {
-    for (const file of appFiles) {
-      const source = readFileSync(file, "utf8");
-      for (const module of valueImports(source)) {
-        if (!module.startsWith("@/features/request-trace/")) continue;
-        expect(module, file).toMatch(/^@\/features\/request-trace\/(server|ui)\//);
-      }
-      expect(source).not.toMatch(/\bcreateLogClient\b|\bfetch\s*\(/);
-      expect(valueImports(source).some((module) => module.startsWith("@/features/request-trace/server/")), file).toBe(true);
-    }
   });
 
   it("새 의존성 없음 — package.json 의 것 · @/ · 상대 경로 · node: 만", () => {
