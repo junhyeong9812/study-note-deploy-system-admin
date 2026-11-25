@@ -17,12 +17,20 @@ import { invalidInputOf, screenDataResponse, upstreamFailureLogLine } from "@/sh
 import { isHttpBaseUrl } from "@/shared/lib/upstream-fetch";
 import { upstreamFailure, type SearchParamsInput, type UpstreamResult } from "@/shared/lib/upstream-result";
 
+/** 확인 화면의 접수 폼(6-4) — comparison 이고 진행 중인 배포가 없을 때만. 계정 이름이 requested_by 로 쓸 수 없으면 account_not_allowed(폼 대신 안내).
+ * 뼈대: 구현 워커가 채운다(지금은 언제나 null). */
+export type RedeployAcceptSubmission =
+  | { kind: "form"; confirmation: string; requestId: string }
+  | { kind: "account_not_allowed" };
+
 export interface RedeployPreviewView {
   /** 입력이 틀렸으면 null(그때 preview 는 invalid_input, master 를 부르지 않는다) */
   query: RedeployPreviewQuery | null;
   /** 돌아갈 버전 목록의 서비스 — 입력의 service 가 허용 목록 안의 글자 하나면 그것(commit 이 틀려도), 아니면 null */
   service: DeployService | null;
   preview: UpstreamResult<RedeployPreview>;
+  /** 접수 폼 — 폼을 둘 수 없으면 null */
+  submission: RedeployAcceptSubmission | null;
 }
 
 /** 세션 검증을 마친 뒤에만 부른다. */
@@ -30,7 +38,7 @@ async function buildRedeployPreviewView(searchParams: SearchParamsInput): Promis
   const parsed = parseRedeployPreviewQuery(searchParams);
   if (!parsed.ok) {
     // service 를 먼저 보므로 field 가 commit 이면 service 는 허용 목록 안의 글자 하나다
-    return { query: null, service: parsed.field === "commit" ? (searchParams.service as DeployService) : null, preview: parsed };
+    return { query: null, service: parsed.field === "commit" ? (searchParams.service as DeployService) : null, preview: parsed, submission: null };
   }
   const config = readServerConfig();
   let preview: UpstreamResult<RedeployPreview>;
@@ -48,7 +56,7 @@ async function buildRedeployPreviewView(searchParams: SearchParamsInput): Promis
     const logLine = upstreamFailureLogLine("deploy-redeploy", cell, result);
     if (logLine !== null) void log("screen-deploy-redeploy", logLine, "warning");
   }
-  return { query: parsed.query, service: parsed.query.service, preview };
+  return { query: parsed.query, service: parsed.query.service, preview, submission: null };
 }
 
 /** 화면용 — 세션이 없으면 requireSession 이 /login 으로 보낸다(다른 서버를 한 번도 부르지 않는다). */

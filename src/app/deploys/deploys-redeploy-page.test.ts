@@ -1,7 +1,7 @@
 /** 재배포 확인 화면(/deploys/redeploy) — 실제 렌더(서버 컴포넌트 → HTML). 진입 함수와 전역 fetch(가짜 master — 갈라지는 git 이력)를 거친다.
  * 지키는 것: 지금 버전 → 고른 버전(짧은 SHA · 전체는 title · 제목 · 마지막 배포 시각) · 방향은 글로(되돌립니다 · 앞으로 올립니다 · 같은 버전을 다시 올립니다 ·
  * 두 버전의 앞뒤를 확인하지 못함 — 까닭) · 사이의 커밋 표와 수 · 100개 상한 안내 · 되돌릴 때의 데이터 꼴 안내 · 배포 진행 중 안내 ·
- * 성공 이력에 없는 커밋은 비교 없음 · 틀린 입력 · 실패 · 버전 목록으로 돌아가는 링크 · 폼 · 단추 · 입력 · 스크립트 없음(이 조각에는 접수가 없다).
+ * 성공 이력에 없는 커밋은 비교 없음 · 틀린 입력 · 실패 · 버전 목록으로 돌아가는 링크 · 스크립트 없음 · 폼은 접수 경로로 가는 POST 하나뿐(접수 폼의 계약은 deploys-redeploy-form-page.test).
  * 또 버전 목록의 줄마다 이 화면으로 가는 링크("이 버전으로" · 지금 버전은 "다시 올리기"). */
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
@@ -25,7 +25,7 @@ vi.mock("next/navigation", () => ({ redirect: (location: string) => { throw new 
 import RedeployPreviewPage from "@/app/deploys/redeploy/page";
 import DeployVersionsPage from "@/app/deploys/versions/page";
 import { issueSessionToken } from "@/features/auth/lib/session";
-import { FAKE_ORIGIN, FAKE_SIGNING_KEY } from "@/features/auth/lib/test-fakes";
+import { FAKE_ADMIN_ID, FAKE_ORIGIN, FAKE_SIGNING_KEY } from "@/features/auth/lib/test-fakes";
 import { gitCommitRangeJson, masterGitFailure, masterGitSuccess } from "@/features/deploy-detail/lib/deploy-git-test-fakes";
 import { branchFrom, installCommitGraph, type GraphCommit } from "@/features/deploy-redeploy/lib/redeploy-test-fakes";
 import {
@@ -68,6 +68,7 @@ let master: FakeMaster;
 beforeEach(() => {
   vi.unstubAllEnvs();
   vi.stubEnv("SESSION_SECRET", FAKE_SIGNING_KEY);
+  vi.stubEnv("ADMIN_USER", FAKE_ADMIN_ID);
   vi.stubEnv("ADMIN_ORIGIN", FAKE_ORIGIN);
   vi.stubEnv("DEPLOY_MASTER_URL", FAKE_DEPLOY_MASTER_URL);
   vi.stubEnv("DEPLOY_SECRET", FAKE_DEPLOY_SECRET);
@@ -310,15 +311,15 @@ describe("고를 수 없는 버전 · 진행 중 · 틀린 입력 · 실패", ()
   });
 });
 
-describe("아무것도 바꾸지 않는다 — 이 조각에는 접수가 없다", () => {
-  it.each([["되돌리기", 1], ["같은 버전", 4]] as const)("%s 화면의 본문에 폼 · 단추 · 입력 · 스크립트가 없다 · master 요청은 전부 GET", async (_label, index) => {
+describe("화면을 그려도 아무것도 바꾸지 않는다 — 폼은 접수 경로로 가는 POST 하나뿐", () => {
+  it.each([["되돌리기", 1], ["같은 버전", 4]] as const)("%s 화면의 본문에 스크립트가 없고, 폼은 POST /api/deploys/redeploy 하나뿐 · master 요청은 전부 GET", async (_label, index) => {
     const html = await renderRedeploy({ service: "backend", commit: main[index].sha });
     const main_ = mainOf(html);
-    expect(main_).not.toMatch(/<form[\s>]/i);
-    expect(main_).not.toMatch(/<button[\s>]/i);
-    expect(main_).not.toMatch(/<input[\s>]/i);
+    const forms = [...main_.matchAll(/<form[^>]*>/gi)].map((match) => match[0]);
+    expect(forms).toHaveLength(1);
+    expect(forms[0]).toMatch(/method="post"/i);
+    expect(forms[0]).toMatch(/action="\/api\/deploys\/redeploy"/);
     expect(main_).not.toMatch(/<textarea[\s>]/i);
-    expect(main_).not.toMatch(/method="post"/i);
     expect(main_).not.toMatch(/<script[\s>]/i);
     expect(master.fetch).toHaveBeenCalled();
     for (const [, init] of master.fetch.mock.calls) expectReadOnlyRequest(init);
