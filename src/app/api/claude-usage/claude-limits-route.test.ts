@@ -22,6 +22,7 @@ import { NextRequest } from "next/server";
 
 import { hash } from "@node-rs/argon2";
 import { POST } from "@/app/api/claude-usage/limits/route";
+import { GET as claudeUsageGet } from "@/app/api/claude-usage/route";
 import { SESSION_COOKIE_NAME, SESSION_LIFETIME_MILLISECONDS, issueSessionToken } from "@/features/auth/lib/session";
 import { FAKE_ADMIN_ID, FAKE_ORIGIN, FAKE_PASSWORD, FAKE_SIGNING_KEY } from "@/features/auth/lib/test-fakes";
 import {
@@ -557,7 +558,7 @@ describe("9 실행 자리의 답 — 바뀜은 돌려받은 값을 보인다 · 
     ["422 unknown_field(detail 없음)", () => jsonBody({ success: false, error: { code: "unknown_field", detail: "secret_field" } }, 422), 422, "실행 자리가 값을 거절했습니다 (unknown_field)", ["secret_field"]],
     ["422 모르는 code(원문 없음)", () => textResponse(leakyErrorBody(), 422), 422, "실행 자리가 값을 거절했습니다 (unexpected)", ["boom"]],
     ["401 설정 비밀값 거절", () => jsonBody({ success: false, error: { code: "unauthorized" } }, 401), 502, "실행 자리가 어드민의 설정 비밀값을 받지 않았습니다", []],
-    ["503 limits_unavailable", () => jsonBody({ success: false, error: { code: "limits_unavailable" } }, 503), 502, "바꾸지 못했습니다 — 바뀌지 않았습니다", []],
+    ["302(따라가지 않는다 — 바뀌지 않았다)", () => new Response(null, { status: 302, headers: { Location: "http://elsewhere.example.test/" } }), 422, "실행 자리가 값을 거절했습니다 (unexpected)", ["elsewhere.example.test"]],
   ];
   for (const [label, respond, status, words, absent] of rejected) {
     it(`${label} → ${status} '${words}' · PUT 한 번 · 원문 없음`, async () => {
@@ -582,6 +583,55 @@ describe("9 실행 자리의 답 — 바뀜은 돌려받은 값을 보인다 · 
     expect(textOf(await response.text())).toContain("바뀌지 않았습니다");
     expect(limitPuts()).toHaveLength(1);
   });
+
+  // 명세 §15: 5xx 는 code 가 무엇이든 모름 — 실행 자리는 값을 쓴 뒤에도 503 을 낼 수 있다
+  const serverErrors: [number, () => Response][] = [
+    [503, () => jsonBody({ success: false, error: { code: "limits_unavailable" } }, 503)],
+    [500, () => textResponse(leakyErrorBody(), 500)],
+    [502, () => textResponse(leakyErrorBody(), 502)],
+    [504, () => textResponse(leakyErrorBody(), 504)],
+  ];
+  for (const [status, respond] of serverErrors) {
+    it(`PUT 이 ${status} → 504 '바뀌었는지 모릅니다' · '바뀌지 않았습니다'라고 말하지 않는다 · PUT 한 번 · 로그 claude-limits:unknown status=${status}`, async () => {
+      runner.override["PUT /limits"] = respond;
+      validSession();
+      const response = await POST(limitsRequest({ fields: fields({ total_per_day: "5" }) }));
+      expect(response.status).toBe(504);
+      const html = await response.text();
+      expect(textOf(html)).toContain("바뀌었는지 모릅니다 — 다시 읽어 확인하세요");
+      expect(textOf(html)).not.toContain("바뀌지 않았습니다");
+      expectNoForbiddenText(html, CLAUDE_FORBIDDEN_IN_RESULTS);
+      expect(limitPuts()).toHaveLength(1);
+      const lines = consoleLines.filter((line) => line.includes(":claude-limits:"));
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toMatch(new RegExp(`:claude-limits:unknown status=${status}\\b`));
+    });
+  }
+
+  const writtenThenFailed: [string, Record<string, string | string[] | null>, { per_day: number; per_hour: number }, boolean][] = [
+    ["내림", fields({ total_per_day: "5", total_per_hour: "3" }), { per_day: 5, per_hour: 3 }, false],
+    ["올림(맞는 비밀번호)", fields({ total_per_day: "50", total_per_hour: "20", password: FAKE_PASSWORD }), { per_day: 50, per_hour: 20 }, true],
+  ];
+  for (const [label, form, expectedTotal, raise] of writtenThenFailed) {
+    it(`실행 자리가 값을 쓴 뒤 503 을 낸다 — ${label} → 504 모름(바뀌지 않았다고 말하지 않는다) · PUT 한 번 · 다시 읽으면 바뀐 값`, async () => {
+      runner.failAfterWrite = 503;
+      validSession();
+      const response = await POST(limitsRequest({ fields: form }));
+      expect(response.status).toBe(504);
+      const text = textOf(await response.text());
+      expect(text).toContain("바뀌었는지 모릅니다 — 다시 읽어 확인하세요");
+      expect(text).not.toContain("바뀌지 않았습니다");
+      expect(text).not.toContain("상한을 바꿨습니다");
+      expect(limitPuts()).toHaveLength(1);
+      expect(attemptCalls()).toHaveLength(raise ? 1 : 0);
+      expect(runner.limits.total).toEqual(expectedTotal);   // 실제 실행 자리처럼 값은 바뀌어 있다
+      expect(consoleLines.filter((line) => line.includes(":claude-limits:"))[0]).toMatch(new RegExp(`:claude-limits:unknown status=503\\b.*raise=${raise}`));
+      // 화면을 다시 읽으면(GET /api/claude-usage — 실행 자리를 새로 읽는다) 바뀐 값이 보인다
+      runner.failAfterWrite = null;
+      const screen = await (await claudeUsageGet(new Request(new URL("/api/claude-usage", FAKE_ORIGIN)))).json() as { data: { limits: { ok: boolean; value: { total: unknown } } } };
+      expect(screen.data.limits).toMatchObject({ ok: true, value: { total: { perDay: expectedTotal.per_day, perHour: expectedTotal.per_hour } } });
+    });
+  }
 
   const unknowns: [string, () => Response | Promise<Response>][] = [
     ["시간 초과", () => Promise.reject(new DOMException("The operation was aborted due to timeout", "TimeoutError"))],

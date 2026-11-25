@@ -252,7 +252,9 @@ describe("replaceLimits — PUT /limits 한 번", () => {
     expect(result).toMatchObject({ kind: "replaced", limits: { enabled: true, total: { perDay: 25, perHour: 6 }, purposes: { chat: { perDay: 30, perHour: 10 } } } });
   });
 
-  const outcomes: [string, () => Response | Promise<Response>, ClaudeLimitsReplaceResult][] = [
+  // 명세 §15: not_replaced 는 요청이 나가지 않았다고 말할 수 있을 때(연결을 맺지 못함)만. 5xx 는 code 가 무엇이든 unknown(status 를 싣는다) —
+  // 실행 자리는 값을 커밋한 뒤 다시 읽기가 실패해도 503 limits_unavailable 을 낸다. 3xx 는 거절(따라가지 않았으니 바뀌지 않았다).
+  const outcomes: [string, () => Response | Promise<Response>, ClaudeLimitsReplaceResult & { status?: number }][] = [
     ["422 invalid_limits", () => jsonBody({ success: false, error: { code: "invalid_limits" } }, 422), { kind: "rejected", code: "invalid_limits" }],
     ["422 invalid_changed_by", () => jsonBody({ success: false, error: { code: "invalid_changed_by" } }, 422), { kind: "rejected", code: "invalid_changed_by" }],
     ["422 unknown_field(detail 은 싣지 않는다)", () => jsonBody({ success: false, error: { code: "unknown_field", detail: "secret_field" } }, 422), { kind: "rejected", code: "unknown_field" }],
@@ -260,8 +262,13 @@ describe("replaceLimits — PUT /limits 한 번", () => {
     ["422 모르는 code", () => textResponse(leakyErrorBody(), 422), { kind: "rejected", code: "unexpected" }],
     ["401", () => jsonBody({ success: false, error: { code: "unauthorized" } }, 401), { kind: "rejected", code: "unauthorized" }],
     ["404", () => jsonBody({ success: false, error: { code: "not_found" } }, 404), { kind: "rejected", code: "unexpected" }],
-    ["503 limits_unavailable", () => jsonBody({ success: false, error: { code: "limits_unavailable" } }, 503), { kind: "not_replaced", status: 503 }],
-    ["500", () => textResponse(leakyErrorBody(), 500), { kind: "not_replaced", status: 500 }],
+    ["302(따라가지 않는다)", () => new Response(null, { status: 302, headers: { Location: "http://elsewhere.example.test/" } }), { kind: "rejected", code: "unexpected" }],
+    ["307(따라가지 않는다)", () => new Response(null, { status: 307, headers: { Location: "http://elsewhere.example.test/limits" } }), { kind: "rejected", code: "unexpected" }],
+    ["503 limits_unavailable(쓴 뒤 다시 읽기 실패일 수 있다)", () => jsonBody({ success: false, error: { code: "limits_unavailable" } }, 503), { kind: "unknown", status: 503 }],
+    ["500", () => textResponse(leakyErrorBody(), 500), { kind: "unknown", status: 500 }],
+    ["502", () => textResponse(leakyErrorBody(), 502), { kind: "unknown", status: 502 }],
+    ["504", () => textResponse(leakyErrorBody(), 504), { kind: "unknown", status: 504 }],
+    ["503 인데 본문이 JSON 이 아님", () => textResponse("<html>busy</html>", 503, "text/html"), { kind: "unknown", status: 503 }],
     ["ECONNREFUSED", () => Promise.reject(undiciFetchFailure("ECONNREFUSED")), { kind: "not_replaced" }],
     ["ENOTFOUND", () => Promise.reject(undiciFetchFailure("ENOTFOUND")), { kind: "not_replaced" }],
     ["UND_ERR_CONNECT_TIMEOUT", () => Promise.reject(undiciFetchFailure("UND_ERR_CONNECT_TIMEOUT")), { kind: "not_replaced" }],

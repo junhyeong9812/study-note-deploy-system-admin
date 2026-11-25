@@ -100,6 +100,8 @@ export interface FakeClaudeRunner {
   counts: { total: RunnerCounts; purposes: Record<string, RunnerCounts> };
   recent: Record<string, unknown>[];
   healthStatus: "ok" | "token_missing" | "claude_unavailable" | "ledger_unavailable";
+  /** 값을 쓴 뒤(상태를 바꾼 뒤) 이 상태로 실패를 답한다 — 실제 실행 자리의 replace_limits 가 커밋 뒤 다시 읽기에 실패할 때의 503 limits_unavailable(명세 §15). null 이면 정상. */
+  failAfterWrite: number | null;
   /** "METHOD /path" → 답(정상 처리 대신). */
   override: Partial<Record<"GET /usage" | "GET /limits" | "PUT /limits" | "GET /health", RoutedFetchHandler>>;
   /** 받은 요청 — 메서드 · 경로 · 머리글 · 본문(JSON 이면 해석한 값). */
@@ -115,6 +117,7 @@ export function createFakeClaudeRunner(): FakeClaudeRunner {
     counts: { total: { today: 3, last_hour: 1 }, purposes: { chat: { today: 3, last_hour: 1 } } },
     recent: [runnerCall()],
     healthStatus: "ok",
+    failAfterWrite: null,
     override: {},
     requests: [],
     calls: (method, path) => runner.requests.filter((request) => request.method === method && request.path === path),
@@ -148,6 +151,7 @@ export function createFakeClaudeRunner(): FakeClaudeRunner {
       purposes: Object.fromEntries(Object.entries(document.purposes).map(([name, pair]) => [name, { per_day: pair.per_day, per_hour: pair.per_hour }])),
       changed_at: "2026-11-26T13:11:00+09:00", changed_by: document.changed_by.trim(),
     };
+    if (runner.failAfterWrite !== null) return failure(runner.failAfterWrite, "limits_unavailable");
     return jsonBody({ success: true, data: structuredClone(runner.limits) });
   });
   return runner;
