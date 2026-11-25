@@ -391,9 +391,13 @@ function parseFiring(value: unknown): FiringRule {
 
 function parseLatest(data: Record<string, unknown>): LatestResources {
   if (!Array.isArray(data.servers)) malformed();
-  const servers = (data.servers as unknown[]).map(parseServer);
+  // 이름(server)의 꼴이 틀린 줄은 그 줄만 버리고 센다(§18 — 관측 서버의 기대 서버 설정 하나가 틀려도 나머지 서버는 보인다).
+  // 줄이 객체가 아니거나, 이름은 맞는데 다른 칸의 형이 틀리면 지금처럼 전체 unparseable.
+  const rows = (data.servers as unknown[]).map(record);
+  const readable = rows.filter((row) => isServerName(row.server));
+  const servers = readable.map(parseServer);
   if (new Set(servers.map((server) => server.server)).size !== servers.length) malformed();   // 같은 서버 두 번
-  return { servers, unreadableServerNameCount: 0, firing: optionalArray(data.firing, parseFiring) };   // 뼈대 — §18 구현 전
+  return { servers, unreadableServerNameCount: rows.length - readable.length, firing: optionalArray(data.firing, parseFiring) };
 }
 
 /** 갈래마다 값의 꼴 — GPU 온도만 음수를 받는다. */

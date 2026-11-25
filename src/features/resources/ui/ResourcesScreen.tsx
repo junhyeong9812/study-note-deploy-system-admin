@@ -72,7 +72,10 @@ function ElsewhereLine({ firing }: { firing: ElsewhereFiringView[] }) {
 
 /** 받은 때 — fresh 는 "N분 전"(받은 측정 시각과 함께), stale · never · unknown 은 모델의 글. */
 function FreshnessLine({ freshness, measuredAt }: { freshness: ServerFreshness; measuredAt: string | null }) {
-  const label = freshness.kind === "fresh" ? `받은 때 ${formatAge(freshness.ageMilliseconds)}` : freshness.label;
+  // 수신 없음이어도 마지막 수신을 알면 덧붙인다 — 한 번도 안 보낸 서버와 구분(§18)
+  const label = freshness.kind === "fresh" ? `받은 때 ${formatAge(freshness.ageMilliseconds)}`
+    : freshness.kind === "never" && freshness.ageMilliseconds !== null ? `${freshness.label} · 마지막 수신 ${formatAge(freshness.ageMilliseconds)}`
+    : freshness.label;
   const toneClass = freshness.kind === "fresh" ? styles.freshnessFresh : styles.freshnessStale;
   return (
     <span className={styles.freshnessLine}>
@@ -436,6 +439,7 @@ export function ResourcesScreen({ screen, view }: ResourcesScreenProps) {
       {screen.selectedContainer !== null && !(screen.servers.ok && screen.servers.value.some((server) => server.server === screen.selectedContainer?.server))
         && <SelectedContainer selected={screen.selectedContainer} links={links} />}
       {screen.hiddenServerCount > 0 && <p className={styles.meta}>서버 {screen.hiddenServerCount}대는 이 화면에 보이지 않습니다(앞 10대만).</p>}
+      {screen.unreadableServerNameCount > 0 && <p className={styles.failure}>이름을 읽지 못한 서버 {screen.unreadableServerNameCount}대 — 관측 서버가 준 서버 이름의 꼴이 맞지 않아 보이지 않습니다.</p>}
     </main>
   );
 }

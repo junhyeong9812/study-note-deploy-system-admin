@@ -81,8 +81,10 @@ function SummaryTable({ summary }: { summary: StatusResourcesSummary }) {
 }
 
 export function StatusResourcesCard({ resources }: { resources: UpstreamResult<StatusResourcesSummary> }) {
-  const tone = !resources.ok || !resources.value.firingKnown ? "unknown"
-    : resources.value.rows.some((row) => row.firingCount > 0) || resources.value.elsewhereFiringCount > 0 ? "problem" : "healthy";
+  // 울리는 알림 → 문제 · 알림을 모르거나 오래된 값 · 수신 없음인 줄이 있으면 확인 못 함(§18 — 알림이 아직 울리지 않은 동안에도 정상이 아니다) · 그 밖 정상
+  const tone = !resources.ok ? "unknown"
+    : resources.value.rows.some((row) => row.firingCount > 0) || resources.value.elsewhereFiringCount > 0 ? "problem"
+    : !resources.value.firingKnown || resources.value.rows.some((row) => row.freshness.kind !== "fresh") ? "unknown" : "healthy";
   return (
     <section className={styles.card} aria-labelledby={STATUS_RESOURCES_HEADING_ID}>
       <div className={styles.cardHeading}>
@@ -97,6 +99,7 @@ export function StatusResourcesCard({ resources }: { resources: UpstreamResult<S
           {!resources.value.firingKnown && <p className={styles.meta}>임계값: 확인하지 못함</p>}
           {resources.value.elsewhereFiringCount > 0 && <p className={styles.meta}><strong className={styles.undelivered}>표 밖 서버의 알림 {resources.value.elsewhereFiringCount}건</strong></p>}
           {resources.value.hiddenServerCount > 0 && <p className={styles.meta}>서버 {resources.value.hiddenServerCount}대는 표에 보이지 않습니다(앞 10대만).</p>}
+          {resources.value.unreadableServerNameCount > 0 && <p className={styles.meta}>이름을 읽지 못한 서버 {resources.value.unreadableServerNameCount}대는 표에 없습니다.</p>}
         </>
       )}
       <p className={styles.meta}><a className={styles.refresh} href={resources.ok ? resources.value.screenHref : resourcesHref({ range: "1h", container: null })}>서버 자원 화면으로</a></p>

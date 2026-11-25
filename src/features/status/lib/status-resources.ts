@@ -23,7 +23,8 @@
  * 요약 줄(statusResourceSummaryItems — 상태 화면 맨 위 요약에 더할 재료):
  * - 실패 → unreachable [{ label: "서버 자원" }], problems [].
  * - 성공 → firing 마다 problems `"서버 <서버> <규칙 이름>[ <대상>](<심각도 이름>)"`(화면에 남긴 줄의 서버 이름순, 서버 안에서는 받은 순서, 그 다음 다른 서버의 것을 받은 순서),
- *   firingKnown false 면 unreachable [{ label: "서버 자원 임계값" }]. */
+ *   firingKnown false 면 unreachable [{ label: "서버 자원 임계값" }].
+ * - 성공이면 unreachable 에 신선도가 fresh 가 아닌 줄(오래된 값 · 수신 없음 · 확인하지 못함)마다 `"서버 <서버> <받은 때 글>"`(줄 순서 — §18, 알림이 울리지 않은 동안에도). */
 import type { FetchLike, TimeoutSignalFactory } from "@/features/auth/lib/types";
 import { createResourceMetricsClient, type FiringRule, type LatestResources } from "@/features/resources/lib/resource-metrics-client";
 import { resourcesHref } from "@/features/resources/lib/resources-query";
@@ -158,7 +159,7 @@ export function statusResourcesFromLatest(latest: LatestResources): StatusResour
   });
   const elsewhereFiring = firingRules.filter((rule) => !shownNames.has(rule.server)).map((rule) => ({ ...statusFiring(rule), server: rule.server }));
   return {
-    rows, hiddenServerCount: sorted.length - shown.length, unreadableServerNameCount: 0, firingKnown: latest.firing !== null,
+    rows, hiddenServerCount: sorted.length - shown.length, unreadableServerNameCount: latest.unreadableServerNameCount, firingKnown: latest.firing !== null,
     elsewhereFiringCount: elsewhereFiring.length, elsewhereFiring, screenHref,
   };
 }
@@ -194,10 +195,12 @@ function problemLabel(server: string, firing: StatusResourceFiring): string {
 export function statusResourceSummaryItems(resources: UpstreamResult<StatusResourcesSummary>): StatusResourceSummaryItems {
   if (!resources.ok) return { problems: [], unreachable: [{ label: "서버 자원" }] };
   const summary = resources.value;
-  if (!summary.firingKnown) return { problems: [], unreachable: [{ label: "서버 자원 임계값" }] };
+  // §18 — 오래된 값 · 수신 없음 · 신선도를 모르는 줄은 알림이 아직 울리지 않았어도 "확인 못 함"(줄 순서)
+  const freshness = summary.rows.filter((row) => row.freshness.kind !== "fresh").map((row) => ({ label: `서버 ${row.server} ${row.freshness.label}` }));
+  if (!summary.firingKnown) return { problems: [], unreachable: [{ label: "서버 자원 임계값" }, ...freshness] };
   const problems = [
     ...summary.rows.flatMap((row) => row.firing.map((firing) => ({ label: problemLabel(row.server, firing) }))),
     ...summary.elsewhereFiring.map((firing) => ({ label: problemLabel(firing.server, firing) })),
   ];
-  return { problems, unreachable: [] };
+  return { problems, unreachable: freshness };
 }

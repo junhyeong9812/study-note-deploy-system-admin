@@ -456,6 +456,12 @@ function largest(values: (number | null)[]): number | null {
   return values.reduce<number | null>((maximum, value) => (value !== null && (maximum === null || value > maximum) ? value : maximum), null);
 }
 
+/** 점들의 최댓값(§18) — 점마다 최댓값을, 그 점에 최댓값이 없으면 그 점의 평균을 후보로(표시한 최댓값이 평균보다 작아지지 않는다).
+ * 서버 자원 화면의 그래프 요약과 로그 추적의 "앞뒤 5분 최댓값"이 함께 쓴다. */
+export function pointsMaximum(points: readonly { average: number | null; maximum: number | null }[]): number | null {
+  return largest(points.map((point) => point.maximum ?? point.average));
+}
+
 function graphView(spec: GraphSpec, series: ResourceSeries, window: ResourcesWindow): GraphView {
   const lines = spec.lines.map((line) => ({
     key: line.key, label: line.label, role: line.role,
@@ -467,8 +473,9 @@ function graphView(spec: GraphSpec, series: ResourceSeries, window: ResourcesWin
   }));
   const lineSummaries = lines.filter((line) => line.role === "average").map((line): GraphLineSummary => {
     const values = line.points.map((point) => point.value);
-    const pairedMaximum = largest(lines.find((candidate) => candidate.key === `${line.key}_max`)?.points.map((point) => point.value) ?? []);
-    return { label: line.label, latest: values.filter((value) => value !== null).at(-1) ?? null, maximum: pairedMaximum ?? largest(values) };
+    const maximumLine = lines.find((candidate) => candidate.key === `${line.key}_max`);
+    const maximum = pointsMaximum(line.points.map((point, index) => ({ average: point.value, maximum: maximumLine?.points[index]?.value ?? null })));
+    return { label: line.label, latest: values.filter((value) => value !== null).at(-1) ?? null, maximum };
   });
   const format = UNIT_FORMATS[spec.unit];
   const summary = series.points.length === 0
@@ -502,6 +509,7 @@ function graphsOf<Key extends string>(result: UpstreamResult<ResourceSeries>, sp
 interface ServersPart {
   servers: UpstreamResult<ServerResourceView[]>;
   hiddenServerCount: number;
+  unreadableServerNameCount: number;
   firingKnown: boolean;
   firingElsewhere: ElsewhereFiringView[];
 }
@@ -537,7 +545,8 @@ async function collectServers(latest: LatestResources, client: ResourceMetricsCl
     };
   }));
   return {
-    servers: { ok: true, value: views }, hiddenServerCount: sorted.length - shown.length, firingKnown: latest.firing !== null,
+    servers: { ok: true, value: views }, hiddenServerCount: sorted.length - shown.length, unreadableServerNameCount: latest.unreadableServerNameCount,
+    firingKnown: latest.firing !== null,
     firingElsewhere: firing.filter((rule) => !shownNames.has(rule.server)).map((rule) => ({ ...firingView(rule), server: rule.server })),
   };
 }
@@ -550,11 +559,11 @@ export async function collectResourcesScreen(options: ResourcesScreenOptions): P
 
   // 1단계 — latest 와 고른 컨테이너를 한꺼번에. 2단계는 latest 가 끝나는 대로(고른 컨테이너를 기다리지 않는다).
   const serversPart = client.latest().then(async (latest): Promise<ServersPart> => {
-    if (!latest.ok) return { servers: latest, hiddenServerCount: 0, firingKnown: false, firingElsewhere: [] };
+    if (!latest.ok) return { servers: latest, hiddenServerCount: 0, unreadableServerNameCount: 0, firingKnown: false, firingElsewhere: [] };
     try {
       return await collectServers(latest.value, client, window, query);
     } catch {
-      return { servers: upstreamFailure("unparseable"), hiddenServerCount: 0, firingKnown: false, firingElsewhere: [] };
+      return { servers: upstreamFailure("unparseable"), hiddenServerCount: 0, unreadableServerNameCount: 0, firingKnown: false, firingElsewhere: [] };
     }
   });
   const selectedContainer = query.container === null ? Promise.resolve(null) : (async (selection: ContainerSelection): Promise<SelectedContainerView> => {
@@ -573,7 +582,6 @@ export async function collectResourcesScreen(options: ResourcesScreenOptions): P
     })),
     refreshHref: resourcesHref(query),
     ...servers,
-    unreadableServerNameCount: 0,   // 뼈대 — §18 구현 전
     selectedContainer: selected,
   };
 }
