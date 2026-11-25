@@ -136,6 +136,8 @@ export interface FiringRule {
 
 export interface LatestResources {
   servers: ServerLatest[];
+  /** 이름(server)을 읽지 못해 버린 서버 줄의 수(§18 — 그 줄만 버리고 센다) */
+  unreadableServerNameCount: number;
   /** 칸이 없으면 null(확인하지 못함) */
   firing: FiringRule[] | null;
 }
@@ -391,7 +393,7 @@ function parseLatest(data: Record<string, unknown>): LatestResources {
   if (!Array.isArray(data.servers)) malformed();
   const servers = (data.servers as unknown[]).map(parseServer);
   if (new Set(servers.map((server) => server.server)).size !== servers.length) malformed();   // 같은 서버 두 번
-  return { servers, firing: optionalArray(data.firing, parseFiring) };
+  return { servers, unreadableServerNameCount: 0, firing: optionalArray(data.firing, parseFiring) };   // 뼈대 — §18 구현 전
 }
 
 /** 갈래마다 값의 꼴 — GPU 온도만 음수를 받는다. */

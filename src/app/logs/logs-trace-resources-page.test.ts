@@ -25,10 +25,10 @@ import {
   masterDeployment, masterHandlerFor,
 } from "@/features/log-trace/lib/log-trace-test-fakes";
 import { createFakeTraceObserve, type FakeTraceObserve } from "@/features/log-trace/lib/trace-resources-test-fakes";
-import { observeLatestBody, observeLatestServer, observePoint, seriesKey } from "@/features/resources/lib/resource-metrics-test-fakes";
+import { observeLatestBody, observeLatestServer, observePoint, observeSilentServer, seriesKey } from "@/features/resources/lib/resource-metrics-test-fakes";
 import {
   FAKE_ALERT_SECRET, FAKE_ALERT_URL, FAKE_DEPLOY_MASTER_URL, FAKE_DEPLOY_SECRET, FAKE_OBSERVE_SECRET, FAKE_OBSERVE_URL, expectNoForbiddenText,
-  leakyErrorBody, textResponse, type RoutedFetchHandler,
+  leakyErrorBody, respondAfter, textResponse, track, type RoutedFetchHandler,
 } from "@/shared/lib/upstream-test-fakes";
 
 const T = SELECTED_MILLISECONDS;   // 고른 로그 — backend error
@@ -38,7 +38,7 @@ const LIST_RANGE = { from: new Date(T - HOUR).toISOString(), to: new Date(T + HO
 const LOG_LINES = [fakeLogLine()];
 
 let traceObserve: FakeTraceObserve;
-const logsObserve = createFakeObserveLogs(LOG_LINES).handler;
+let logsObserve = createFakeObserveLogs(LOG_LINES).handler;   // §18 사례(서비스 이름이 서버 이름인 로그)가 줄을 바꾼다 — beforeEach 가 되돌린다
 const observeHandler: RoutedFetchHandler = (url, init) => (url.pathname.startsWith("/metrics/") ? traceObserve.handler(url, init) : logsObserve(url, init));
 
 const networkFetch = createTraceFetch({
@@ -122,6 +122,7 @@ beforeEach(() => {
   vi.stubEnv("ALERT_SECRET", FAKE_ALERT_SECRET);
   vi.stubEnv("LOG_REDIS_URL", "");
   traceObserve = defaultTraceObserve();
+  logsObserve = createFakeObserveLogs(LOG_LINES).handler;
   networkFetch.mockClear();
   vi.stubGlobal("fetch", networkFetch);
   for (const method of ["log", "warn", "error", "info"] as const) vi.spyOn(console, method).mockImplementation(() => undefined);
@@ -216,6 +217,123 @@ describe("못 찾음 — 둘을 가른다", () => {
     traceObserve = createFakeTraceObserve(() => textResponse(leakyErrorBody(), 503));
     const html = await render();
     expect(textOf(resourcesBlock(html))).toContain("확인하지 못함 — 서버 일시 장애 · HTTP 503");
+    expect(textOf(html)).toContain("앞뒤 30분의 배포");
+    expect(textOf(html)).toContain("앞뒤 5분 서비스별 warning · error");
+    expectNoForbiddenText(html);
+  });
+});
+
+describe("§18 — 못 찾음의 글은 까닭을 단정하지 않는다 · 조용히 자르지 않는다 · 이름을 읽지 못한 서버", () => {
+  it("다 물었는데 없음 → '기록 없음' — '보관 기간 밖 · 수집 전'을 단정하지 않는다", async () => {
+    for (const server of ["158", "164", "9"]) traceObserve.containers.set(server, { seen: { "front-app": T } });
+    const text = textOf(resourcesBlock(await render()));
+    expect(text).toContain("기록 없음");
+    expect(text).not.toContain("보관 기간 밖");
+    expect(text).not.toContain("수집 전");
+  });
+
+  it("서버 11대 · 서비스는 11번째(이름순)에만 → '기록 없음'이 아니라 '확인하지 못한 서버 1대'", async () => {
+    const names = Array.from({ length: 11 }, (_, index) => `s${String(index).padStart(2, "0")}`);
+    traceObserve = createFakeTraceObserve(() => observeLatestBody(names.map((name) => observeLatestServer(name)), []));
+    traceObserve.containers.set("s10", { seen: { "backend-app": T } });
+    const block = resourcesBlock(await render());
+    expect(textOf(block)).toContain("확인하지 못한 서버 1대");
+    expect(textOf(block)).not.toContain("기록 없음");
+    expect(block).not.toContain("<table");
+  });
+
+  it("서버 10대에서 없으면 지금처럼 '기록 없음'", async () => {
+    const names = Array.from({ length: 10 }, (_, index) => `s${String(index).padStart(2, "0")}`);
+    traceObserve = createFakeTraceObserve(() => observeLatestBody(names.map((name) => observeLatestServer(name)), []));
+    const text = textOf(resourcesBlock(await render()));
+    expect(text).toContain("기록 없음");
+    expect(text).not.toContain("확인하지 못한 서버");
+  });
+
+  it("이름을 읽지 못한 서버 줄이 있어도 찾은 서버의 값은 그대로 — '이름을 읽지 못한 서버 1대'", async () => {
+    const fake = defaultTraceObserve();
+    fake.metrics.latest = () => observeLatestBody([observeLatestServer("158"), observeLatestServer("164"), observeLatestServer("9"), observeSilentServer("CI-Agent-9")], []);
+    traceObserve = fake;
+    const block = resourcesBlock(await render());
+    expect(textOf(block)).toContain("서버 158 (backend-app)");
+    expect(tableRows(block)[0]).toEqual(["서버", "CPU", "34.1%", "87.0%"]);
+    expect(textOf(block)).toContain("이름을 읽지 못한 서버 1대");
+    expect(block).not.toContain("CI-Agent-9");
+  });
+
+  it("이름을 읽지 못한 서버 줄이 있고 나머지에서 못 찾으면 '기록 없음'이 아니라 '이름을 읽지 못한 서버 1대'", async () => {
+    traceObserve = createFakeTraceObserve(() => observeLatestBody([observeLatestServer("158"), observeSilentServer("CI-Agent-9")], []));
+    const text = textOf(resourcesBlock(await render()));
+    expect(text).toContain("이름을 읽지 못한 서버 1대");
+    expect(text).not.toContain("기록 없음");
+  });
+});
+
+describe("§18 — 서비스 이름이 서버 이름인 로그(배포 에이전트 · 마스터)", () => {
+  it("로그의 service 가 ci-agent-158 이고 latest 에 그 서버가 있으면 그 서버의 서버 자원 · 컨테이너 칸은 '해당 없음'", async () => {
+    logsObserve = createFakeObserveLogs([fakeLogLine({ service: "ci-agent-158" })]).handler;
+    const fake = defaultTraceObserve();
+    fake.metrics.latest = () => observeLatestBody([observeLatestServer("158"), observeLatestServer("ci-agent-158")], []);
+    fake.metrics.series.set(seriesKey("ci-agent-158", "host", null), { points: [
+      observePoint("host", T - 10_000, { cpu_pct: [12, 30], mem_used: [4e9, 4e9], mem_total: [1e10, 1e10], disk_used: [1e11, 1e11], disk_total: [1e12, 1e12] }),
+    ] });
+    traceObserve = fake;
+    const block = resourcesBlock(await render());
+    expect(textOf(block)).toContain("그때 서버 자원 — ci-agent-158 · 앞뒤 5분");
+    expect(textOf(block)).toContain("서버 ci-agent-158");
+    expect(tableRows(block)).toEqual([
+      ["서버", "CPU", "12.0%", "30.0%"], ["메모리", "40.0%", "40.0%"], ["디스크", "10.0%", "10.0%"],
+      ["컨테이너", "해당 없음"],
+    ]);
+    expect(linkHref(block)).toBe("/resources?range=1h#resource-server-ci-agent-158");
+  });
+
+  it("그 서버를 찾지 못한 글에도 '보관 기간 밖 · 수집 전'을 단정하는 문구가 없다", async () => {
+    logsObserve = createFakeObserveLogs([fakeLogLine({ service: "ci-agent-164" })]).handler;
+    const text = textOf(resourcesBlock(await render()));
+    expect(text).toContain("기록 없음");
+    expect(text).not.toContain("보관 기간 밖");
+    expect(text).not.toContain("수집 전");
+  });
+});
+
+describe("§18 — 앞뒤 5분 최댓값 · 자원 칸 전체의 시간 상한", () => {
+  it("점 A 평균 90 · 최댓값 없음, 점 B 평균 10 · 최댓값 11 → '앞뒤 5분 최댓값' 90.0%", async () => {
+    traceObserve.metrics.series.set(seriesKey("158", "host", null), { points: [
+      observePoint("host", T - 40_000, { cpu_pct: [90, null], mem_used: [7e9, 7e9], mem_total: [1e10, 1e10], disk_used: [5e11, 5e11], disk_total: [1e12, 1e12] }),
+      observePoint("host", T - 10_000, { cpu_pct: [10, 11], mem_used: [7e9, 7e9], mem_total: [1e10, 1e10], disk_used: [5e11, 5e11], disk_total: [1e12, 1e12] }),
+    ] });
+    expect(tableRows(resourcesBlock(await render()))[0]).toEqual(["서버", "CPU", "10.0%", "90.0%"]);
+  });
+
+  /** 가짜 타이머 전부(Date 포함)로 그린다 — 지표 호출마다 delay 밀리초 뒤에 답한다(호출마다 5초 기한 안). 7,999ms 에는 화면이 아직 끝나지 않아야 한다. */
+  async function renderWithSlowMetrics(delay: number): Promise<{ html: string; settledBeforeCap: boolean }> {
+    vi.useFakeTimers();
+    try {
+      const nowMilliseconds = T + 30 * MINUTE;
+      vi.setSystemTime(nowMilliseconds);
+      state.cookieValue = issueSessionToken(FAKE_SIGNING_KEY, nowMilliseconds - 60_000);
+      const metrics = traceObserve;
+      traceObserve = { ...metrics, handler: (url, init) => respondAfter(delay, () => metrics.handler(url, init) as Response, init) };
+      const pending = track(LogsPage({ searchParams: Promise.resolve({ ...LIST_RANGE, selected: SELECTED_LOG_ID }) }));
+      await vi.advanceTimersByTimeAsync(7_999);
+      const settledBeforeCap = pending.settled;
+      await vi.advanceTimersByTimeAsync(1);
+      expect(pending.settled, "8초에 화면이 끝나지 않았다").toBe(true);
+      const rendererModuleName = "react-dom/server";
+      const renderer = (await import(/* @vite-ignore */ rendererModuleName)) as { renderToStaticMarkup: (node: unknown) => string };
+      return { html: renderer.renderToStaticMarkup(pending.value), settledBeforeCap };
+    } finally {
+      vi.useRealTimers();
+    }
+  }
+
+  it("latest · containers · series 가 각각 3초(합 9초) → 8초에 자원 칸만 '확인하지 못함', 연관 로그 · 배포 · 수준별 수 구역은 그대로", async () => {
+    const { html, settledBeforeCap } = await renderWithSlowMetrics(3_000);
+    expect(settledBeforeCap).toBe(false);
+    const block = textOf(resourcesBlock(html));
+    expect(block).toContain("확인하지 못함 — 닿지 않음");
+    expect(block).not.toContain("서버 158");
     expect(textOf(html)).toContain("앞뒤 30분의 배포");
     expect(textOf(html)).toContain("앞뒤 5분 서비스별 warning · error");
     expectNoForbiddenText(html);

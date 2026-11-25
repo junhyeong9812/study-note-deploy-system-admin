@@ -44,6 +44,8 @@ import { upstreamFailure, type UpstreamResult } from "@/shared/lib/upstream-resu
 export const TRACE_RESOURCE_WINDOW_MILLISECONDS = 5 * 60 * 1000;
 export const TRACE_RESOURCE_SERVER_LIMIT = 10;
 export const TRACE_RESOURCE_MAXIMUM_CALLS = 1 + TRACE_RESOURCE_SERVER_LIMIT + 2;
+/** 자원 칸 전체의 시간 상한(§18) — 넘으면 location 이 timeout, host · container 는 null. 뼈대 — §18 구현 전(아직 쓰지 않는다). */
+export const TRACE_RESOURCE_TOTAL_TIMEOUT_MILLISECONDS = 8_000;
 
 /** 서비스 → 값을 보일 컨테이너의 계열 이름(자리 전환을 하는 앱 컨테이너 — front · backend · alert · observe · admin 은 `<서비스>-app-blue|green`,
  * llm 은 `llm-wrapper-blue|green` — 각 저장소 docker-compose.yml 의 container_name). */
@@ -57,9 +59,18 @@ export const TRACE_RESOURCE_TEXT = {
 } as const;
 
 export type TraceServerLocation =
-  | { kind: "found"; server: string; serviceContainer: string | null; containers: string[]; alsoSeenOn: string[]; uncheckedServers: string[] }
+  | {
+    kind: "found"; server: string;
+    /** "container" — 그 서비스의 컨테이너가 보인 서버 · "serverName" — 서비스 이름이 latest 의 서버 이름과 같음(§18 — 컨테이너 칸은 해당 없음) */
+    matchedBy: "container" | "serverName";
+    serviceContainer: string | null; containers: string[]; alsoSeenOn: string[]; uncheckedServers: string[];
+    /** 상한(TRACE_RESOURCE_SERVER_LIMIT) 밖이라 묻지 않은 서버 수(§18) */
+    skippedServerCount: number;
+    /** latest 에서 이름을 읽지 못한 서버 줄의 수(§18) */
+    unreadableServerNameCount: number;
+  }
   | { kind: "none" }
-  | { kind: "unknown"; failedServers: string[] };
+  | { kind: "unknown"; failedServers: string[]; skippedServerCount: number; unreadableServerNameCount: number };
 
 export interface TraceValueView {
   label: string;
@@ -146,13 +157,14 @@ function locate(sightings: { server: string; seen: UpstreamResult<SeenContainers
     });
   }
   failedServers.sort(byCharacterCode);
-  if (candidates.length === 0) return failedServers.length > 0 ? { kind: "unknown", failedServers } : { kind: "none" };
+  if (candidates.length === 0) return failedServers.length > 0 ? { kind: "unknown", failedServers, skippedServerCount: 0, unreadableServerNameCount: 0 } : { kind: "none" };   // 뼈대 — §18 구현 전
   // ① 그 서비스 컨테이너가 보인 서버 ② last_seen_at 이 늦은 서버 ③ 서버 이름순
   candidates.sort((left, right) => Number(right.hasServiceContainer) - Number(left.hasServiceContainer)
     || right.lastSeenMilliseconds - left.lastSeenMilliseconds || byCharacterCode(left.server, right.server));
   const [chosen, ...others] = candidates;
   return {
-    kind: "found", server: chosen.server, serviceContainer: chosen.hasServiceContainer ? wanted : null, containers: chosen.containers,
+    kind: "found", server: chosen.server, matchedBy: "container", skippedServerCount: 0, unreadableServerNameCount: 0,   // 뼈대 — §18 구현 전
+    serviceContainer: chosen.hasServiceContainer ? wanted : null, containers: chosen.containers,
     alsoSeenOn: others.map((candidate) => candidate.server).sort(byCharacterCode), uncheckedServers: failedServers,
   };
 }

@@ -174,6 +174,46 @@ describe("오래됨 · 수신 없음", () => {
   });
 });
 
+describe("§18 — 이름을 읽지 못한 서버 · 끊긴 지 오래된 서버", () => {
+  it("이름을 읽지 못한 서버 줄이 있어도 나머지 서버는 그대로 — '이름을 읽지 못한 서버 N대'", async () => {
+    fake.latest = () => observeLatestBody([observeLatestServer("158"), observeSilentServer("CI-Agent-9"), observeSilentServer("Home")], []);
+    const html = await render();
+    expect(readingText(serverSection(html, "158"), "CPU")).toBe("3.4%");
+    expect(textOf(html)).toContain("이름을 읽지 못한 서버 2대");
+    expect(textOf(html)).not.toContain("서버 값: 확인하지 못함");
+    expect(html).not.toContain("CI-Agent-9");
+  });
+
+  it("다 읽으면 그 글이 없다", async () => {
+    expect(textOf(await render())).not.toContain("이름을 읽지 못한");
+  });
+
+  it("24시간 넘게 끊긴 서버(at 없음 · 마지막 수신 이틀 전) → '수신 없음 · 마지막 수신 2일 전' — 한 번도 안 보낸 서버와 구분된다", async () => {
+    fake.latest = () => observeLatestBody([
+      observeLatestServer("158"),
+      observeSilentServer("164", { received_at: javaInstantText(NOW_MILLISECONDS - 2 * 24 * HOUR - 5 * MINUTE), age_ms: 2 * 24 * HOUR + 5 * MINUTE }),
+      observeSilentServer("spare"),
+    ], []);
+    const html = await render();
+    expect(textOf(serverSection(html, "164"))).toContain("수신 없음 · 마지막 수신 2일 전");
+    expect(textOf(serverSection(html, "spare"))).toContain("수신 없음");
+    expect(textOf(serverSection(html, "spare"))).not.toContain("마지막 수신");
+  });
+
+  it("마지막 수신이 몇 시간 전이면 그 단위로('수신 없음 · 마지막 수신 3시간 전')", async () => {
+    fake.latest = () => observeLatestBody([observeSilentServer("164", { received_at: javaInstantText(NOW_MILLISECONDS - 3 * HOUR), age_ms: 3 * HOUR + 10 * MINUTE })], []);
+    expect(textOf(serverSection(await render(), "164"))).toContain("수신 없음 · 마지막 수신 3시간 전");
+  });
+
+  it("CPU 카드의 최댓값 — 점에 최댓값이 없으면 그 점의 평균이 후보(점 A 평균 90 · 최댓값 없음, 점 B 평균 10 · 최댓값 11 → 90.0%)", async () => {
+    fake.series.set(seriesKey("158", "host", null), { points: [
+      observePoint("host", RANGE_START + 30_000, { cpu_pct: [90, null] }), observePoint("host", RANGE_START + 60_000, { cpu_pct: [10, 11] }),
+    ] });
+    const card = metricCard(serverSection(await renderAtFixedNow(), "158"), "158", "CPU");
+    expect(textOf(card)).toContain("CPU 1시간: 평균 최근 10.0% · 최댓값 90.0%");
+  });
+});
+
 describe("지금 울리는 임계값 — 그 값 자리에 표식 + 글(심각도 · 규칙 · 언제부터)", () => {
   const since = javaInstantText(NOW_MILLISECONDS - 30 * MINUTE);
 

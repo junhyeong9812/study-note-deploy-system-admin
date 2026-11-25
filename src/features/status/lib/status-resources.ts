@@ -82,6 +82,8 @@ export interface StatusResourceRow {
 export interface StatusResourcesSummary {
   rows: StatusResourceRow[];
   hiddenServerCount: number;
+  /** latest 에서 이름을 읽지 못해 버린 서버 줄의 수(§18) */
+  unreadableServerNameCount: number;
   firingKnown: boolean;
   elsewhereFiringCount: number;
   /** 화면에 남긴 줄에 없는 서버의 울리는 임계값(받은 순서) — 맨 위 요약의 재료 */
@@ -156,7 +158,7 @@ export function statusResourcesFromLatest(latest: LatestResources): StatusResour
   });
   const elsewhereFiring = firingRules.filter((rule) => !shownNames.has(rule.server)).map((rule) => ({ ...statusFiring(rule), server: rule.server }));
   return {
-    rows, hiddenServerCount: sorted.length - shown.length, firingKnown: latest.firing !== null,
+    rows, hiddenServerCount: sorted.length - shown.length, unreadableServerNameCount: 0, firingKnown: latest.firing !== null,
     elsewhereFiringCount: elsewhereFiring.length, elsewhereFiring, screenHref,
   };
 }

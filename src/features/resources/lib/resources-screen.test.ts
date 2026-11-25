@@ -190,6 +190,26 @@ describe("서버 목록 · 신선도", () => {
   });
 });
 
+describe("이름을 읽지 못한 서버 줄(§18) — 나머지 서버는 보이고, 그 수를 센다", () => {
+  it("리뷰 재현 — 대문자 이름의 수신 없음 줄 하나 + 정상 줄 → 정상 서버의 값 · 그래프 호출 그대로, unreadableServerNameCount 1", async () => {
+    fake.latest = () => observeLatestBody([observeLatestServer("158"), observeSilentServer("CI-Agent-9")], []);
+    const { screen } = await collect();
+    expect(serversOf(screen).map((server) => server.server)).toEqual(["158"]);
+    expect(serverNamed(screen, "158").current.cpu).toMatchObject({ state: "value", text: "3.4%" });
+    expect(screen.unreadableServerNameCount).toBe(1);
+    expect(seriesCalls().map((call) => call.parameters.server)).toEqual(["158"]);
+    expect(screen.hiddenServerCount).toBe(0);
+  });
+
+  it("다 읽으면 0 · latest 가 실패하면 0", async () => {
+    expect((await collect()).screen.unreadableServerNameCount).toBe(0);
+    fake.latest = () => textResponse(leakyErrorBody(), 503);
+    const { screen } = await collect();
+    expectFailure(screen.servers, "unavailable", 503);
+    expect(screen.unreadableServerNameCount).toBe(0);
+  });
+});
+
 describe("현재 값 — 단위 글자, 없으면 '없음' · 읽지 못하면 '읽지 못함'", () => {
   it("158 의 일곱 값", async () => {
     const current = serverNamed((await collect()).screen, "158").current;
@@ -453,8 +473,9 @@ describe("그래프 — host", () => {
       { key: "net_rx_bps_max", label: "수신 최댓값", role: "maximum", points: [{ atMilliseconds: P0, value: 2048 }, { atMilliseconds: P1, value: 1500 }, { atMilliseconds: P2, value: null }] },
       { key: "net_tx_bps_max", label: "송신 최댓값", role: "maximum", points: [{ atMilliseconds: P0, value: 600 }, { atMilliseconds: P1, value: null }, { atMilliseconds: P2, value: null }] },
     ]));
-    expect(network.lineSummaries).toEqual([{ label: "수신", latest: 1200, maximum: 2048 }, { label: "송신", latest: 700, maximum: 600 }]);
-    expect(network.summary).toBe("네트워크 1시간: 수신 최근 1.2 KiB/s · 최댓값 2.0 KiB/s / 송신 최근 700 B/s · 최댓값 600 B/s");
+    // §18 — 송신 P1 은 최댓값이 없어 그 점의 평균(700)이 후보다(표시한 최댓값이 평균보다 작아지지 않는다)
+    expect(network.lineSummaries).toEqual([{ label: "수신", latest: 1200, maximum: 2048 }, { label: "송신", latest: 700, maximum: 700 }]);
+    expect(network.summary).toBe("네트워크 1시간: 수신 최근 1.2 KiB/s · 최댓값 2.0 KiB/s / 송신 최근 700 B/s · 최댓값 700 B/s");
   });
 
   it("디스크 입출력 — 최댓값 선이 비면 평균 선의 최대", async () => {
@@ -486,6 +507,36 @@ describe("그래프 — host", () => {
       { key: "cpu_pct_max", label: "최댓값", role: "maximum", points: [{ atMilliseconds: FROM - 4 * MINUTE, value: 20 }, { atMilliseconds: FROM + MINUTE, value: 40 }] },
     ], 5 * MINUTE));
     expect(cpu.lineSummaries).toEqual([{ label: "평균", latest: 30, maximum: 40 }]);
+  });
+});
+
+describe("그래프 — 최댓값은 점마다 최댓값, 없으면 그 점의 평균이 후보(§18)", () => {
+  it("점 A 평균 90 · 최댓값 없음, 점 B 평균 10 · 최댓값 11 → 표시하는 최댓값 90(11 이 아니다)", async () => {
+    fake.series.set(seriesKey("158", "host", null), { points: [
+      observePoint("host", P0, { cpu_pct: [90, null], mem_used: [9e9, null], mem_total: [10e9, 10e9] }),
+      observePoint("host", P1, { cpu_pct: [10, 11], mem_used: [1e9, 1.1e9], mem_total: [10e9, 10e9] }),
+    ] });
+    const graphs = okValue(serverNamed((await collect()).screen, "158").hostGraphs);
+    expect(graphs.cpu.lineSummaries).toEqual([{ label: "평균", latest: 10, maximum: 90 }]);
+    expect(graphs.cpu.summary).toBe("CPU 1시간: 평균 최근 10.0% · 최댓값 90.0%");
+    expect(graphs.memory.lineSummaries[0].maximum).toBeCloseTo(90, 10);
+    expect(graphs.memory.summary).toBe("메모리 1시간: 평균 최근 10.0% · 최댓값 90.0%");
+  });
+
+  it("최댓값이 평균보다 크면 최댓값 그대로(지금처럼)", async () => {
+    fake.series.set(seriesKey("158", "host", null), { points: [
+      observePoint("host", P0, { cpu_pct: [40, 70] }), observePoint("host", P1, { cpu_pct: [50, 60] }),
+    ] });
+    expect(okValue(serverNamed((await collect()).screen, "158").hostGraphs).cpu.lineSummaries).toEqual([{ label: "평균", latest: 50, maximum: 70 }]);
+  });
+
+  it("고른 컨테이너의 그래프도 같은 규칙", async () => {
+    fake.series.set(seriesKey("158", "container", "front-app"), { points: [
+      observePoint("container", P0, { cpu_pct: [190, null], mem_used: [119_000_000, 120_000_000] }),
+      observePoint("container", P1, { cpu_pct: [90, 95], mem_used: [118_000_000, 119_000_000] }),
+    ] });
+    const { screen } = await collect({ query: { range: "1h", container: { server: "158", container: "front-app" } } });
+    expect(okValue(screen.selectedContainer!.graphs).cpu.summary).toBe("front-app CPU 1시간: 평균 최근 90.0% · 최댓값 190.0%");
   });
 });
 

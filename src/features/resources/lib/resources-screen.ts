@@ -239,6 +239,8 @@ export interface ResourcesScreen {
   refreshHref: string;
   servers: UpstreamResult<ServerResourceView[]>;
   hiddenServerCount: number;
+  /** latest 에서 이름을 읽지 못해 버린 서버 줄의 수(§18) — latest 가 실패하면 0 */
+  unreadableServerNameCount: number;
   firingKnown: boolean;
   firingElsewhere: ElsewhereFiringView[];
   selectedContainer: SelectedContainerView | null;
@@ -571,6 +573,7 @@ export async function collectResourcesScreen(options: ResourcesScreenOptions): P
     })),
     refreshHref: resourcesHref(query),
     ...servers,
+    unreadableServerNameCount: 0,   // 뼈대 — §18 구현 전
     selectedContainer: selected,
   };
 }

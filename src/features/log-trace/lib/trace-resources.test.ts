@@ -4,7 +4,8 @@
  * §2.3 "한 구역이 실패해도 다른 구역은 보인다". 클라이언트의 실패 종류 · 상한은 resource-metrics-client.test 가 본다 — 여기서는 전하는 꼴만. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  SERVICE_CONTAINER_NAMES, TRACE_RESOURCE_MAXIMUM_CALLS, TRACE_RESOURCE_SERVER_LIMIT, TRACE_RESOURCE_TEXT, TRACE_RESOURCE_WINDOW_MILLISECONDS,
+  SERVICE_CONTAINER_NAMES, TRACE_RESOURCE_MAXIMUM_CALLS, TRACE_RESOURCE_SERVER_LIMIT, TRACE_RESOURCE_TEXT, TRACE_RESOURCE_TOTAL_TIMEOUT_MILLISECONDS,
+  TRACE_RESOURCE_WINDOW_MILLISECONDS,
   collectTraceResources, containerBelongsToService, serviceContainerName, type TraceResourcesOptions, type TraceResourcesView,
 } from "@/features/log-trace/lib/trace-resources";
 import { createFakeTraceObserve, type FakeTraceObserve } from "@/features/log-trace/lib/trace-resources-test-fakes";
@@ -96,7 +97,8 @@ describe("서버 찾기 — 로그 시각의 컨테이너로(§11.5)", () => {
     const view = viewOf((await collect()).view);
     expect(view).toMatchObject({ service: "front", atMilliseconds: T, fromMilliseconds: FROM, toMilliseconds: TO });
     expect(okValue(view.location)).toEqual({
-      kind: "found", server: "164", serviceContainer: "front-app", containers: ["front-app", "front-nginx"], alsoSeenOn: [], uncheckedServers: [],
+      kind: "found", server: "164", matchedBy: "container", serviceContainer: "front-app", containers: ["front-app", "front-nginx"], alsoSeenOn: [], uncheckedServers: [],
+      skippedServerCount: 0, unreadableServerNameCount: 0,
     });
   });
 
@@ -146,7 +148,7 @@ describe("서버 찾기 — 로그 시각의 컨테이너로(§11.5)", () => {
     fake.containers.set("164", { response: () => textResponse(leakyErrorBody(), 503) });
     fake.containers.set("9", { response: () => textResponse(leakyErrorBody(), 504) });
     const view = viewOf((await collect()).view);
-    expect(okValue(view.location)).toEqual({ kind: "unknown", failedServers: ["164", "9"] });
+    expect(okValue(view.location)).toEqual({ kind: "unknown", failedServers: ["164", "9"], skippedServerCount: 0, unreadableServerNameCount: 0 });
     expect(view.host).toBeNull();
     expect(callsTo("/metrics/series")).toHaveLength(0);
     expectNoForbiddenText(view);
@@ -186,6 +188,107 @@ describe("서버 찾기 — 로그 시각의 컨테이너로(§11.5)", () => {
       expect((init?.method ?? "GET").toUpperCase()).toBe("GET");
       expect(headersOf(init).get("X-Observe-Secret")).toBe(FAKE_OBSERVE_SECRET);
     }
+  });
+});
+
+describe("§18 — 조용히 자르지 않는다 · 이름을 읽지 못한 서버", () => {
+  function servers(count: number): string[] {
+    return Array.from({ length: count }, (_, index) => `s${String(index).padStart(2, "0")}`);
+  }
+
+  it(`서버 11대 · 서비스는 11번째(이름순)에만 → '기록 없음'(none)이 아니라 unknown — 묻지 않은 서버 1대, 계열은 부르지 않는다`, async () => {
+    const names = servers(11);
+    fake.metrics.latest = () => observeLatestBody([...names].reverse().map((name) => observeLatestServer(name)));
+    fake.containers.set("s10", { seen: { "front-app": T } });
+    const view = viewOf((await collect()).view);
+    expect(okValue(view.location)).toEqual({ kind: "unknown", failedServers: [], skippedServerCount: 1, unreadableServerNameCount: 0 });
+    expect(callsTo("/metrics/containers").map((call) => call.parameters.server).sort()).toEqual(names.slice(0, 10));
+    expect(callsTo("/metrics/series")).toHaveLength(0);
+    expect(view.host).toBeNull();
+  });
+
+  it("서버 10대(상한 안)이고 어디에도 없으면 지금처럼 none('기록 없음')", async () => {
+    fake.metrics.latest = () => observeLatestBody(servers(10).map((name) => observeLatestServer(name)));
+    expect(okValue(viewOf((await collect()).view).location)).toEqual({ kind: "none" });
+  });
+
+  it("상한 안에서 찾으면 found 이고 묻지 않은 서버 수를 남긴다(14대 → 4)", async () => {
+    fake.metrics.latest = () => observeLatestBody(servers(14).map((name) => observeLatestServer(name)));
+    fake.containers.set("s03", { seen: { "front-app": T } });
+    expect(okValue(viewOf((await collect()).view).location)).toMatchObject({ kind: "found", server: "s03", skippedServerCount: 4 });
+  });
+
+  it("묻지 못한 서버(실패)와 묻지 않은 서버(상한 밖)가 함께면 둘 다 남긴다", async () => {
+    const names = servers(12);
+    fake.metrics.latest = () => observeLatestBody(names.map((name) => observeLatestServer(name)));
+    fake.containers.set("s01", { response: () => textResponse(leakyErrorBody(), 503) });
+    expect(okValue(viewOf((await collect()).view).location)).toEqual({ kind: "unknown", failedServers: ["s01"], skippedServerCount: 2, unreadableServerNameCount: 0 });
+  });
+
+  it("이름을 읽지 못한 서버 줄이 있어도 나머지로 찾는다 — found 에 그 수", async () => {
+    fake.metrics.latest = () => observeLatestBody([observeLatestServer("158"), observeSilentServer("CI-Agent-9")]);
+    fake.containers.set("158", { seen: { "front-app": T } });
+    const view = viewOf((await collect()).view);
+    expect(okValue(view.location)).toMatchObject({ kind: "found", server: "158", unreadableServerNameCount: 1, skippedServerCount: 0 });
+    expect(callsTo("/metrics/containers").map((call) => call.parameters.server)).toEqual(["158"]);
+    okValue(view.host!);
+  });
+
+  it("이름을 읽지 못한 서버 줄이 있고 나머지에서 못 찾으면 '기록 없음'이 아니라 unknown(그 서버에 있었을 수 있다)", async () => {
+    fake.metrics.latest = () => observeLatestBody([observeLatestServer("158"), observeSilentServer("CI-Agent-9")]);
+    expect(okValue(viewOf((await collect()).view).location)).toEqual({ kind: "unknown", failedServers: [], skippedServerCount: 0, unreadableServerNameCount: 1 });
+  });
+});
+
+describe("§18 — 서비스 이름이 서버 이름인 로그(배포 에이전트 · 마스터)", () => {
+  beforeEach(() => {
+    fake.metrics.latest = () => observeLatestBody([observeLatestServer("158"), observeLatestServer("ci-agent-158"), observeLatestServer("ci-master")]);
+    fake.metrics.series.set(seriesKey("ci-agent-158", "host", null), { stepMilliseconds: 30 * SECOND, points: [
+      observePoint("host", T, { cpu_pct: [12, 30], mem_used: [4e9, 4e9], mem_total: [16e9, 16e9], disk_used: [100, 100], disk_total: [1000, 1000] }),
+    ] });
+  });
+
+  it("service 가 latest 의 서버 이름과 같으면 그 서버의 서버 자원 — matchedBy serverName, 컨테이너 칸은 null(호출 없음)", async () => {
+    const view = viewOf((await collect({ service: Promise.resolve("ci-agent-158") })).view);
+    expect(okValue(view.location)).toMatchObject({ kind: "found", server: "ci-agent-158", matchedBy: "serverName", serviceContainer: null, containers: [], alsoSeenOn: [] });
+    expect(okValue(view.host!).values.map((value) => [value.label, value.atLogText, value.maximumText])).toEqual([
+      ["CPU", "12.0%", "30.0%"], ["메모리", "25.0%", "25.0%"], ["디스크", "10.0%", "10.0%"],
+    ]);
+    expect(view.container).toBeNull();
+    expect(callsTo("/metrics/series").map((call) => [call.parameters.server, call.parameters.scope])).toEqual([["ci-agent-158", "host"]]);
+  });
+
+  it("서버 이름과 같으면 그 서버의 컨테이너가 그 시각에 아무것도 안 보였어도 찾는다", async () => {
+    fake.containers.clear();
+    expect(okValue(viewOf((await collect({ service: Promise.resolve("ci-master") })).view).location)).toMatchObject({ kind: "found", server: "ci-master", matchedBy: "serverName" });
+  });
+
+  it("서버 이름이 아닌 서비스는 지금처럼 컨테이너로 찾는다(matchedBy container)", async () => {
+    fake.containers.set("158", { seen: { "front-app": T } });
+    expect(okValue(viewOf((await collect()).view).location)).toMatchObject({ kind: "found", server: "158", matchedBy: "container", serviceContainer: "front-app" });
+  });
+
+  it("latest 에 그 이름의 서버가 없으면 컨테이너로 찾고, 없으면 none", async () => {
+    expect(okValue(viewOf((await collect({ service: Promise.resolve("ci-agent-164") })).view).location)).toEqual({ kind: "none" });
+  });
+});
+
+describe("§18 — 앞뒤 5분 최댓값: 점에 최댓값이 없으면 그 점의 평균이 후보", () => {
+  it("점 A 평균 90 · 최댓값 없음, 점 B 평균 10 · 최댓값 11 → 90(11 이 아니다) — 백분율 값도", async () => {
+    fake.containers.set("158", { seen: { "front-app": T } });
+    fake.metrics.series.set(seriesKey("158", "host", null), { stepMilliseconds: 30 * SECOND, points: [
+      observePoint("host", T - 30 * SECOND, { cpu_pct: [90, null], mem_used: [9e9, null], mem_total: [10e9, 10e9] }),
+      observePoint("host", T, { cpu_pct: [10, 11], mem_used: [1e9, 1.1e9], mem_total: [10e9, 10e9] }),
+    ] });
+    fake.metrics.series.set(seriesKey("158", "container", "front-app"), { stepMilliseconds: 30 * SECOND, points: [
+      observePoint("container", T - 30 * SECOND, { cpu_pct: [190, null], mem_used: [300, null] }), observePoint("container", T, { cpu_pct: [10, 11], mem_used: [100, 110] }),
+    ] });
+    const view = viewOf((await collect()).view);
+    const [cpu, memory] = okValue(view.host!).values;
+    expect(cpu).toMatchObject({ atLogValue: 10, maximumValue: 90, maximumText: "90.0%" });
+    expect(memory.maximumValue).toBeCloseTo(90, 10);
+    expect(memory.maximumText).toBe("90.0%");
+    expect(okValue(view.container!).values.map((value) => value.maximumValue)).toEqual([190, 300]);
   });
 });
 
@@ -362,6 +465,69 @@ describe("시간 — 서버 찾기는 서비스를 기다리지 않는다(가짜
     setTimeout(() => service.resolve(null), 500);
     const pending = track(collectTraceResources(options(fetch, { timeoutSignal: timeout.factory, service: service.promise })));
     await vi.advanceTimersByTimeAsync(500);
+    expect(pending.settled).toBe(true);
+    expect(pending.value).toBeNull();
+  });
+});
+
+describe("§18 — 자원 칸 전체의 시간 상한 8초(가짜 타이머)", () => {
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  /** latest · containers · series 를 각각 delay 밀리초 뒤에 답하는 fetch — 호출마다 5초 기한 안이다. */
+  function delayedFetch(delay: number) {
+    fake.containers.set("158", { seen: { "front-app": T } });
+    return createRoutedFetch((url, init) => respondAfter(delay, () => fake.handler(url, init) as Response, init));
+  }
+
+  it("상수 — 8초", () => {
+    expect(TRACE_RESOURCE_TOTAL_TIMEOUT_MILLISECONDS).toBe(8_000);
+  });
+
+  it("셋이 각각 3초(각자 5초 안)라 합이 9초 → 8초에 끝난다: location 은 timeout('확인하지 못함'), host · container 는 null", async () => {
+    const timeout = createTimerTimeoutSignal();
+    fake.metrics.latest = () => observeLatestBody([observeLatestServer("158")]);
+    const pending = track(collectTraceResources(options(delayedFetch(3_000), { timeoutSignal: timeout.factory })));
+    await vi.advanceTimersByTimeAsync(7_999);
+    expect(pending.settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(pending.settled).toBe(true);
+    const view = viewOf(pending.value!);
+    expect(view).toMatchObject({ service: "front", atMilliseconds: T, fromMilliseconds: FROM, toMilliseconds: TO, host: null, container: null });
+    expectFailure(view.location, "timeout");
+  });
+
+  it("상한을 넘겨 버려진 호출이 뒤늦게 끝나도 돌려준 값은 바뀌지 않는다", async () => {
+    const timeout = createTimerTimeoutSignal();
+    fake.metrics.latest = () => observeLatestBody([observeLatestServer("158")]);
+    const fetch = delayedFetch(3_000);
+    const pending = track(collectTraceResources(options(fetch, { timeoutSignal: timeout.factory })));
+    await vi.advanceTimersByTimeAsync(8_000);
+    expect(pending.settled).toBe(true);
+    const snapshot = structuredClone(pending.value);
+    await vi.advanceTimersByTimeAsync(10_000);   // 계열 호출이 9초에 끝난다
+    expect(fetch.mock.calls.map(([input]) => new URL(input).pathname)).toContain("/metrics/series");
+    expect(pending.value).toStrictEqual(snapshot);
+    expectFailure(pending.value!.location, "timeout");
+  });
+
+  it("셋이 각각 2초(합 6초) → 지금처럼 6초에 값이 있다", async () => {
+    const timeout = createTimerTimeoutSignal();
+    fake.metrics.latest = () => observeLatestBody([observeLatestServer("158")]);
+    const pending = track(collectTraceResources(options(delayedFetch(2_000), { timeoutSignal: timeout.factory })));
+    await vi.advanceTimersByTimeAsync(5_999);
+    expect(pending.settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(pending.settled).toBe(true);
+    expect(okValue(pending.value!.location)).toMatchObject({ kind: "found", server: "158" });
+    okValue(pending.value!.host!);
+    okValue(pending.value!.container!);
+  });
+
+  it("서비스가 null 이면 상한과 상관없이 null", async () => {
+    const timeout = createTimerTimeoutSignal();
+    const pending = track(collectTraceResources(options(delayedFetch(3_000), { timeoutSignal: timeout.factory, service: Promise.resolve(null) })));
+    await vi.advanceTimersByTimeAsync(0);
     expect(pending.settled).toBe(true);
     expect(pending.value).toBeNull();
   });

@@ -180,7 +180,8 @@ describe("임계값 칸 — 가장 심한 것 하나 + 나머지 개수", () => 
     const card = resourcesCard(html);
     expect(rowCells(card, "158")[5]).toBe("확인하지 못함");
     expect(textOf(card)).toContain("임계값: 확인하지 못함");
-    expect(summaryOf(html)).toContain("확인 못 함 1건 — 서버 자원 임계값");
+    // §18 — 기본 서버의 spare 는 수신 없음이라 그 줄도 확인 못 함에 더해진다
+    expect(summaryOf(html)).toContain("확인 못 함 2건 — 서버 자원 임계값 · 서버 spare 수신 없음");
   });
 
   it("표 밖 서버의 알림 수와 숨긴 서버 수를 적는다", async () => {
@@ -192,7 +193,52 @@ describe("임계값 칸 — 가장 심한 것 하나 + 나머지 개수", () => 
   });
 
   it("다 정상이면 요약은 '전부 정상' 그대로", async () => {
+    latest = () => observeLatestBody(defaultServers().filter((row) => row.server !== "spare"), []);   // §18 — 수신 없음 서버가 있으면 정상이 아니다
     expect(summaryOf(await render())).toContain("전부 정상");
+  });
+});
+
+describe("§18 — 오래된 값 · 수신 없음이면 정상이 아니다 · 이름을 읽지 못한 서버", () => {
+  function badgeOf(card: string): string {
+    const match = /<div[^>]*><h2[^>]*>서버 자원<\/h2>([\s\S]*?)<\/div>/.exec(card);
+    expect(match, "카드 머리가 없다").not.toBeNull();
+    return textOf(match![1]);
+  }
+
+  it("다 정상(알림 없음 · 모두 받음)이면 카드 배지는 '정상'", async () => {
+    latest = () => observeLatestBody([observeLatestServer("158"), observeLatestServer("164")], []);
+    expect(badgeOf(resourcesCard(await render()))).toBe("✓정상");
+  });
+
+  it("알림이 아직 울리지 않았어도 오래된 값 줄이 있으면 카드 배지는 '정상'이 아니고('확인 못 함'), 맨 위 요약도 '전부 정상'이 아니다", async () => {
+    latest = () => observeLatestBody([observeLatestServer("158", { stale: true, age_ms: 4 * MINUTE }), observeLatestServer("164")], []);
+    const html = await render();
+    const badge = badgeOf(resourcesCard(html));
+    expect(badge).not.toContain("정상");
+    expect(badge).toBe("?확인 못 함");
+    expect(summaryOf(html)).not.toContain("전부 정상");
+    expect(summaryOf(html)).toContain("확인 못 함 1건 — 서버 158 4분 전 값");
+  });
+
+  it("수신 없음 줄이 있어도 같다", async () => {
+    latest = () => observeLatestBody([observeLatestServer("158"), observeSilentServer("spare")], []);
+    const html = await render();
+    expect(badgeOf(resourcesCard(html))).toBe("?확인 못 함");
+    expect(summaryOf(html)).toContain("확인 못 함 1건 — 서버 spare 수신 없음");
+  });
+
+  it("울리는 알림이 있으면 지금처럼 '문제'", async () => {
+    latest = () => observeLatestBody([observeLatestServer("158", { stale: true, age_ms: 4 * MINUTE })], [observeFiring({ server: "158", rule: "cpu", severity: "warning" })]);
+    expect(badgeOf(resourcesCard(await render()))).toBe("✕문제");
+  });
+
+  it("이름을 읽지 못한 서버 줄이 있어도 카드는 나머지 줄을 그린다 — '이름을 읽지 못한 서버 N대'", async () => {
+    latest = () => observeLatestBody([observeLatestServer("158"), observeSilentServer("CI-Agent-9")], []);
+    const card = resourcesCard(await render());
+    expect(rowCells(card, "158").slice(0, 2)).toEqual(["158", "3.4%"]);
+    expect(textOf(card)).toContain("이름을 읽지 못한 서버 1대");
+    expect(textOf(card)).not.toContain("확인하지 못함 — ");
+    expect(card).not.toContain("CI-Agent-9");
   });
 });
 

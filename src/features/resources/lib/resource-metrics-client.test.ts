@@ -214,6 +214,7 @@ describe("latest — 칸 고르기", () => {
         },
         { server: "9", measuredAt: null, receivedAt: null, ageMilliseconds: null, stale: true, host: null, containers: [], gpus: [], missing: [] },
       ],
+      unreadableServerNameCount: 0,
       firing: [{ server: "158", rule: "disk_warning", target: null, severity: "warning", since: javaInstantText(NOW_MILLISECONDS - 30 * MINUTE), lastValue: 86.2 }],
     });
     expectNoForbiddenText(latest);
@@ -229,7 +230,7 @@ describe("latest — 칸 고르기", () => {
 
   it("빈 목록 · firing 빈 배열", async () => {
     const fetch = createRoutedFetch(() => observeLatestBody([], []));
-    expect(okValue(await client(fetch).latest())).toStrictEqual({ servers: [], firing: [] });
+    expect(okValue(await client(fetch).latest())).toStrictEqual({ servers: [], unreadableServerNameCount: 0, firing: [] });
   });
 
   it("빠진 칸은 null(확인하지 못함) — 서버 줄의 at · received_at · age_ms · stale · host · containers · gpus · missing, firing", async () => {
@@ -237,6 +238,7 @@ describe("latest — 칸 고르기", () => {
     const fetch = createRoutedFetch(() => observeLatestBody([row], undefined));
     expect(okValue(await client(fetch).latest())).toStrictEqual({
       servers: [{ server: "158", measuredAt: null, receivedAt: null, ageMilliseconds: null, stale: null, host: null, containers: null, gpus: null, missing: null }],
+      unreadableServerNameCount: 0,
       firing: null,
     });
   });
@@ -293,10 +295,8 @@ describe("latest — 칸 고르기", () => {
     expect(okValue(await client(fetch).latest()).servers[0].gpus?.[0].tempC).toBe(-3);
   });
 
+  // 이름(server)이 틀린 줄은 전체 실패가 아니라 그 줄만 버린다(§18) — 아래 "이름을 읽지 못한 서버 줄" 묶음이 본다
   const malformedServers: [string, Record<string, unknown>][] = [
-    ["server 빠짐", { server: undefined }],
-    ["server 대문자", { server: "Home" }],
-    ["server 가 숫자", { server: 158 }],
     ["at 이 시각이 아님", { at: "yesterday" }],
     ["at 이 숫자", { at: 1763985600000 }],
     ["received_at 이 시각이 아님", { received_at: "2026-11-31T00:00:00Z" }],
@@ -359,6 +359,85 @@ describe("latest — 칸 고르기", () => {
   ] as const)("%s → unparseable", async (_label, makeResponse) => {
     const fetch = createRoutedFetch(() => makeResponse());
     expectFailure(await client(fetch).latest(), "unparseable");
+  });
+});
+
+describe("latest — 이름을 읽지 못한 서버 줄(§18 — 그 줄만 버리고 센다, 응답 전체를 '읽을 수 없음'으로 만들지 않는다)", () => {
+  /** 이름 칸만 바꾼 줄(undefined 면 칸을 뺀다). */
+  function rowNamed(base: Record<string, unknown>, server: unknown): Record<string, unknown> {
+    const row = { ...base, server };
+    if (server === undefined) delete row.server;
+    return row;
+  }
+
+  it("리뷰 재현 — 기대 서버 설정의 대문자 이름(수신 없음 줄) 하나와 정상 줄 → 정상 서버의 값은 그대로, 읽지 못한 수 1", async () => {
+    const fetch = createRoutedFetch(() => observeLatestBody([observeLatestServer("158"), observeSilentServer("CI-Agent-9")], [observeFiring()]));
+    const latest = okValue(await client(fetch).latest());
+    expect(latest.servers.map((server) => server.server)).toEqual(["158"]);
+    expect(latest.servers[0]).toMatchObject({ measuredAt: javaInstantText(NOW_MILLISECONDS - 20_000), stale: false, host: { cpuPct: 3.4, memUsed: 2_100_000_000 } });
+    expect(latest.unreadableServerNameCount).toBe(1);
+    expect(latest.firing).toHaveLength(1);
+  });
+
+  it.each([
+    ["이름 칸 빠짐", undefined], ["대문자", "Home"], ["숫자", 158], ["빈 글자", ""], ["null", null], ["64자(꼴은 63자까지)", `a${"b".repeat(63)}`],
+    ["공백 포함", "ci agent"],
+  ] as const)("%s → 그 줄만 버리고 센다(받은 순서 그대로)", async (_label, server) => {
+    const fetch = createRoutedFetch(() => observeLatestBody([observeLatestServer("164"), rowNamed(observeLatestServer("x"), server), observeLatestServer("158")]));
+    const latest = okValue(await client(fetch).latest());
+    expect(latest.servers.map((each) => each.server)).toEqual(["164", "158"]);
+    expect(latest.unreadableServerNameCount).toBe(1);
+  });
+
+  it("63자 이름은 읽는다(경계 안쪽)", async () => {
+    const name = `a${"b".repeat(62)}`;
+    const fetch = createRoutedFetch(() => observeLatestBody([observeLatestServer(name)]));
+    const latest = okValue(await client(fetch).latest());
+    expect(latest.servers.map((each) => each.server)).toEqual([name]);
+    expect(latest.unreadableServerNameCount).toBe(0);
+  });
+
+  it("여럿이면 다 센다 — 같은 틀린 이름이 두 번이어도 '같은 서버 두 번'이 아니다", async () => {
+    const fetch = createRoutedFetch(() => observeLatestBody([
+      observeSilentServer("CI-Agent-9"), observeSilentServer("CI-Agent-9"), rowNamed(observeLatestServer("x"), undefined), observeLatestServer("158"),
+    ]));
+    const latest = okValue(await client(fetch).latest());
+    expect(latest.servers.map((each) => each.server)).toEqual(["158"]);
+    expect(latest.unreadableServerNameCount).toBe(3);
+  });
+
+  it("전부 이름이 틀리면 빈 목록과 그 수", async () => {
+    const fetch = createRoutedFetch(() => observeLatestBody([observeSilentServer("A"), observeSilentServer("B")]));
+    expect(okValue(await client(fetch).latest())).toStrictEqual({ servers: [], unreadableServerNameCount: 2, firing: [] });
+  });
+
+  it("이름을 읽지 못한 줄의 다른 칸은 보지 않는다(값의 형이 틀려도 그 줄을 버릴 뿐)", async () => {
+    const fetch = createRoutedFetch(() => observeLatestBody([observeLatestServer("Bad", { host: observeHost({ cpu_pct: "3.4" }), at: "yesterday" }), observeLatestServer("158")]));
+    const latest = okValue(await client(fetch).latest());
+    expect(latest.servers.map((each) => each.server)).toEqual(["158"]);
+    expect(latest.unreadableServerNameCount).toBe(1);
+  });
+
+  it("이름은 맞고 다른 칸의 형이 틀린 줄은 지금처럼 전체 unparseable — 이름이 틀린 줄이 함께 있어도", async () => {
+    const fetch = createRoutedFetch(() => observeLatestBody([observeSilentServer("CI-Agent-9"), observeLatestServer("158", { host: observeHost({ cpu_pct: "3.4" }) })]));
+    expectFailure(await client(fetch).latest(), "unparseable");
+  });
+
+  it("서버 줄이 객체가 아니면 지금처럼 전체 unparseable(이름을 셀 줄이 아니다)", async () => {
+    const fetch = createRoutedFetch(() => jsonBody({ success: true, data: { servers: [observeLatestServer("158"), "158"], firing: [] } }));
+    expectFailure(await client(fetch).latest(), "unparseable");
+  });
+
+  it("읽을 수 있는 이름이 두 번이면 지금처럼 unparseable", async () => {
+    const fetch = createRoutedFetch(() => observeLatestBody([observeSilentServer("CI-Agent-9"), observeLatestServer("158"), observeLatestServer("158")]));
+    expectFailure(await client(fetch).latest(), "unparseable");
+  });
+
+  it("결과에 버린 줄의 원문(이름 · 계약 밖 칸)이 없다", async () => {
+    const fetch = createRoutedFetch(() => observeLatestBody([observeSilentServer(`Bad ${UPSTREAM_RAW_MARKER}`), observeLatestServer("158")]));
+    const latest = okValue(await client(fetch).latest());
+    expect(JSON.stringify(latest)).not.toContain("Bad");
+    expectNoForbiddenText(latest);
   });
 });
 

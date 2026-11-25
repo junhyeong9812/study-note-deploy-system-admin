@@ -40,8 +40,8 @@ function firing(overrides: Partial<FiringRule> = {}): FiringRule {
   return { server: "158", rule: "disk_warning", target: null, severity: "warning", since: javaInstantText(NOW_MILLISECONDS - 30 * MINUTE), lastValue: 86, ...overrides };
 }
 
-function latest(servers: ServerLatest[], firingRules: FiringRule[] | null = []): LatestResources {
-  return { servers, firing: firingRules };
+function latest(servers: ServerLatest[], firingRules: FiringRule[] | null = [], unreadableServerNameCount = 0): LatestResources {
+  return { servers, unreadableServerNameCount, firing: firingRules };
 }
 
 function rowOf(summary: StatusResourcesSummary, name: string) {
@@ -191,6 +191,45 @@ describe("statusResourceSummaryItems — 맨 위 요약에 더할 재료", () =>
   it("조회 실패 → unreachable '서버 자원'", () => {
     const failure: UpstreamResult<StatusResourcesSummary> = { ok: false, reason: "unreachable", message: "닿지 않음" };
     expect(statusResourceSummaryItems(failure)).toEqual({ problems: [], unreachable: [{ label: "서버 자원" }] });
+  });
+});
+
+describe("§18 — 이름을 읽지 못한 서버 · 오래된 값 · 수신 없음", () => {
+  it("이름을 읽지 못한 수를 요약에 싣는다", () => {
+    expect(statusResourcesFromLatest(latest([server("158")], [], 2)).unreadableServerNameCount).toBe(2);
+    expect(statusResourcesFromLatest(latest([server("158")])).unreadableServerNameCount).toBe(0);
+  });
+
+  it("리뷰 재현 — latest 에 이름이 틀린 줄(CI-Agent-9) 하나와 정상 줄 → 요약은 성공, 정상 서버 줄 그대로 · 읽지 못한 수 1", async () => {
+    const fetch = createRoutedFetch(() => observeLatestBody([observeLatestServer("158"), observeSilentServer("CI-Agent-9")], []));
+    const summary = okValue(await collectStatusResources({ observeUrl: FAKE_OBSERVE_URL, observeSecret: FAKE_OBSERVE_SECRET, fetch }));
+    expect(summary.rows.map((row) => row.server)).toEqual(["158"]);
+    expect(rowOf(summary, "158").cpu).toEqual({ state: "value", value: 3.4, text: "3.4%" });
+    expect(summary.unreadableServerNameCount).toBe(1);
+  });
+
+  it("임계값 알림이 없어도 오래된 값 · 수신 없음 · 신선도를 모르는 줄은 맨 위 요약의 '확인 못 함'에 — '서버 <서버> <받은 때 글>'(줄 순서)", () => {
+    const summary = statusResourcesFromLatest(latest([
+      server("158", { stale: true, ageMilliseconds: 12 * MINUTE }), server("164"), silent("9"), server("77", { stale: null }),
+    ]));
+    expect(statusResourceSummaryItems({ ok: true, value: summary })).toEqual({
+      problems: [],
+      unreachable: [{ label: "서버 158 12분 전 값" }, { label: "서버 77 확인하지 못함" }, { label: "서버 9 수신 없음" }],
+    });
+  });
+
+  it("울리는 알림과 함께면 problems 는 알림, unreachable 은 신선도 줄", () => {
+    const summary = statusResourcesFromLatest(latest([silent("9"), server("158")], [firing({ server: "9", rule: "silent", lastValue: null })]));
+    expect(statusResourceSummaryItems({ ok: true, value: summary })).toEqual({
+      problems: [{ label: "서버 9 지표 끊김(경고)" }], unreachable: [{ label: "서버 9 수신 없음" }],
+    });
+  });
+
+  it("firing 을 모르면 '서버 자원 임계값' 다음 신선도 줄", () => {
+    const summary = statusResourcesFromLatest(latest([silent("9"), server("158")], null));
+    expect(statusResourceSummaryItems({ ok: true, value: summary })).toEqual({
+      problems: [], unreachable: [{ label: "서버 자원 임계값" }, { label: "서버 9 수신 없음" }],
+    });
   });
 });
 
