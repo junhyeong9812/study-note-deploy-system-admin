@@ -15,6 +15,7 @@ describe("classifyPath — 기본 거절(허용 목록에 없는 모든 경로)"
     "/api/auth/logout", "/api/deploys", "/api/logs", "/api/status", "/api/login-attempts",
     "/resources", "/api/resources",
     "/deploys/versions", "/api/deploys/versions",
+    "/deploys/redeploy", "/api/deploys/redeploy",
     // 허용 경로와 비슷한 이름
     "/loginx", "/login/", "/login/extra", "/Login", "/api/auth/login/extra", "/api/auth/loginx",
     "/api/health/dependencies", "/api/healthz", "/api/HEALTH", "/favicon.ico.map",
