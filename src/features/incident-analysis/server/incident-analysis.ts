@@ -1,9 +1,10 @@
 /** 분석의 서버 쪽 진입 — 화면(GET /incidents/analysis) · 보내기(POST /api/incidents/analysis). 명세 ⑫ §19 · §20.
  * 두 걸음: 화면은 저장된 분석만(목록의 네 호출 · Redis 읽기) → `&preview=1` 은 보낼 글 그대로(근거 · 배포 실패면 출력 조회 — 가린 뒤 자른 글)와
- * 그 글의 해시에 서명한 값(ap1)을 실은 폼(실행 자리 · Redis 쓰기 없음) → POST 는 **받은 글 그대로**를 보낸다(서명이 맞을 때 — 다시 만들지 않는다).
+ * 그 글의 해시와 그 문제의 "언제부터"에 서명한 값(ap2)을 실은 폼(실행 자리 · Redis 쓰기 없음) → POST 는 **받은 글 그대로**를 보낸다(서명이 맞을 때 — 다시 만들지 않는다).
  * POST 의 차례(앞 단계가 거절하면 뒤 단계의 호출이 없다): 출처(403 JSON) → 세션(401 JSON) → 본문(urlencoded · 1MB · UTF-8 · 칸마다 하나 · 식별자의 꼴 — 400 HTML)
  *   → 서명(꼴 400 · 다름 409 · 지남 409) → 설정(실행 자리 주소 · CLAUDE_RUNNER_SECRET · LOG_REDIS_URL — 503) → 아직 열려 있는가(목록 네 호출 — 409)
- *   → 시작(Redis 에 닿지 못하면 503 · 부르지 않는다) → 303 분석 화면(진행 중이 있으면 새로 부르지 않고 같은 303).
+ *   → 같은 발생분인가(서명이 묶은 since 와 지금의 since — 다르면 409) → 미리보기를 썼다는 표시(SET NX — 이미 썼으면 409 · 닿지 못하면 503)
+ *   → 시작(Redis 에 닿지 못하면 503 · 부르지 않는다) → 303 분석 화면(진행 중이 있으면 새로 부르지 않고 같은 303). 409 · 400 에서는 Redis 에 쓰지 않는다(표시 뒤의 것 밖).
  * 실행 자리는 응답을 돌려준 뒤 이 프로세스가 뒤에서 부른다(서비스는 프로세스에 하나 — globalThis). 응답 · 화면 · 로그에 실행 자리 · 배포 마스터의 주소 · 오류 글이 없다. */
 import "server-only";
 import { randomBytes } from "node:crypto";
@@ -265,7 +266,20 @@ export async function incidentAnalysisStartResponse(request: Request): Promise<R
     logStart(found.kind, incidentId);
     return failurePage(409, "분석을 시작하지 않았습니다", found.kind === "closed" ? INCIDENT_ANALYSIS_TEXT.closed : INCIDENT_ANALYSIS_TEXT.unchecked, incidentId);
   }
-  // 7 시작 — 진행 중으로 남긴 뒤 곧바로 답한다(실행 자리는 뒤에서)
+  // 7 같은 발생분인가 — 미리본 뒤 닫혔다 같은 식별자로 다시 열렸으면 옛 미리보기를 새 발생분의 분석으로 보내지 않는다
+  if (check.incidentSince !== found.incident.since) {
+    logStart("reopened", incidentId);
+    return failurePage(409, "분석을 시작하지 않았습니다", INCIDENT_ANALYSIS_TEXT.reopened, incidentId);
+  }
+  // 8 미리보기는 한 번만 — 같은 폼을 다시 보내도 부르지 않는다("다시 분석"은 미리보기를 다시 열어서)
+  const claim = await service.claimPreview(form.token);
+  if (claim !== "claimed") {
+    logStart(claim === "used" ? "preview_used" : "store_unavailable", incidentId);
+    return claim === "used"
+      ? failurePage(409, "분석을 시작하지 않았습니다", INCIDENT_ANALYSIS_TEXT.previewUsed, incidentId)
+      : failurePage(503, "분석을 시작하지 않았습니다", INCIDENT_ANALYSIS_TEXT.storeUnavailable, incidentId);
+  }
+  // 9 시작 — 진행 중으로 남긴 뒤 곧바로 답한다(실행 자리는 뒤에서)
   const started = await service.start({ incidentId, incidentSince: found.incident.since, prompt: form.prompt, account: `admin:${config.adminUser}` });
   if (started.kind === "store_unavailable") return failurePage(503, "분석을 시작하지 않았습니다", INCIDENT_ANALYSIS_TEXT.storeUnavailable, incidentId);
   return new Response(null, { status: 303, headers: { Location: incidentAnalysisHref(incidentId), ...NO_STORE_HEADERS } });

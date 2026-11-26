@@ -1,12 +1,13 @@
 /** 분석에 보내는 글(프롬프트) — 가린 뒤 자른 근거 묶음(+ 배포 실패의 전체 출력)을 무작위 경계 표지로 감싼 고정 틀(명세 ⑫ §19 · §20).
- * 차례: ① 묶음의 글자 칸마다 가린다(maskForAnalysis — 줄 끝 글자는 먼저 `\n` 으로 모은다: 값이 줄을 넘어 먹지 않게, 직렬화의 결과는 같다)
+ * 차례: ① 묶음의 글자 칸마다 정리한 뒤 가린다(maskForAnalysis — 정리 → 가림. 정리가 `\r` 을 `\n` 으로, 그 밖의 줄 끝 글자 · 제어 · 방향 문자를 U+FFFD 로
+ *   바꾸므로 VT · FF · U+2028 이 이름과 값을 가르지 못한다. 그 뒤에 12-1 의 줄 나눔 · 한 줄 거름을 탄다)
  * ② 출력 구역을 만든다(가린 뒤 FAILURE_OUTPUT_MAXIMUM_BYTES 안에서 끝부분 먼저 · 줄마다 `| ` · 한 줄 거름) ③ 남은 몫에 12-1 의 맞추기 · 직렬화로 묶음을 자른다
  * ④ 자료에 없는 무작위 표지로 고정 틀에 싼다. 가린 뒤에 자르므로 자르는 자리가 비밀값의 한가운데여도 조각이 남지 않는다.
  * 계약: analysis-prompt.test.ts 머리 주석. */
 import { createHash } from "node:crypto";
 import type { IncidentEvidence } from "@/features/incidents/lib/incident-evidence";
-import { evidenceTextBytes, fitIncidentEvidence, incidentEvidenceText, oneLine, splitTextLines } from "@/features/incidents/lib/incident-evidence-text";
-import { maskForAnalysis, type AnalysisMaskKind } from "@/features/incident-analysis/lib/analysis-masking";
+import { evidenceTextBytes, fitIncidentEvidence, incidentEvidenceText, oneLine } from "@/features/incidents/lib/incident-evidence-text";
+import { cleanForAnalysis, maskForAnalysis, type AnalysisMaskKind } from "@/features/incident-analysis/lib/analysis-masking";
 import { ANALYSIS_PROMPT_MAXIMUM_CHARACTERS } from "@/features/incident-analysis/lib/analysis-runner-client";
 import { DEPLOY_FAILURE_OUTPUT_UNAVAILABLE_TEXT, type DeployFailureOutputResult } from "@/features/incident-analysis/lib/deploy-failure-output-client";
 
@@ -78,11 +79,6 @@ function addCounts(total: MaskCounts, counts: MaskCounts): void {
   for (const [kind, count] of Object.entries(counts) as [AnalysisMaskKind, number][]) total[kind] = (total[kind] ?? 0) + count;
 }
 
-/** 가림 — 줄 끝 글자 여덟 가지를 `\n` 으로 모은 뒤 줄마다(직렬화는 같은 나눔으로 줄을 가르므로 결과는 같다). */
-function maskedText(text: string): ReturnType<typeof maskForAnalysis> {
-  return maskForAnalysis(splitTextLines(text).join("\n"));
-}
-
 /** 묶음의 글자 칸마다 가린 새 묶음(받은 묶음은 바꾸지 않는다). 같은 글은 한 번만 센다(머리의 대상 · 사실 칸처럼 같은 값이 여러 칸에 있다).
  * 칸마다 따로 고르지 않는다 — 묶음 안의 모든 글자를 거친다(새 칸이 생겨도 빠지지 않는다). */
 function maskedEvidence(evidence: IncidentEvidence, counts: MaskCounts): IncidentEvidence {
@@ -91,7 +87,7 @@ function maskedEvidence(evidence: IncidentEvidence, counts: MaskCounts): Inciden
     if (typeof value === "string") {
       const known = masked.get(value);
       if (known !== undefined) return known;
-      const result = maskedText(value);
+      const result = maskForAnalysis(value);
       addCounts(counts, result.counts);
       masked.set(value, result.text);
       return result.text;
@@ -129,10 +125,11 @@ function failureOutputSection(result: DeployFailureOutputResult, counts: MaskCou
   const title = `## ${FAILURE_OUTPUT_SECTION_TITLE}`;
   if (!result.ok) return { lines: [title, `전체 출력을 얻지 못함 — ${DEPLOY_FAILURE_OUTPUT_UNAVAILABLE_TEXT[result.reason]}`], removedBytes: 0 };
   const { output } = result;
-  const header = maskedText(`요청 ID: ${oneLine(output.requestId)} · 실패 단계: ${oneLine(output.failedStage)} · 남긴 시각: ${oneLine(output.recordedAt)}`);
+  const field = (value: string) => oneLine(cleanForAnalysis(value));   // 색 코드는 지우고 줄을 나누지 않게 한 뒤 줄 전체를 가린다
+  const header = maskForAnalysis(`요청 ID: ${field(output.requestId)} · 실패 단계: ${field(output.failedStage)} · 남긴 시각: ${field(output.recordedAt)}`);
   addCounts(counts, header.counts);
   const notes = output.truncated ? [`배포 마스터가 출력을 줄였습니다(버린 바이트 ${output.omittedBytes}) — 전체가 아닙니다`] : [];
-  const masked = maskedText(output.output);
+  const masked = maskForAnalysis(output.output);
   addCounts(counts, masked.counts);
   const outputLines = masked.text.split("\n");
   const quoted = outputLines.map((line) => `| ${oneLine(line)}`);

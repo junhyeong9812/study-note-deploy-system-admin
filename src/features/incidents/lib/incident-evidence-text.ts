@@ -90,7 +90,7 @@ export function oneLine(text: string): string {
 }
 
 /** 글을 줄 끝 글자 여덟 가지(`\r\n` 은 하나로)로 나눈 줄들 — 줄마다 거르지는 않는다(여러 줄 값과 같은 나눔). */
-export function splitTextLines(text: string): string[] {
+function splitTextLines(text: string): string[] {
   return text.split(LINE_TERMINATOR);
 }
 

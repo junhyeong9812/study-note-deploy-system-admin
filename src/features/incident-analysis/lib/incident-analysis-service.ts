@@ -5,8 +5,10 @@
  * - 끝: 시도 기록을 succeeded(다섯 칸) · failed(까닭)로 바꾸고 걸린 시간을 적은 뒤 잠금을 푼다(자기 것일 때만). 기록을 쓰지 못하면 로그 result_not_stored —
  *   기록은 running 으로 남아 5분 뒤 interrupted 로 보인다.
  * - history: 최근 것부터 · running 이 5분을 넘으면 interrupted · 읽을 수 없는 기록은 unreadable · 보낼 때의 since 와 지금의 since 가 다르면 fromEarlierOpening.
+ * - claimPreview: 미리보기(서명 값)를 한 번만 쓰게 — 표시 키(서명 값의 SHA-256)를 SET NX PX 10분. 두 번째는 used(앞 분석이 끝났어도 · 도는 중이어도).
  * - 로그: `incident-analysis:<결과> key=value…` 한 줄 — 보낸 글 · 답의 내용은 싣지 않는다(시도 기록에만 있다).
  * 계약: incident-analysis-service.test.ts 머리 주석. */
+import { createHash } from "node:crypto";
 import { parseAnalysisAnswer, type AnalysisAnswer } from "@/features/incident-analysis/lib/analysis-answer";
 import { ANALYSIS_RUN_FAILURE_REASONS } from "@/features/incident-analysis/lib/analysis-runner-client";
 import type { AnalysisRunFailureReason, AnalysisRunResult } from "@/features/incident-analysis/lib/analysis-runner-client";
@@ -36,10 +38,9 @@ export function incidentAnalysisKeys(incidentId: string): { lock: string; histor
 /** 쓴 미리보기의 표시를 남기는 시간 — 미리보기가 통하는 시간(10분)과 같다(명세 ⑫ §21 4). */
 export const ANALYSIS_USED_PREVIEW_MILLISECONDS = 10 * 60 * 1000;
 
-/** 쓴 미리보기의 표시 키 — `incident-analysis:v1:used-preview:<서명 값의 SHA-256 16진 64자>`(글 · 서명 값 그대로 · 비밀값이 키에 들지 않는다). 뼈대. */
+/** 쓴 미리보기의 표시 키 — `incident-analysis:v1:used-preview:<서명 값의 SHA-256 16진 64자>`(글 · 서명 값 그대로 · 비밀값이 키에 들지 않는다). */
 export function usedPreviewKey(token: string): string {
-  void token;
-  throw new Error("usedPreviewKey: 구현 전");
+  return `incident-analysis:v1:used-preview:${createHash("sha256").update(token, "utf8").digest("hex")}`;
 }
 
 export type PreviewClaimResult = "claimed" | "used" | "store_unavailable";
@@ -263,8 +264,12 @@ export function createIncidentAnalysisService(options: IncidentAnalysisServiceOp
     },
 
     async claimPreview(token) {
-      void token;
-      throw new Error("claimPreview: 구현 전");   // 뼈대: 구현 워커가 채운다
+      // 읽고 나서 쓰지 않는다 — SET NX 한 명령으로(두 탭 · 두 자리가 같은 폼을 보내도 하나만 claimed)
+      try {
+        return await redis.set(usedPreviewKey(token), "1", "PX", ANALYSIS_USED_PREVIEW_MILLISECONDS, "NX") === "OK" ? "claimed" : "used";
+      } catch {
+        return "store_unavailable";
+      }
     },
     runningCount() {
       return running.size;

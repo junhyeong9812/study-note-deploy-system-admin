@@ -1,9 +1,10 @@
 /** 분석에 보내는 글의 가림(한 겹 더 — 명세 ⑫ §19 · §20). 배포 마스터(12-2)의 규칙표 — ci-cd internal/shared/failure_output.go 의 "가림" 절 — 를
  * 같은 뜻으로 옮긴 한 벌이다. **규칙이 두 언어에 두 벌이다 — 한쪽을 고치면 다른 쪽도 고친다.** 계약(테스트가 고정): analysis-masking.test.ts 머리 주석.
  *
- * 배포 마스터와 다른 것(어드민이 받는 글은 이미 정리된 글이다):
- * - 글자 정리(ANSI 색 · 깨진 UTF-8 · 제어 문자 → U+FFFD)와 크기 상한 · 긴 한 줄 버리기는 하지 않는다 — 글을 바꾸는 것은 가림뿐이다.
- * - PEM 덩어리는 한 줄로 모으지 않고 덩어리 안의 줄마다 표시를 둔다 — 줄 수를 바꾸지 않는다(덩어리 하나를 한 번으로 센다).
+ * 가리기 전에 늘 글자를 정리한다(cleanForAnalysis — 배포 마스터의 "글자 정리"와 같은 뜻 + 어드민이 넓힌 것: 줄 구분 U+2028 · U+2029 와
+ * 글의 방향을 바꾸는 서식 문자도 U+FFFD 로) — 색 코드 · 제어 문자가 이름이나 값에 끼어 가림 규칙을 비껴가지 못하게. 가림만 따로 부르는 길은 없다.
+ * 배포 마스터와 다른 것: 크기 상한 · 긴 한 줄 버리기는 하지 않는다(자르기는 분석의 프롬프트가 한다) ·
+ * PEM 덩어리는 한 줄로 모으지 않고 덩어리 안의 줄마다 표시를 둔다 — 줄 수를 바꾸지 않는다(덩어리 하나를 한 번으로 센다).
  * 줄 단위다 — 규칙은 줄을 넘어 맞지 않고, 줄 수 · 줄바꿈은 그대로다. 줄의 앞 · 뒤에 붙은 글(12-1 의 `- ` · `| ` 줄머리)은 값이 아니라 남는다.
  * 소문자는 ASCII 만 바꾼다(글자 수 · 자리가 그대로 — 원래 글과 같은 자리를 본다). 값의 자리는 정규식의 d 깃발(indices)로 읽는다.
  * 시간은 입력에 비례한다: 맞춰 보는 자리마다 줄 끝까지 훑지 않는다(맞은 자리 안은 건너뛰고, 거슬러 찾는 길이에 상한을 둔다 — 함수마다 주석).
@@ -619,14 +620,104 @@ function maskPemLine(line: string, state: PemState): string {
   }
 }
 
+// ── 글자 정리 ─────────────────────────────────────────────
+
+const ESCAPE = 0x1b;
+/** 끝 표시 없는 OSC 가 삼키는 글자의 상한 — 배포 마스터와 같다. */
+const OSC_LENGTH_LIMIT = 4 * 1024;
+
+/** U+FFFD 로 바꾸는 글자인가 — 탭 · 줄바꿈 밖의 C0 · DEL · C1 · 줄 구분 · 방향 서식 · 짝 없는 서로게이트(코드 포인트로 본다). */
+function isReplacedCodePoint(value: number): boolean {
+  return (value < 0x20 && value !== 0x09 && value !== 0x0a) || (value >= 0x7f && value <= 0x9f) || value === 0x2028 || value === 0x2029
+    || (value >= 0x202a && value <= 0x202e) || (value >= 0x2066 && value <= 0x2069) || (value >= 0xd800 && value <= 0xdfff);
+}
+
+/** 가리기 전의 글자 정리(명세 ⑫ §21 1 — 배포 마스터 internal/shared/failure_output.go 의 clean 과 같은 뜻, 같은 상태 기계):
+ * ANSI 제어열(CSI · OSC · 그 밖의 ESC)을 지우고 · `\r\n` 과 홀로 선 `\r` 을 `\n` 으로 · 탭과 `\n` 밖의 제어 문자 · 줄 구분 · 방향 서식 · 짝 없는 서로게이트를
+ * 글자마다 U+FFFD 로. 한 번 훑는다(정규식 없음 — 입력에 비례하는 시간). 두 번 해도 같다. 계약: analysis-cleaning.test.ts 머리 주석. */
+export function cleanForAnalysis(text: string): string {
+  const pieces: string[] = [];
+  let runStart = 0;   // 그대로 옮길 글의 처음
+  const flush = (end: number) => {
+    if (end > runStart) pieces.push(text.slice(runStart, end));
+  };
+  let index = 0;
+  while (index < text.length) {
+    const value = text.codePointAt(index)!;
+    const size = value > 0xffff ? 2 : 1;
+    if (value === ESCAPE) {
+      flush(index);
+      index = escapeEnd(text, index);
+      runStart = index;
+      continue;
+    }
+    if (value === 0x0d) {   // \r\n 과 홀로 선 \r → \n
+      flush(index);
+      pieces.push("\n");
+      index += text.charCodeAt(index + 1) === 0x0a ? 2 : 1;
+      runStart = index;
+      continue;
+    }
+    if (isReplacedCodePoint(value)) {
+      flush(index);
+      pieces.push("\uFFFD");
+      index += size;
+      runStart = index;
+      continue;
+    }
+    index += size;
+  }
+  flush(index);
+  return pieces.join("");
+}
+
+function isVisibleAscii(value: number): boolean {
+  return value >= 0x20 && value <= 0x7e;
+}
+
+/** text[start] 의 ESC 로 시작하는 제어열이 끝난 자리(그 자리부터는 보통 글). 끝 글자 없이 끊긴 제어열은 끊은 글자를 보통 글로 둔다. */
+function escapeEnd(text: string, start: number): number {
+  const next = text.charCodeAt(start + 1);
+  if (next === 0x5b) {   // CSI — ESC [ 매개(0x20~0x3F) … 끝 글자(0x40~0x7E)
+    let index = start + 2;
+    while (index < text.length) {
+      const value = text.charCodeAt(index);
+      if (value >= 0x40 && value <= 0x7e) return index + 1;
+      if (value < 0x20 || value > 0x3f) return index;
+      index += 1;
+    }
+    return index;
+  }
+  if (next === 0x5d) {   // OSC — ESC ] … BEL 또는 ESC \ (없으면 줄바꿈 앞 · 4,096자 · 글의 끝)
+    let index = start + 2;
+    let length = 0;
+    while (index < text.length) {
+      const value = text.codePointAt(index)!;
+      if (value === 0x07) return index + 1;
+      if (value === ESCAPE) {
+        if (text.charCodeAt(index + 1) === 0x5c) return index + 2;
+        return index;   // ESC 가 새 제어열을 시작한다
+      }
+      if (value === 0x0a || length >= OSC_LENGTH_LIMIT) return index;   // 단순화: 끝 표시 없는 OSC 는 줄바꿈이나 4,096자에서 그친다(그때까지의 글은 버린다 — 배포 마스터와 같다)
+      length += 1;
+      index += value > 0xffff ? 2 : 1;
+    }
+    return index;
+  }
+  if (isVisibleAscii(next)) return start + 2;   // 그 밖의 ESC — 보이는 글자 하나를 함께
+  return start + 1;   // ESC 만
+}
+
 // ── 들머리 ────────────────────────────────────────────────
 
+/** 가림 — 늘 정리한 뒤에(cleanForAnalysis). */
 export function maskForAnalysis(text: string): MaskedText {
   const counts: Partial<Record<AnalysisMaskKind, number>> = {};
   const pem: PemState = { inside: false, swallowed: 0, count: 0 };
-  const lines = text.split("\n");
+  const lines = cleanForAnalysis(text).split("\n");
   for (let index = 0; index < lines.length; index += 1) {
     let line = maskPemLine(lines[index], pem);
+    if (line.length === 0) continue;   // 빈 줄은 맞을 것이 없다(CR 만 되풀이한 글 등 — 줄마다의 고정 비용을 아낀다)
     let lowered = asciiLower(line);
     for (const rule of RULES) {
       if (!rule.mayMatch(lowered)) continue;
@@ -644,8 +735,3 @@ export function maskForAnalysis(text: string): MaskedText {
   return { text: lines.join("\n"), counts: ordered };
 }
 
-/** 가리기 전의 글자 정리(명세 ⑫ §21 1) — 뼈대: 구현 워커가 채우고 maskForAnalysis 가 가리기 전에 부르게 한다. 계약: analysis-cleaning.test.ts 머리 주석. */
-export function cleanForAnalysis(text: string): string {
-  void text;
-  throw new Error("cleanForAnalysis: 구현 전");
-}
