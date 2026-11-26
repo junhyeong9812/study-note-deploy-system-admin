@@ -18,6 +18,8 @@ export interface DeploySelectionAddress {
   requestId: string;
   service: string;
   commitSha?: string | null;
+  /** 문제에서 온 접수의 결과로 보일 때 그 문제의 ID — 화면이 문제 화면으로 돌아가는 링크를 단다(명세 ⑫ §24). 뼈대: 아직 주소에 싣지 않는다 */
+  incidentId?: string | null;
 }
 
 export function deploysHref(list: DeployListAddress, selection: DeploySelectionAddress | null = null): string {

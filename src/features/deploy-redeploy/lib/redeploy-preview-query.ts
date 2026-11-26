@@ -29,3 +29,32 @@ export function parseRedeployPreviewQuery(input: SearchParamsInput): { ok: true;
 export function redeployPreviewHref(service: DeployService, commitSha: string): string {
   return `${REDEPLOY_PREVIEW_PATH}?${new URLSearchParams({ service, commit: commitSha }).toString()}`;
 }
+
+/** 확인 화면의 요청 — 버전 목록에서 고른 판(⑥ 그대로) · 문제의 조치(명세 ⑫ §24 — 판은 서버가 그 순간의 이력에서 다시 정한다). 뼈대. */
+export type RedeployPreviewRequest =
+  | { kind: "version"; query: RedeployPreviewQuery }
+  | { kind: "incident"; service: DeployService; incidentId: string; action: "redeploy" | "rollback" };
+
+export function parseRedeployPreviewRequest(input: SearchParamsInput): { ok: true; request: RedeployPreviewRequest } | UpstreamFailure {
+  void input;
+  throw new Error("parseRedeployPreviewRequest: 구현 전");
+}
+
+/** 문제의 조치 → 확인 화면의 주소(`/deploys/redeploy?service=&incident=&action=` — commit 을 싣지 않는다). 뼈대. */
+export function incidentRedeployPreviewHref(service: DeployService, incidentId: string, action: "redeploy" | "rollback"): string {
+  void service; void incidentId; void action;
+  throw new Error("incidentRedeployPreviewHref: 구현 전");
+}
+
+/** 문제의 조치로 들어온 확인 화면 · 접수의 고정 글(명세 ⑫ §24). */
+export const REDEPLOY_INCIDENT_TEXT = {
+  /** 확인 화면 · 결과에 한 줄 — `문제 <ID> 의 조치` */
+  headingPrefix: "문제 ",
+  headingSuffix: " 의 조치",
+  back: "문제 화면으로 돌아가기",
+  closed: "이 문제는 지금 열려 있지 않습니다 — 조치하지 않습니다",
+  unchecked: "이 문제가 지금 열려 있는지 확인하지 못했습니다 — 조치하지 않습니다",
+  serviceMismatch: "이 문제의 서비스가 아닙니다 — 조치하지 않습니다",
+  evidenceUnavailable: "이 문제의 근거를 모으지 못해 조치할 서비스를 정할 수 없습니다",
+  accountTooLong: "계정 이름이 길어 이 문제의 조치를 접수에 남길 수 없습니다(admin:계정:incident:ID 가 128자를 넘습니다)",
+} as const;

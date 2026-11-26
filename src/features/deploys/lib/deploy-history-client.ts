@@ -31,6 +31,8 @@ export interface DeploymentSummary {
   integrationMilliseconds: number;
   /** cd_ms */
   deliveryMilliseconds: number;
+  /** requested_by(누가 일으켰나 — 명세 ⑫ §24). 뼈대: 아직 읽지 않는다 */
+  requestedBy?: string | null;
 }
 
 export interface DeployHistoryClientOptions {

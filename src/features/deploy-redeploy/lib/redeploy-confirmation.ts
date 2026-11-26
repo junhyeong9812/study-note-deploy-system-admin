@@ -23,6 +23,8 @@ export interface RedeployConfirmationFields {
   issuedAt: number;
   /** 세션의 계정(ADMIN_USER) */
   account: string;
+  /** 문제에서 온 조치면 그 문제의 ID(명세 ⑫ §24) — 뼈대: 아직 서명에 들어가지 않는다 */
+  incidentId?: string | null;
 }
 
 export type RedeployConfirmationCheck =
@@ -57,7 +59,7 @@ export function issueRedeployConfirmation(signingKey: string, fields: RedeployCo
   return `${REDEPLOY_CONFIRMATION_VERSION}.${fields.requestId}.${fields.issuedAt}.${sign(signingKey, fields)}`;
 }
 
-export function verifyRedeployConfirmation(token: unknown, signingKey: string, expected: { service: string; commitSha: string; account: string }, now: number): RedeployConfirmationCheck {
+export function verifyRedeployConfirmation(token: unknown, signingKey: string, expected: { service: string; commitSha: string; account: string; incidentId?: string | null }, now: number): RedeployConfirmationCheck {
   if (typeof token !== "string" || token.length === 0 || token.length > REDEPLOY_CONFIRMATION_MAX_LENGTH) return { ok: false, reason: "malformed" };
   const parts = token.split(".");
   if (parts.length !== 4) return { ok: false, reason: "malformed" };

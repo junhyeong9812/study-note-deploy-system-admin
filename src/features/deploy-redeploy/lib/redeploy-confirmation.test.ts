@@ -177,3 +177,39 @@ describe("요청 ID — 확인 화면이 그릴 때 정한다", () => {
     expect(seen.size).toBe(500);
   });
 });
+
+describe("문제의 ID 를 묶는다(명세 ⑫ §24) — 없으면 지금과 같은 글자", () => {
+  const INCIDENT = "monitor:front";
+
+  it("ID 가 없으면(undefined · null) 계약의 일곱 줄 그대로 — 지금의 값과 글자까지 같다", () => {
+    expect(issue({ incidentId: undefined })).toBe(handMade(CONTRACT_LINES));
+    expect(issue({ incidentId: null })).toBe(handMade(CONTRACT_LINES));
+    expect(issue({ incidentId: null })).toBe(issue());
+  });
+
+  it("ID 가 있으면 여덟째 줄 `incident:<ID>` 를 더해 서명한다 · 꼴은 그대로(rc1.<요청 ID>.<시각>.<서명>)", () => {
+    const token = issue({ incidentId: INCIDENT });
+    expect(token).toBe(handMade([...CONTRACT_LINES, `incident:${INCIDENT}`]));
+    expect(token).toMatch(/^rc1\.adm-Fake_Request-01\.\d+\.[A-Za-z0-9_-]{43}$/);
+  });
+
+  it("같은 ID 로 검증하면 통한다", () => {
+    expect(verifyRedeployConfirmation(issue({ incidentId: INCIDENT }), FAKE_SIGNING_KEY, { ...EXPECTED, incidentId: INCIDENT }, ISSUED_AT))
+      .toEqual({ ok: true, requestId: FIELDS.requestId, issuedAt: ISSUED_AT });
+  });
+
+  it.each([
+    ["다른 ID 로 바꿈", INCIDENT, "monitor:backend"],
+    ["ID 를 뺌", INCIDENT, null],
+    ["ID 를 더함(ID 없는 확인 화면의 값)", null, INCIDENT],
+    ["접두만 같은 ID", "errors:ab", "errors:abc"],
+  ] as const)("%s → mismatch", (_label, issuedWith, verifiedWith) => {
+    expect(verifyRedeployConfirmation(issue({ incidentId: issuedWith }), FAKE_SIGNING_KEY, { ...EXPECTED, incidentId: verifiedWith }, ISSUED_AT))
+      .toEqual({ ok: false, reason: "mismatch" });
+  });
+
+  it("ID 가 있어도 만료는 그대로(5분)", () => {
+    expect(verifyRedeployConfirmation(issue({ incidentId: INCIDENT }), FAKE_SIGNING_KEY, { ...EXPECTED, incidentId: INCIDENT }, ISSUED_AT + 300_000))
+      .toEqual({ ok: false, reason: "expired" });
+  });
+});
