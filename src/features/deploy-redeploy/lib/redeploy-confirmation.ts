@@ -23,7 +23,7 @@ export interface RedeployConfirmationFields {
   issuedAt: number;
   /** 세션의 계정(ADMIN_USER) */
   account: string;
-  /** 문제에서 온 조치면 그 문제의 ID(명세 ⑫ §24) — 뼈대: 아직 서명에 들어가지 않는다 */
+  /** 문제에서 온 조치면 그 문제의 ID(명세 ⑫ §24) — 있을 때만 여덟째 줄 `incident:<ID>` 로 서명에 묶인다(없으면 지금의 일곱 줄 그대로) */
   incidentId?: string | null;
 }
 
@@ -43,10 +43,12 @@ export function newRedeployRequestId(): string {
   return `${REDEPLOY_REQUEST_ID_PREFIX}${randomBytes(REQUEST_ID_RANDOM_BYTES).toString("base64url")}`;
 }
 
-/** 서명하는 글 — 일곱 줄(용도 · 판 · 서비스 · 커밋 · 요청 ID · 만든 시각 · 계정). */
+/** 서명하는 글 — 일곱 줄(용도 · 판 · 서비스 · 커밋 · 요청 ID · 만든 시각 · 계정) + 문제에서 온 조치면 여덟째 줄 `incident:<ID>`.
+ * ID 가 없을 때의 글은 이 조각 전과 같다(문제 밖의 확인 값은 글자까지 그대로) — ID 를 확인 화면과 접수 사이에 바꾸거나 빼거나 끼워 넣지 못한다. */
 function sign(signingKey: string, fields: RedeployConfirmationFields): string {
   const lines = [
     REDEPLOY_CONFIRMATION_PURPOSE, REDEPLOY_CONFIRMATION_VERSION, fields.service, fields.commitSha, fields.requestId, String(fields.issuedAt), fields.account,
+    ...(fields.incidentId === undefined || fields.incidentId === null ? [] : [`incident:${fields.incidentId}`]),
   ];
   return createHmac("sha256", signingKey).update(lines.join("\n")).digest("base64url");
 }

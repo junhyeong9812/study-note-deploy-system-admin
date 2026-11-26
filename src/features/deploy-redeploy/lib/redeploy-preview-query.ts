@@ -1,7 +1,9 @@
 /** 재배포 확인 화면의 입력 검증과 주소(순수) — 접수(POST)도 같은 검증으로 본문의 service · commit 을 본다.
  * 입력 이름: service(필수 — DEPLOY_SERVICES 만) · commit(필수 — 소문자 16진수 40자 전체 SHA만 — master 이력이 주는 꼴, 버전 목록의 링크가 싣는 꼴).
- * 없음 · 빈 값 · 배열 · 허용 목록 밖 · 짧은 SHA · 대문자 · 그 밖 글자는 invalid_input(field = "service" 또는 "commit" — service 를 먼저 본다). */
+ * 없음 · 빈 값 · 배열 · 허용 목록 밖 · 짧은 SHA · 대문자 · 그 밖 글자는 invalid_input(field = "service" 또는 "commit" — service 를 먼저 본다).
+ * 문제의 조치(명세 ⑫ §24)는 parseRedeployPreviewRequest — service · incident · action 만 받고 commit 은 받지 않는다. */
 import { DEPLOY_SERVICES, type DeployService } from "@/features/deploys/lib/deploy-history-query";
+import { isIncidentId } from "@/features/incidents/lib/incident-id";
 import { singleValue } from "@/shared/lib/query-input";
 import { invalidInput, type SearchParamsInput, type UpstreamFailure } from "@/shared/lib/upstream-result";
 
@@ -30,20 +32,33 @@ export function redeployPreviewHref(service: DeployService, commitSha: string): 
   return `${REDEPLOY_PREVIEW_PATH}?${new URLSearchParams({ service, commit: commitSha }).toString()}`;
 }
 
-/** 확인 화면의 요청 — 버전 목록에서 고른 판(⑥ 그대로) · 문제의 조치(명세 ⑫ §24 — 판은 서버가 그 순간의 이력에서 다시 정한다). 뼈대. */
+/** 확인 화면의 요청 — 버전 목록에서 고른 판(⑥ 그대로) · 문제의 조치(명세 ⑫ §24 — 판은 서버가 그 순간의 이력에서 다시 정한다). */
 export type RedeployPreviewRequest =
   | { kind: "version"; query: RedeployPreviewQuery }
   | { kind: "incident"; service: DeployService; incidentId: string; action: "redeploy" | "rollback" };
 
+const INCIDENT_ACTIONS: readonly string[] = ["redeploy", "rollback"];
+
+/** 주소에 incident 가 있으면(빈 글자 · 여러 개 포함) 문제의 조치 — service(허용 목록) · incident(isIncidentId) · action(redeploy | rollback)을 이 차례로 보고,
+ * commit 이 함께 오면 거절한다(판은 브라우저가 정하지 않는다). 없으면 ⑥ 그대로(parseRedeployPreviewQuery). 거절은 invalid_input(field). */
 export function parseRedeployPreviewRequest(input: SearchParamsInput): { ok: true; request: RedeployPreviewRequest } | UpstreamFailure {
-  void input;
-  throw new Error("parseRedeployPreviewRequest: 구현 전");
+  if (input.incident === undefined) {
+    const parsed = parseRedeployPreviewQuery(input);
+    return parsed.ok ? { ok: true, request: { kind: "version", query: parsed.query } } : parsed;
+  }
+  const service = singleValue(input, "service");
+  if (service === null || service === "many" || !(DEPLOY_SERVICES as readonly string[]).includes(service)) return invalidInput("service");
+  const incidentId = singleValue(input, "incident");
+  if (incidentId === null || incidentId === "many" || !isIncidentId(incidentId)) return invalidInput("incident");
+  const action = singleValue(input, "action");
+  if (action === null || action === "many" || !INCIDENT_ACTIONS.includes(action)) return invalidInput("action");
+  if (input.commit !== undefined) return invalidInput("commit");
+  return { ok: true, request: { kind: "incident", service: service as DeployService, incidentId, action: action as "redeploy" | "rollback" } };
 }
 
-/** 문제의 조치 → 확인 화면의 주소(`/deploys/redeploy?service=&incident=&action=` — commit 을 싣지 않는다). 뼈대. */
+/** 문제의 조치 → 확인 화면의 주소(`/deploys/redeploy?service=&incident=&action=` — commit 을 싣지 않는다). */
 export function incidentRedeployPreviewHref(service: DeployService, incidentId: string, action: "redeploy" | "rollback"): string {
-  void service; void incidentId; void action;
-  throw new Error("incidentRedeployPreviewHref: 구현 전");
+  return `${REDEPLOY_PREVIEW_PATH}?${new URLSearchParams({ service, incident: incidentId, action }).toString()}`;
 }
 
 /** 문제의 조치로 들어온 확인 화면 · 접수의 고정 글(명세 ⑫ §24). */

@@ -1,11 +1,13 @@
 /** 문제 화면의 서버 쪽 진입 — 세션 검증을 **직접** 부른 뒤에만 입력을 해석하고 설정(ALERT_URL · ALERT_SECRET · OBSERVE_URL · OBSERVE_SECRET ·
  * DEPLOY_MASTER_URL · DEPLOY_SECRET)을 읽고 다른 서버를 부른다. 네트워크 = 부를 때의 전역 fetch, 시계 = Date.now.
+ * 조치 구역의 "Claude 가 권함"은 분석의 저장소(latestAnalysisAction — 분석 설정이 없으면 권함 없음)에서.
  * 실패한 칸은 앱 로그 1줄씩(upstreamFailureLogLine("incidents", <칸>, 결과) → log("screen-incidents", 줄, "warning") — 이유 낱말 · 상태 코드만).
  * - loadIncidentsScreen(input): 세션이 없으면 /login(다른 서버를 한 번도 부르지 않는다). 입력이 틀리면 { kind: "invalid_input" }(호출 없음).
  * - incidentsScreenResponse(request): 세션 없음 401 · 입력 거절 422 `{success:false,error:{code:"invalid_input",field:"incident"}}`(호출 없음) ·
  *   그 밖 200 `{success:true,data:IncidentsScreenData}`(다른 서버의 실패는 칸의 결과로). 언제나 no-store. */
 import "server-only";
 import { requireApiSession, requireSession } from "@/features/auth/server/require-session";
+import { latestAnalysisAction } from "@/features/incident-analysis/server/incident-analysis";
 import { parseIncidentsQuery } from "@/features/incidents/lib/incidents-query";
 import { collectIncidentsScreen, type IncidentsScreenData } from "@/features/incidents/lib/incidents-screen";
 import { readServerConfig } from "@/shared/config/server-config";
@@ -24,7 +26,7 @@ function buildIncidentsScreen(incidentId: string | null): Promise<IncidentsScree
   return collectIncidentsScreen({
     alertUrl: config.alertUrl, alertSecret: config.alertSecret, observeUrl: config.observeUrl, observeSecret: config.observeSecret,
     deployMasterUrl: config.deployMasterUrl, deploySecret: config.deploySecret,
-    fetch: (input, init) => fetch(input, init), now: () => Date.now(),
+    fetch: (input, init) => fetch(input, init), now: () => Date.now(), latestAnalysisAction,
     logFailure: (cell, failure) => {
       const logLine = upstreamFailureLogLine("incidents", cell, failure);
       if (logLine !== null) void log("screen-incidents", logLine, "warning");

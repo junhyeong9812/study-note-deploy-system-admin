@@ -15,6 +15,7 @@ import { escapeHtml, readBoundedBody } from "@/features/deploy-redeploy/server/r
 import { analysisPromptDigest, buildAnalysisPrompt } from "@/features/incident-analysis/lib/analysis-prompt";
 import { ANALYSIS_PREVIEW_TOKEN_MAX_LENGTH, issueAnalysisPreviewToken, verifyAnalysisPreviewToken } from "@/features/incident-analysis/lib/analysis-preview-token";
 import { createAnalysisRunnerClient } from "@/features/incident-analysis/lib/analysis-runner-client";
+import type { AnalysisAction } from "@/features/incident-analysis/lib/analysis-answer";
 import { createDeployFailureOutputClient, type DeployFailureOutputResult } from "@/features/incident-analysis/lib/deploy-failure-output-client";
 import {
   createIncidentAnalysisService, type AnalysisRedisCommands, type IncidentAnalysisService,
@@ -99,6 +100,18 @@ export function resetIncidentAnalysisService(): void {
   const store = globalThis as GlobalWithService;
   store[SERVICE_KEY]?.disconnect();
   delete store[SERVICE_KEY];
+}
+
+/** 같은 발생(since)의 가장 최근 분석이 끝났으면(succeeded) 그 권하는 조치 — 문제 화면의 "Claude 가 권함"(명세 ⑫ §24 — 표시일 뿐).
+ * 분석 설정이 없거나 · 저장소에 닿지 못하거나 · 가장 최근 것이 끝나지 않았거나(진행 중 · 실패 · 끊김 · 읽을 수 없음) · 옛 발생의 것이면 null — 그 앞의 분석은 보지 않는다. */
+export async function latestAnalysisAction(incidentId: string, since: string | null): Promise<AnalysisAction | null> {
+  const service = analysisService(readServerConfig());
+  if (service === null) return null;
+  const history = await service.history(incidentId, since);
+  if (!history.ok) return null;
+  const [latest] = history.entries;
+  if (latest === undefined || latest.kind !== "attempt" || latest.status !== "succeeded" || latest.fromEarlierOpening) return null;
+  return latest.attempt.answer?.recommendedAction ?? null;
 }
 
 /** SIGTERM 때 — 이 프로세스에서 도는 분석의 수를 로그 한 줄로(`incident-analysis:shutdown running=<N>`). 서비스가 없으면 남기지 않는다.

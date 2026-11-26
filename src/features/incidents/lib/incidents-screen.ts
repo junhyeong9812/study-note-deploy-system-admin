@@ -10,6 +10,8 @@
  *   들면(isUncovered) { kind: "unchecked" }(열려 있는지 확인하지 못함), 아니면 { kind: "closed" }(그 범위를 확인했고 지금 열려 있지 않음) — 2단계 호출 없음.
  *   목록의 범위 줄과 이 판정은 같은 값(list.uncovered)을 읽는다.
  * 호출 수: 목록 INCIDENT_LIST_CALLS + 근거 INCIDENT_EVIDENCE_MAXIMUM_CALLS 이하.
+ * 조치(명세 ⑫ §24): 근거 묶음과 함께 조치 구역(incidentActionsView — 목록이 읽은 배포 이력에서 판 · 이 문제에서 접수한 배포, 새 호출 없음)을 낸다.
+ *   "Claude 가 권함"은 options.latestAnalysisAction(분석의 저장소 — 없으면 권함 없음)이 준 같은 발생의 가장 최근 끝난 분석의 권하는 조치.
  * lookupIncident — 같은 1 · 2단계로 고른 문제 하나만(분석 화면 · 보내기가 쓴다): 열려 있으면 그 문제와 (원하면) **맞추기 전의** 근거 묶음(분석은 가린 뒤에 맞춘다),
  *   아니면 닫힘 · 확인하지 못함(같은 판정). 근거를 원하지 않으면 목록의 네 호출뿐. */
 import type { FetchLike, TimeoutSignalFactory } from "@/features/auth/lib/types";
@@ -18,6 +20,8 @@ import { createDeployHistoryClient } from "@/features/deploys/lib/deploy-history
 import { INCIDENT_DEPLOY_LOOKUP_LIMIT, ERROR_LOG_COUNT_LIMIT, ERROR_LOG_WINDOW_MILLISECONDS, isUncovered, openIncidentsFrom } from "@/features/incidents/lib/incident-list";
 import type { IncidentList, IncidentSources, OpenIncident } from "@/features/incidents/lib/incident-list";
 import { buildIncidentEvidence, type IncidentEvidence, type IncidentEvidenceDependencies } from "@/features/incidents/lib/incident-evidence";
+import { incidentActionsView, type IncidentActionsView } from "@/features/incidents/lib/incident-actions";
+import type { AnalysisAction } from "@/features/incident-analysis/lib/analysis-answer";
 import { fitIncidentEvidence, incidentEvidenceText } from "@/features/incidents/lib/incident-evidence-text";
 import { createIncidentClient, type IncidentClient } from "@/features/log-trace/lib/incident-client";
 import { collectTraceResources } from "@/features/log-trace/lib/trace-resources";
@@ -36,7 +40,8 @@ export const SELECTED_INCIDENT_TEXT = {
 } as const;
 
 export type SelectedIncident =
-  | { kind: "evidence"; evidence: IncidentEvidence; text: string }
+  /** actions — 조치 구역(조립이 늘 채운다 · 선택 칸인 것은 손으로 만든 묶음과 맞추려고) */
+  | { kind: "evidence"; evidence: IncidentEvidence; text: string; actions?: IncidentActionsView }
   | { kind: "closed"; incidentId: string }
   | { kind: "unchecked"; incidentId: string };
 
@@ -60,6 +65,8 @@ export interface IncidentsScreenOptions {
   now: () => number;
   /** 실패한 출처 · 칸마다 한 번(앱 로그용 — 칸 이름 · 실패). 없으면 남기지 않는다. */
   logFailure?: (cell: string, failure: UpstreamFailure) => void;
+  /** 같은 발생(since)의 가장 최근 끝난 분석의 권하는 조치 — 없거나 읽지 못하면 null(거부하지 않는다). 없으면 권함을 보이지 않는다. */
+  latestAnalysisAction?: (incidentId: string, since: string | null) => Promise<AnalysisAction | null>;
 }
 
 const NOT_CONFIGURED = upstreamFailure("not_configured");
@@ -152,8 +159,12 @@ async function selectedIncident(options: IncidentsScreenOptions, incidentId: str
   if (incident === undefined) {
     return { kind: notListedKind(list, incidentId), incidentId };
   }
-  const evidence = fitIncidentEvidence(await buildIncidentEvidence(evidenceDependencies(options), { incident, sources, nowMilliseconds }));
-  return { kind: "evidence", evidence, text: incidentEvidenceText(evidence) };
+  const [built, recommendedAction] = await Promise.all([
+    buildIncidentEvidence(evidenceDependencies(options), { incident, sources, nowMilliseconds }),
+    options.latestAnalysisAction === undefined ? Promise.resolve(null) : options.latestAnalysisAction(incident.id, incident.since).catch(() => null),
+  ]);
+  const evidence = fitIncidentEvidence(built);
+  return { kind: "evidence", evidence, text: incidentEvidenceText(evidence), actions: incidentActionsView(built, sources.deployments, recommendedAction) };
 }
 
 export async function collectIncidentsScreen(options: IncidentsScreenOptions, incidentId: string | null): Promise<IncidentsScreenData> {
