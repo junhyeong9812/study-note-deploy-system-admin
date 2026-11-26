@@ -21,6 +21,10 @@ export interface ServerConfig {
   logRedisUrl: string;
   /** GitHub REST API 토큰(배포 상세 task 07) — **선택**: 비어 있어도 뜬다(익명 한도). 값은 로그 · 응답 · 오류 문구에 내지 않는다. */
   githubToken: string;
+  /** Claude 실행 자리(사용량 · 상한 화면 — GET /usage · GET/PUT /limits · GET /health) — **선택**: 비어 있어도 뜬다(실행 자리가 배포되기 전에도 어드민이 뜬다).
+   * 비면 그 화면의 칸이 "설정 없음". 설정용 비밀값은 머리글로만 싣고 로그 · 응답 · 오류 문구에 내지 않는다. */
+  claudeRunnerUrl: string;
+  claudeRunnerSettingsSecret: string;
   serverName: string;
 }
 
@@ -46,6 +50,8 @@ export function readServerConfig(): ServerConfig {
     backendUrl: environmentValue("BACKEND_URL"),
     logRedisUrl: environmentValue("LOG_REDIS_URL"),
     githubToken: environmentValue("GITHUB_TOKEN"),
+    claudeRunnerUrl: environmentValue("CLAUDE_RUNNER_URL"),
+    claudeRunnerSettingsSecret: environmentValue("CLAUDE_RUNNER_SETTINGS_SECRET"),
     serverName: environmentValue("SERVER_NAME") || "admin",
   };
 }

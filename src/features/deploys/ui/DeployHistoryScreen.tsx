@@ -4,6 +4,7 @@
  * 상세를 열면 넓은 화면(1100px 이상)은 왼쪽 목록 | 오른쪽 상세로 나누고, 좁은 화면은 상세가 화면 전체를 덮는다. */
 import type { DeployDetailOutcome } from "@/features/deploy-detail/lib/deploy-detail-view";
 import { DeployDetailPanel } from "@/features/deploy-detail/ui/DeployDetailPanel";
+import { deployVersionsHref } from "@/features/deploy-versions/ui/DeployVersionsScreen";
 import type { DeployHistoryView } from "@/features/deploys/server/deploy-history";
 import { DEPLOY_HISTORY_DEFAULT_LIMIT, DEPLOY_SERVICES, type DeployService } from "@/features/deploys/lib/deploy-history-query";
 import { DeployHistoryTable } from "@/features/deploys/ui/DeployHistoryTable";
@@ -97,6 +98,7 @@ export function DeployHistoryScreen({ view, detail, selectedRequestId }: DeployH
             <span className={parts.countNote}>(최신순, 최대 {limit}건)</span>
           </p>
         )}
+        <p className={parts.count}><a href={deployVersionsHref(selected)}>{selected === null ? "버전 목록" : `${selected} 의 버전 목록`}</a></p>
       </div>
       <ServiceFilter selected={selected} limit={limit} />
       {detail === null ? listContent : (
