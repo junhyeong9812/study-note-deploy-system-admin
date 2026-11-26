@@ -7,6 +7,9 @@ import {
   OBSERVE_SERVER_FIXTURE, OBSERVE_SPAN_FIXTURE, createFakeObserveTraffic, fakeServerReceipt, fakeSpan,
 } from "@/features/request-trace/lib/traffic-span-test-fakes";
 import {
+  REAL_MAP_BODY, REAL_MAP_OLD_WINDOW_BODY, REAL_REQUESTS_BODY, REAL_REQUEST_ID,
+} from "@/features/request-trace/lib/traffic-span-real-responses-test-fakes";
+import {
   FAKE_OBSERVE_SECRET, FAKE_OBSERVE_URL, SECRET_HEADER_NAMES, UPSTREAM_RAW_MARKER, createRoutedFetch, createTimerTimeoutSignal, expectFailure,
   expectNoForbiddenText, expectReadOnlyRequest, hangUntilAborted, headersOf, jsonBody, leakyErrorBody, leakyNetworkError, okValue, textResponse,
   type RoutedFetchHandler,
@@ -221,5 +224,62 @@ describe("수신 상태 — GET /traffic/map?from=&to= 의 servers[]", () => {
   it.each([[401, "unauthorized"], [422, "invalid_request"], [503, "unavailable"], [504, "server_timeout"]] as const)("HTTP %s → %s", async (status, reason) => {
     const { client } = clientWith(() => textResponse(leakyErrorBody(), status));
     expectFailure(await client.serverReceipts("2026-11-25T04:05:00.000Z", "2026-11-25T04:10:00.000Z"), reason, status);
+  });
+});
+
+describe("실제 관측 서버의 응답(T7 리뷰가 실제 PostgreSQL · Redis 로 받은 본문 그대로)", () => {
+  it("구간 여섯 · 두 서버 — unparseable 없이 칸마다 그대로(시각의 소수 0 · 3자리 · null 셋 · 1024자 경로)", async () => {
+    const { client } = clientWith(() => textResponse(REAL_REQUESTS_BODY));
+    const page = okValue(await client.requestSpans(REAL_REQUEST_ID));
+    expect(page.truncated).toBe(false);
+    expect(page.spans.map((span) => [span.server, span.service, span.caller, span.status, span.endAt, span.durationMilliseconds, span.upstreamMilliseconds])).toEqual([
+      ["ci-agent-llm.home", "ci-agent", "ci-master", 200, "2026-11-26T00:33:23.001Z", 12, null],
+      ["ci-agent-llm.home", "llm-wrapper", "backend", 200, "2026-11-26T00:33:23.500Z", 900, 899],
+      ["ci-agent-158", "backend", "front", 504, "2026-11-26T00:33:23.877Z", 0, 5],
+      ["ci-agent-158", "backend", "front", 200, "2026-11-26T00:33:23.980Z", 1400, null],
+      ["ci-agent-158", "front", "edge", 200, "2026-11-26T00:33:24Z", 1500, 1490],
+      ["ci-agent-158", "front", "edge", 200, "2026-11-26T00:33:24.007Z", 9, 9],
+    ]);
+    expect(page.spans[2]).toMatchObject({ upstreamStatus: "502, 504", slot: "blue", path: "/api/fail" });
+    expect(page.spans[0]).toMatchObject({ upstreamStatus: null, slot: null });
+    expect(page.spans[5]).toMatchObject({ pathTruncated: true });
+    expect(page.spans[5].path).toHaveLength(1024);
+  });
+
+  it("수신 상태 두 서버 — 기간 안의 missing · 버린 수와 누적 sequence_gaps 를 그대로", async () => {
+    const { client } = clientWith(() => textResponse(REAL_MAP_BODY));
+    expect(okValue(await client.serverReceipts("2026-11-26T00:24:44.000Z", "2026-11-26T00:35:44.000Z"))).toEqual([
+      { server: "ci-agent-158", readProgressAt: "2026-11-26T00:34:04Z", receiveDelayed: false, sequenceGaps: 1, missing: ["backend-nginx:rotated"], requestsDropped: 3, requestsRejected: 0 },
+      { server: "ci-agent-llm.home", readProgressAt: "2026-11-26T00:34:39Z", receiveDelayed: false, sequenceGaps: 0, missing: [], requestsDropped: 0, requestsRejected: 0 },
+    ]);
+  });
+
+  it("20시간 전의 창에서도 sequence_gaps 는 1(기간과 무관한 누적) — missing · 버린 수는 0(기간에 묶임)", async () => {
+    const { client } = clientWith(() => textResponse(REAL_MAP_OLD_WINDOW_BODY));
+    const [first] = okValue(await client.serverReceipts("2026-11-25T04:34:44.000Z", "2026-11-25T05:34:44.000Z"));
+    expect(first).toMatchObject({ server: "ci-agent-158", sequenceGaps: 1, missing: [], requestsDropped: 0 });
+  });
+});
+
+describe("아주 큰 수(T7 리뷰 7) — 시각을 만들 수 없는 값은 unparseable(화면이 예외로 깨지지 않게)", () => {
+  const WEEK = 7 * 24 * 60 * 60 * 1000;
+  it.each([
+    ["걸린 시간 7일 + 1ms", { duration_ms: WEEK + 1 }],
+    ["걸린 시간 9000000000000000", { duration_ms: 9_000_000_000_000_000 }],
+    ["upstream 7일 + 1ms", { upstream_ms: WEEK + 1 }],
+    ["upstream 9000000000000000", { upstream_ms: 9_000_000_000_000_000 }],
+  ])("%s → unparseable", async (_label, change) => {
+    const { client } = clientWith(fixtureSpans([{ ...OBSERVE_SPAN_FIXTURE, ...change }]));
+    expectFailure(await client.requestSpans(REQUEST_ID), "unparseable");
+  });
+
+  it("걸린 시간 · upstream 정확히 7일은 받는다(상한은 포함)", async () => {
+    const { client } = clientWith(fixtureSpans([{ ...OBSERVE_SPAN_FIXTURE, duration_ms: WEEK, upstream_ms: WEEK }]));
+    expect(okValue(await client.requestSpans(REQUEST_ID)).spans[0]).toMatchObject({ durationMilliseconds: WEEK, upstreamMilliseconds: WEEK });
+  });
+
+  it("바이트는 시각을 만들지 않으므로 상한 없이 받는다(정수이기만 하면)", async () => {
+    const { client } = clientWith(fixtureSpans([{ ...OBSERVE_SPAN_FIXTURE, bytes_sent: 9_000_000_000_000_000 }]));
+    expect(okValue(await client.requestSpans(REQUEST_ID)).spans[0].bytesSent).toBe(9_000_000_000_000_000);
   });
 });

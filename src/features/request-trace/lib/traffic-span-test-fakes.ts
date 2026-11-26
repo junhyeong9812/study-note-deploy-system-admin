@@ -109,8 +109,25 @@ const OBSERVE_REQUEST_ID = /^[A-Za-z0-9_.-]{1,80}$/;
 const DAY = 24 * 60 * 60 * 1000;
 
 /** 가짜 관측 서버의 `/traffic/*` 처리기 — 저장된 구간 · 서버 상태를 실제 규칙대로 돌려준다. 받은 조건은 calls 에 남는다(경로 · 인자). */
-export function createFakeObserveTraffic(initial: { spans?: FakeSpan[]; servers?: FakeServerReceipt[] } = {}) {
-  const store = { spans: [...(initial.spans ?? [])], servers: [...(initial.servers ?? [])] };
+/** 받은 항목 하나의 요약(관측 서버 traffic_receipt 의 행 — 받은 시각 · missing · 버린 수). */
+export interface FakeReceivedEntry {
+  server: string;
+  receivedMilliseconds: number;
+  missing: string[];
+  requestsDropped: number;
+  requestsRejected: number;
+}
+
+export function fakeReceivedEntry(overrides: Partial<FakeReceivedEntry> = {}): FakeReceivedEntry {
+  return { server: "ci-agent-158", receivedMilliseconds: Date.UTC(2026, 10, 22, 10, 0, 0, 0), missing: [], requestsDropped: 0, requestsRejected: 0, ...overrides };
+}
+
+/** 가짜 관측 서버의 `/traffic/*` 처리기 — 저장된 구간 · 서버 상태를 실제 규칙대로 돌려준다. 받은 조건은 calls 에 남는다(경로 · 인자).
+ * entries(받은 항목)를 주면 `/traffic/map` 의 missing · requests_dropped · requests_rejected 를 관측 서버처럼 **받은 시각**으로 거른 합으로 낸다
+ * (TrafficStore.kt:483-496 `received_ms >= from AND received_ms < to` · missing 은 서버마다 겹치지 않게 글자순) — 그때 servers 의 같은 칸은 쓰지 않는다.
+ * 진도를 모르는 서버가 기간 안의 항목에만 있으면 그 서버도 낸다(TrafficController.kt:200-218 — 진도 null · receive_delayed 참 · 틈 0). entries 가 비면 servers 의 칸 그대로. */
+export function createFakeObserveTraffic(initial: { spans?: FakeSpan[]; servers?: FakeServerReceipt[]; entries?: FakeReceivedEntry[] } = {}) {
+  const store = { spans: [...(initial.spans ?? [])], servers: [...(initial.servers ?? [])], entries: [...(initial.entries ?? [])] };
   const calls: { path: string; parameters: Record<string, string> }[] = [];
   const handler: RoutedFetchHandler = (url, init) => {
     if (headersOf(init).get("X-Observe-Secret") !== FAKE_OBSERVE_SECRET) return jsonBody({ success: false, error: { code: "unauthorized" } }, 401);
@@ -138,13 +155,28 @@ export function createFakeObserveTraffic(initial: { spans?: FakeSpan[]; servers?
         success: true,
         data: {
           from: javaInstantText(fromMilliseconds), to: javaInstantText(toMilliseconds),
-          servers: [...store.servers].sort((left, right) => (left.server < right.server ? -1 : 1)).map(observeServerRow), edges: [], extra: UPSTREAM_RAW_MARKER,
+          servers: serversInWindow(store.servers, store.entries, fromMilliseconds, toMilliseconds).map(observeServerRow), edges: [], extra: UPSTREAM_RAW_MARKER,
         },
       });
     }
     return jsonBody({ success: false, error: { code: "not_found" } }, 404);
   };
   return { store, calls, handler };
+}
+
+function serversInWindow(servers: FakeServerReceipt[], entries: FakeReceivedEntry[], from: number, to: number): FakeServerReceipt[] {
+  if (entries.length === 0) return [...servers].sort((left, right) => (left.server < right.server ? -1 : 1));
+  const inWindow = entries.filter((entry) => entry.receivedMilliseconds >= from && entry.receivedMilliseconds < to);
+  const names = [...new Set([...servers.map((server) => server.server), ...inWindow.map((entry) => entry.server)])].sort();
+  return names.map((name) => {
+    const known = servers.find((server) => server.server === name)
+      ?? fakeServerReceipt({ server: name, readProgressMilliseconds: null, receiveDelayed: true, sequenceGaps: 0, lastReceivedMilliseconds: null, firstSeqSeen: null });
+    const mine = inWindow.filter((entry) => entry.server === name);
+    return {
+      ...known, missing: [...new Set(mine.flatMap((entry) => entry.missing))].sort(),
+      requestsDropped: mine.reduce((sum, entry) => sum + entry.requestsDropped, 0), requestsRejected: mine.reduce((sum, entry) => sum + entry.requestsRejected, 0),
+    };
+  });
 }
 
 /** 로그(`/logs`)와 통신(`/traffic/*`)을 경로로 가른다 — 관측 서버 하나. */

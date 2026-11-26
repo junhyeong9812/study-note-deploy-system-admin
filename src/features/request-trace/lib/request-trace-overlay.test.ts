@@ -13,6 +13,7 @@ import type { TrafficServerReceipt, TrafficSpan } from "@/features/request-trace
 import {
   OVERLAY_LOG_SCENARIO, fakeServerReceipt, fakeSpan, overlaySpanScenario, trafficServerReceiptOf, trafficSpanOf,
 } from "@/features/request-trace/lib/traffic-span-test-fakes";
+import { REAL_REQUESTS_BODY } from "@/features/request-trace/lib/traffic-span-real-responses-test-fakes";
 import { upstreamFailure } from "@/shared/lib/upstream-result";
 
 const T = TRACE_START_MILLISECONDS;
@@ -259,6 +260,22 @@ describe("같은 서비스의 구간 여럿 · 경계 · 긴 구간 · 시계", 
   });
 });
 
+describe("실제 관측 서버의 응답으로(T7 리뷰 4 — 걸린 시간 0 · upstream 5 의 504)", () => {
+  it("nginx 안은 −5 그대로(데이터의 값은 꾸미지 않는다 — 화면이 글로 가른다)", () => {
+    const page = JSON.parse(REAL_REQUESTS_BODY) as { data: { spans: Record<string, unknown>[] } };
+    const spans: TrafficSpan[] = page.data.spans.map((row) => ({
+      server: row.server as string, service: row.service as string, caller: row.caller as string, method: row.method as string, path: row.path as string,
+      pathTruncated: row.path_truncated as boolean, status: row.status as number, endAt: row.end_at as string, durationMilliseconds: row.duration_ms as number,
+      upstreamMilliseconds: row.upstream_ms as number | null, upstreamStatus: row.upstream_status as string | null, slot: row.slot as string | null, bytesSent: row.bytes_sent as number,
+    }));
+    const overlay = overlayOf(null, spans);
+    const failed = overlay.spans.find((span) => span.status === 504)!;
+    expect(failed).toMatchObject({ durationMilliseconds: 0, upstreamMilliseconds: 5, nginxMilliseconds: -5, serverError: true });
+    expect(overlay.lanes.map((lane) => lane.service)).toEqual(["front", "backend", "llm-wrapper", "ci-agent"]);
+    expect(JSON.stringify(overlay)).not.toContain("NaN");
+  });
+});
+
 describe("경로의 표시 — displaySpanPath", () => {
   it(`${SPAN_PATH_DISPLAY_LENGTH}자(코드 포인트)까지 그대로`, () => {
     const path = `/${"가".repeat(SPAN_PATH_DISPLAY_LENGTH - 1)}`;
@@ -294,7 +311,8 @@ describe("수신 상태의 알림 — spanReceiptNotes(조용히 빠진 것을 �
   it("모두 따라잡았고 버린 것 · 틈 · 지연이 없으면 알림 없음", () => {
     const notes = spanReceiptNotes(requestSpans({ ok: true, value: receipts({ server: "a", readProgressMilliseconds: REFERENCE + 30_000 }) }));
     expect(notes).toEqual({
-      truncated: false, receiptFailure: null, behindServers: [], delayedServers: [], gapServers: [], requestsDropped: 0, requestsRejected: 0, mayBeIncomplete: false,
+      truncated: false, receiptFailure: null, behindServers: [], delayedServers: [], missingServers: [], lostItems: [], requestsDropped: 0, requestsRejected: 0,
+      mayBeIncomplete: false,
     });
   });
 
@@ -309,28 +327,56 @@ describe("수신 상태의 알림 — spanReceiptNotes(조용히 빠진 것을 �
     expect(notes.mayBeIncomplete).toBe(true);
   });
 
-  it("수신 지연 · 틈(sequence_gaps) · 읽지 못한 범위(missing) · 버린 줄의 합(requests_dropped · requests_rejected)", () => {
+  it("읽지 못한 범위(missing — 기간에 묶임) · 버린 줄의 합(requests_dropped · requests_rejected)은 머리의 까닭", () => {
     const caughtUp = REFERENCE + 60_000;
     const notes = spanReceiptNotes(requestSpans({ ok: true, value: receipts(
-      { server: "a", readProgressMilliseconds: caughtUp, receiveDelayed: true },
-      { server: "b", readProgressMilliseconds: caughtUp, sequenceGaps: 2, requestsDropped: 7 },
+      { server: "b", readProgressMilliseconds: caughtUp, requestsDropped: 7 },
       { server: "c", readProgressMilliseconds: caughtUp, missing: ["backend-nginx:rotated"], requestsRejected: 3 },
       { server: "d", readProgressMilliseconds: caughtUp, requestsDropped: 1, requestsRejected: 1 },
     ) }));
     expect(notes).toMatchObject({
-      behindServers: [], delayedServers: ["a"], gapServers: ["b", "c"], requestsDropped: 8, requestsRejected: 4, mayBeIncomplete: true,
+      behindServers: [], delayedServers: [], missingServers: ["c"], lostItems: [], requestsDropped: 8, requestsRejected: 4, mayBeIncomplete: true,
     });
   });
 
+  it("틈(sequence_gaps — 기간과 무관한 누적)은 머리의 까닭이 아니다 — lostItems 에 서버와 수로만(T7 리뷰 1)", () => {
+    const caughtUp = REFERENCE + 60_000;
+    const notes = spanReceiptNotes(requestSpans({ ok: true, value: receipts(
+      { server: "a", readProgressMilliseconds: caughtUp, sequenceGaps: 2 },
+      { server: "b", readProgressMilliseconds: caughtUp },
+      { server: "c", readProgressMilliseconds: caughtUp, sequenceGaps: 1 },
+    ) }));
+    expect(notes).toMatchObject({
+      behindServers: [], delayedServers: [], missingServers: [], lostItems: [{ server: "a", sequenceGaps: 2 }, { server: "c", sequenceGaps: 1 }], mayBeIncomplete: false,
+    });
+  });
+
+  it("틈이 있고 진도도 못 미치면 — 머리는 진도 때문에 뜨고, 틈은 여전히 lostItems 에만", () => {
+    const notes = spanReceiptNotes(requestSpans({ ok: true, value: receipts({ server: "a", readProgressMilliseconds: REFERENCE, sequenceGaps: 3 }) }));
+    expect(notes).toMatchObject({ behindServers: ["a"], missingServers: [], lostItems: [{ server: "a", sequenceGaps: 3 }], mayBeIncomplete: true });
+  });
+
+  it("수신 지연은 진도가 못 미친 서버에만 센다(T7 리뷰 2) — 진도가 기준 + 30초를 지났으면 지연이어도 알림 없음, 둘 다면 든다", () => {
+    const notes = spanReceiptNotes(requestSpans({ ok: true, value: receipts(
+      { server: "a", readProgressMilliseconds: REFERENCE + 30_000, receiveDelayed: true },
+      { server: "b", readProgressMilliseconds: REFERENCE + 29_999, receiveDelayed: true },
+      { server: "c", readProgressMilliseconds: null, receiveDelayed: true },
+      { server: "d", readProgressMilliseconds: REFERENCE, receiveDelayed: false },
+    ) }));
+    expect(notes).toMatchObject({ behindServers: ["b", "c", "d"], delayedServers: ["b", "c"], mayBeIncomplete: true });
+    const onlyDelayed = spanReceiptNotes(requestSpans({ ok: true, value: receipts({ server: "a", readProgressMilliseconds: REFERENCE + 60_000, receiveDelayed: true }) }));
+    expect(onlyDelayed).toMatchObject({ behindServers: [], delayedServers: [], mayBeIncomplete: false });
+  });
+
   it.each([
-    ["버린 줄만", { requestsDropped: 1 }],
-    ["경로로 버린 줄만", { requestsRejected: 1 }],
-    ["지연만", { receiveDelayed: true }],
-    ["틈만", { sequenceGaps: 1 }],
-    ["읽지 못한 범위만", { missing: ["x:unreadable"] }],
-  ])("하나만 있어도 mayBeIncomplete — %s", (_label, change) => {
-    const notes = spanReceiptNotes(requestSpans({ ok: true, value: receipts({ server: "a", readProgressMilliseconds: REFERENCE + 60_000, ...change }) }));
-    expect(notes.mayBeIncomplete).toBe(true);
+    ["버린 줄만", { requestsDropped: 1 }, true],
+    ["경로로 버린 줄만", { requestsRejected: 1 }, true],
+    ["읽지 못한 범위만", { missing: ["x:unreadable"] }, true],
+    ["지연만(진도는 지남)", { receiveDelayed: true }, false],
+    ["틈만", { sequenceGaps: 1 }, false],
+  ] as const)("하나만 있을 때 mayBeIncomplete — %s → %s", (_label, change, expected) => {
+    const notes = spanReceiptNotes(requestSpans({ ok: true, value: receipts({ server: "a", readProgressMilliseconds: REFERENCE + 60_000, ...change } as Parameters<typeof fakeServerReceipt>[0]) }));
+    expect(notes.mayBeIncomplete).toBe(expected);
   });
 
   it("수신 상태를 읽지 못했으면 그 실패 — '다 들어왔다'로 두지 않는다", () => {

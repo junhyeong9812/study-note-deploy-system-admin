@@ -42,6 +42,7 @@ import {
 } from "@/shared/lib/upstream-test-fakes";
 
 const T = TRACE_START_MILLISECONDS;
+const DAY = 24 * 60 * 60 * 1000;
 
 function scenarioLogLines(): FakeLogLine[] {
   return OVERLAY_LOG_SCENARIO.map(([offset, service, level, message]) =>
@@ -145,7 +146,9 @@ describe("입력 — 꼴이 틀리면 관측 서버를 한 번도 부르지 않�
 describe("부르는 차례와 관례", () => {
   it("로그 → 구간 → 수신 상태, 셋 다 GET · 본문 없음 · no-store · 비밀값 머리글은 X-Observe-Secret 하나 · 구간은 넣은 요청 ID 로", async () => {
     const view = await loadRequestTrace({ request_id: TRACE_REQUEST_ID });
-    expect(pathsCalled()).toEqual(["/logs", "/traffic/requests", "/traffic/map"]);
+    // 로그와 구간은 나란히(어느 쪽이 먼저 시작하든) · 수신 상태는 둘이 끝난 뒤
+    expect(pathsCalled().slice(0, 2).sort()).toEqual(["/logs", "/traffic/requests"]);
+    expect(pathsCalled().slice(2)).toEqual(["/traffic/map"]);
     for (const [, init] of upstreamFetch.mock.calls) {
       expectReadOnlyRequest(init);
       expect(init?.cache).toBe("no-store");
@@ -153,8 +156,8 @@ describe("부르는 차례와 관례", () => {
       for (const name of SECRET_HEADER_NAMES) expect(headersOf(init).get(name)).toBe(name === "x-observe-secret" ? FAKE_OBSERVE_SECRET : null);
     }
     expect(traffic.calls[0].parameters).toEqual({ request_id: TRACE_REQUEST_ID });
-    // 수신 상태의 창: 로그와 구간을 합친 시각에서(가장 이른 = front 구간의 시작 T, 가장 늦은 = front 구간의 끝 T + 3700)
-    expect(traffic.calls[1].parameters).toEqual({ from: new Date(T).toISOString(), to: new Date(T + 3700 + 5 * 60_000).toISOString() });
+    // 수신 상태의 창: 가장 이른 시각(front 구간의 시작 T)부터 지금까지 — 단 24시간(T 는 지금보다 24시간 넘게 앞이라 T + 24시간)
+    expect(traffic.calls[1].parameters).toEqual({ from: new Date(T).toISOString(), to: new Date(T + DAY).toISOString() });
     expect(okValue(view.trace!).timeline?.lineCount).toBe(7);
     const spans = okValue(view.spans!);
     expect(spans.spans).toHaveLength(3);
@@ -168,6 +171,48 @@ describe("부르는 차례와 관례", () => {
     expectFailure(view.trace!, "not_configured");
     expectFailure(view.spans!, "not_configured");
     expect(upstreamFetch).not.toHaveBeenCalled();
+  });
+});
+
+describe("로그와 구간의 조회는 나란히(T7 리뷰 6) — 관측 서버가 느리면 5초 + 5초가 아니라 5초", () => {
+  function deferred() {
+    let resolve!: (response: Response) => void;
+    const promise = new Promise<Response>((done) => { resolve = done; });
+    return { promise, resolve };
+  }
+
+  it("구간 조회는 로그 조회의 끝을 기다리지 않고 시작한다 · 수신 상태는 둘 다 끝난 뒤에만", async () => {
+    const logsAnswer = deferred();
+    const realLogs = logsHandler;
+    logsHandler = (url, init) => logsAnswer.promise.then(() => realLogs(url, init));
+    const pending = loadRequestTrace({ request_id: TRACE_REQUEST_ID });
+    try {
+      await vi.waitFor(() => expect(pathsCalled()).toContain("/traffic/requests"), { timeout: 1000, interval: 5 });
+      expect(pathsCalled()).toContain("/logs");
+      // 구간은 이미 답했지만 로그가 아직이면 수신 상태를 부르지 않는다(창이 로그의 시각에 기댄다)
+      await new Promise((done) => setTimeout(done, 20));
+      expect(pathsCalled()).not.toContain("/traffic/map");
+    } finally {
+      logsAnswer.resolve(new Response(null));
+    }
+    const view = await pending;
+    expect(pathsCalled().at(-1)).toBe("/traffic/map");
+    expect(okValue(view.trace!).timeline?.lineCount).toBe(7);
+    expect(okValue(view.spans!).spans).toHaveLength(3);
+  });
+
+  it("로그 조회가 시작되기 전에 구간이 먼저 닿아도 · 로그가 먼저 끝나도 결과는 같다(구간이 늦게 답함)", async () => {
+    const spansAnswer = deferred();
+    const realTraffic = trafficHandler;
+    trafficHandler = (url, init) => (url.pathname === "/traffic/requests" ? spansAnswer.promise.then(() => realTraffic(url, init)) : realTraffic(url, init));
+    const pending = loadRequestTrace({ request_id: TRACE_REQUEST_ID });
+    await vi.waitFor(() => expect(pathsCalled()).toContain("/traffic/requests"), { timeout: 1000, interval: 5 });
+    await vi.waitFor(() => expect(pathsCalled()).toContain("/logs"), { timeout: 1000, interval: 5 });
+    expect(pathsCalled()).not.toContain("/traffic/map");
+    spansAnswer.resolve(new Response(null));
+    const view = await pending;
+    expect(pathsCalled().at(-1)).toBe("/traffic/map");
+    expect(okValue(view.spans!).spans).toHaveLength(3);
   });
 });
 
@@ -193,7 +238,7 @@ describe("칸마다 따로 실패한다", () => {
     const view = await loadRequestTrace({ request_id: TRACE_REQUEST_ID });
     expectFailure(view.trace!, "server_timeout", 504);
     expect(okValue(view.spans!).spans.map((span) => span.service).sort()).toEqual(["backend", "front", "llm-wrapper"]);
-    expect(traffic.calls[1].parameters).toEqual({ from: new Date(T).toISOString(), to: new Date(T + 3700 + 5 * 60_000).toISOString() });
+    expect(traffic.calls[1].parameters).toEqual({ from: new Date(T).toISOString(), to: new Date(T + DAY).toISOString() });
   });
 
   it("수신 상태 조회가 실패해도 구간은 그대로 — receipt 만 그 실패", async () => {
@@ -217,6 +262,16 @@ describe("칸마다 따로 실패한다", () => {
     const spans = okValue((await loadRequestTrace({ request_id: TRACE_REQUEST_ID })).spans!);
     expect(spans.spans).toEqual([]);
     expect(spans.truncated).toBe(false);
+  });
+});
+
+describe("시각이 하나도 없으면(T7 리뷰 5)", () => {
+  it("로그도 구간도 없는 요청 ID — 수신 상태를 부르지 않는다(관측 서버는 둘만)", async () => {
+    logsHandler = createFakeObserveLogs([]).handler;
+    useTraffic([]);
+    const view = await loadRequestTrace({ request_id: "req-typo-000" });
+    expect(pathsCalled().sort()).toEqual(["/logs", "/traffic/requests"]);
+    expect(okValue(okValue(view.spans!).receipt)).toEqual([]);
   });
 });
 
