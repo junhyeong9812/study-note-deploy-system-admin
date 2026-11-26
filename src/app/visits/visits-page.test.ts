@@ -240,6 +240,18 @@ describe("들어온 곳 — 직접 · 자기 사이트 빼기", () => {
     expect(textOf(html)).not.toContain("목록에서 뺌");
   });
 
+  it("§17-2 SITE_ORIGIN 의 끝에 점이 붙으면(포트가 붙어도) 설정 없음과 같다 — 링크 없음 · 빼지 않음 · 그 글", async () => {
+    for (const value of [`${FAKE_SITE_ORIGIN}.`, `${FAKE_SITE_ORIGIN}.:8443`]) {
+      vi.stubEnv("SITE_ORIGIN", value);
+      answer(observeSummary({ top_referrers: { items: [{ host: FAKE_SITE_HOST, views: 300 }, { host: `${FAKE_SITE_HOST}.`, views: 2 }], truncated: false } }));
+      const html = await render();
+      expect(table(html, PATHS).html).not.toMatch(/<a\b/);
+      expect(table(html, REFERRERS).body.map((row) => row[0])).toEqual([FAKE_SITE_HOST, `${FAKE_SITE_HOST}.`]);
+      expect(textOf(html)).toContain("사이트 주소 설정(SITE_ORIGIN)이 없어 사이트 안 이동을 빼지 않았습니다");
+      expect(textOf(html)).not.toContain("받은 상위 10개에 없음");
+    }
+  });
+
   it("들어온 곳은 링크가 아니다(주소 꼴 · 호스트 모두 글자만)", async () => {
     answer(observeSummary({ top_referrers: { items: [{ host: "203.0.113.7", views: 2 }, { host: "www.google.com", views: 1 }], truncated: false } }));
     const referrers = table(await render(), REFERRERS);
@@ -352,6 +364,17 @@ describe("누구나 올릴 수 있는 글자 — 화면은 글자로만", () => 
     expect(html).not.toMatch(/[‮​]/);
     expect(table(html, PATHS).body[0][0]).toBe("/wiki/a�exe.txt");
     expect(table(html, REFERRERS).body[0][0]).toBe("evil�.example.net");
+  });
+
+  it("§17-1 채움 문자 · 점자 빈칸 · 변형 선택자가 든 닮은꼴 경로 — U+FFFD 로 보이고 링크 없음, 정상 경로는 링크", async () => {
+    answer(observeSummary({ top_paths: { items: [
+      { path: "/wiki/real\u3164", views: 3 }, { path: "/wiki/real\u2800", views: 2 }, { path: "/wiki/real\uFE0F", views: 2 }, { path: "/wiki/real", views: 1 },
+    ], truncated: false } }));
+    const html = await render();
+    const paths = table(html, PATHS);
+    expect(paths.body.map((row) => row[0])).toEqual(["/wiki/real\uFFFD", "/wiki/real\uFFFD", "/wiki/real\uFFFD", "/wiki/real"]);
+    expect([...paths.html.matchAll(/href="([^"]*)"/g)].map((match) => decodeEntities(match[1]))).toEqual([`${FAKE_SITE_ORIGIN}/wiki/real`]);
+    expect(html).not.toMatch(/[\u3164\u2800\uFE0F]/);
   });
 
   it("주소 꼴 · 메일 주소 꼴은 글자로만 — mailto · 그 주소로 가는 링크 없음", async () => {

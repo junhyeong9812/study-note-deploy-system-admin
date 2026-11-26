@@ -65,6 +65,47 @@ describe("displayVisitPath — 풀고 · 보이지 않는 글자를 바꾸고 ·
     expect(displayVisitPath(`/wiki/a${hidden}b${hidden}`)).toBe("/wiki/a�b�");
   });
 
+  it.each([
+    ["한글 채움 U+3164", "\u3164"], ["반각 한글 채움 U+FFA0", "\uFFA0"], ["초성 채움 U+115F", "\u115F"], ["중성 채움 U+1160", "\u1160"],
+    ["점자 빈칸 U+2800", "\u2800"], ["변형 선택자 U+FE00", "\uFE00"], ["변형 선택자 U+FE0F", "\uFE0F"],
+    ["변형 선택자 U+E0100", "\u{E0100}"], ["변형 선택자 U+E01EF", "\u{E01EF}"],
+  ])("§17-1 %s 도 하나마다 U+FFFD(경로 · 들어온 곳)", (_label, hidden) => {
+    expect(displayVisitPath(`/wiki/real${hidden}${hidden}`)).toBe("/wiki/real\uFFFD\uFFFD");
+    expect(displayReferrerHost(`real${hidden}.example.net`)).toBe("real\uFFFD.example.net");
+  });
+
+  it("§17-1 목록의 바로 바깥은 그대로(U+FE10 · U+2801 · U+E01F0)", () => {
+    for (const neighbour of ["\uFE10", "\u2801", "\u{E01F0}"]) expect(displayVisitPath(`/a${neighbour}`)).toBe(`/a${neighbour}`);
+  });
+
+  it.each([
+    [1, 1], [2, 2], [3, 3], [4, 4], [5, 4], [6, 4], [30, 4],
+  ])("§17-1 결합 문자(Mn)는 연달아 4개까지 — %i개 → %i개만 남는다", (count, kept) => {
+    const mark = "\u0301";   // 결합 양음 부호
+    expect(displayVisitPath(`/wiki/e${mark.repeat(count)}x`)).toBe(`/wiki/e${mark.repeat(kept)}x`);
+  });
+
+  it("§17-1 결합 문자의 줄은 따로 센다 — 사이에 다른 글자가 있으면 다시 0부터", () => {
+    const mark = "\u0301";
+    expect(displayVisitPath(`/a${mark.repeat(6)}b${mark.repeat(6)}c`)).toBe(`/a${mark.repeat(4)}b${mark.repeat(4)}c`);
+    expect(displayReferrerHost(`a${mark.repeat(9)}.example.net`)).toBe(`a${mark.repeat(4)}.example.net`);
+  });
+
+  it.each([
+    ["한글 완성형", "/wiki/한글-완성형"],
+    ["조합형 자모(초성 · 중성 · 종성 — 채움이 아닌 U+1100 대)", "/wiki/\u1100\u1161\u11A8\u1112\u1175"],
+    ["악센트 하나 · 둘", "/wiki/cafe\u0301-a\u0300\u0301"],
+    ["일본어 탁점(결합 U+3099 · 반탁점 U+309A)", "/wiki/\u304B\u3099\u306F\u309A"],
+    ["일본어 완성 탁음", "/wiki/がぱ"],
+    ["이모지(변형 선택자 없음)", "/wiki/😀-👍"],
+  ])("§17-1 정상 글자는 그대로 — %s", (_label, path) => {
+    expect(displayVisitPath(path)).toBe(path);
+  });
+
+  it("§17-1 이모지 + 변형 선택자 — ❤️ 의 U+FE0F 는 U+FFFD 가 된다(받아들임)", () => {
+    expect(displayVisitPath("/wiki/\u2764\uFE0F")).toBe("/wiki/\u2764\uFFFD");
+  });
+
   it("푼 뒤에 본다 — 빈칸과 함께 와도 빈칸은 그대로", () => {
     expect(displayVisitPath("/wiki/%20‮txt.exe")).toBe("/wiki/ �txt.exe");
   });
@@ -100,6 +141,24 @@ describe("displayVisitPath — 풀고 · 보이지 않는 글자를 바꾸고 ·
     expect(text).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
   });
 
+  it("§17-3 보충 평면 글자 70개(코드 포인트 70 · UTF-16 140) — 잘리지 않고 … 없음", () => {
+    const path = "😀".repeat(70);
+    expect(path.length).toBe(140);
+    expect(displayVisitPath(path)).toBe(path);
+    expect(displayReferrerHost(path)).toBe(path);
+  });
+
+  it("§17-3 보충 평면 글자 120개(UTF-16 240)는 그대로 · 121개는 120개 + …", () => {
+    expect(displayVisitPath("😀".repeat(120))).toBe("😀".repeat(120));
+    expect(displayVisitPath("😀".repeat(121))).toBe(`${"😀".repeat(120)}…`);
+  });
+
+  it("§17-3 121 코드 포인트의 끝이 서로게이트 쌍이어도 쪼개지 않는다(120번째가 쌍)", () => {
+    const text = displayVisitPath(`${"a".repeat(119)}😀😀`);
+    expect(text).toBe(`${"a".repeat(119)}😀…`);
+    expect(text).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/);
+  });
+
   it("512 자의 경로(관측 서버의 상한)도 던지지 않는다", () => {
     expect(() => displayVisitPath(`/${"%".repeat(511)}`)).not.toThrow();
   });
@@ -128,6 +187,7 @@ describe("parseSiteOrigin · siteHostOf", () => {
   it.each([
     ["https://www.example.com", "https://www.example.com"],
     ["http://localhost:3000", "http://localhost:3000"],
+    ["https://www.example.com:8443", "https://www.example.com:8443"],
     ["  https://www.example.com  ", "https://www.example.com"],
   ])("%j → %j", (value, expected) => {
     expect(parseSiteOrigin(value)).toBe(expected);
@@ -136,7 +196,8 @@ describe("parseSiteOrigin · siteHostOf", () => {
   it.each([
     "", "   ", "www.example.com", "https://www.example.com/", "https://www.example.com/wiki", "https://WWW.example.com",
     "ftp://www.example.com", "javascript:alert(1)", "https://user@www.example.com", "https://www.example.com?x=1",
-  ])("출처 꼴이 아니면 null — %j", (value) => {
+    "https://www.example.com.", "https://www.example.com.:8443", "http://localhost.:3000", "https://www.example.com..",
+  ])("출처 꼴이 아니면 null(§17-2 — 끝에 점이 붙은 호스트 포함) — %j", (value) => {
     expect(parseSiteOrigin(value)).toBeNull();
   });
 
@@ -162,8 +223,16 @@ describe("visitPathHref — 사이트의 그 글로만", () => {
     "//evil.example.net/x", "///evil.example.net", "javascript:alert(1)", "JAVASCRIPT:alert(1)", "data:text/html,x", "https://evil.example.net/",
     "", "wiki/a", ".evil.example.net/x", "@evil.example.net", " /wiki/a", "/\\evil.example.net", "/wiki\\..\\x",
     "/wiki/a\u0000", "/wiki/‮a", "/wiki/a\n", "/wiki/​a", "\t/wiki/a",
+    "/wiki/real\u3164", "/wiki/real\uFFA0", "/wiki/\u115Freal", "/wiki/\u1160real", "/wiki/real\u2800", "/wiki/real\uFE0F", "/wiki/real\u{E0100}",
+    `/wiki/e${"\u0301".repeat(5)}`,
   ])("링크로 만들지 않는다 — %j", (raw) => {
     expect(visitPathHref(SITE, raw)).toBeNull();
+  });
+
+  it("§17-1 정상 결합(4개까지 · 탁점 · 자모)은 링크를 건다", () => {
+    for (const raw of [`/wiki/e${"\u0301".repeat(4)}`, "/wiki/\u304B\u3099", "/wiki/\u1100\u1161\u11A8"]) {
+      expect(visitPathHref(SITE, raw)).toBe(`${SITE}${raw}`);
+    }
   });
 
   it("만든 주소의 출처는 언제나 사이트 출처다", () => {

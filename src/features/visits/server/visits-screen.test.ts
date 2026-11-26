@@ -169,7 +169,7 @@ describe("세션이 있으면", () => {
   });
 
   it("SITE_ORIGIN 이 없거나 틀리면 링크 없음 · 빼지 않음(not_configured) — 요약은 그대로 보인다", async () => {
-    for (const value of ["", "www.example.com", "https://www.example.com/wiki"]) {
+    for (const value of ["", "www.example.com", "https://www.example.com/wiki", "https://www.example.com.", "https://www.example.com.:8443"]) {
       vi.stubEnv("SITE_ORIGIN", value);
       const summary = okValue((await loadVisitsScreen({})).summary);
       expect(summary.topPaths.items.every((item) => item.href === null)).toBe(true);
