@@ -8,7 +8,7 @@
  * 확인 화면을 낼 수 없으면 그 까닭만(폼 없음). 문제의 조치가 아니면 이 조각 전과 같은 마크업이다. */
 import type { BetweenCommits, RedeployDirection, RedeployPreview } from "@/features/deploy-redeploy/lib/redeploy-preview";
 import { REDEPLOY_ACCEPT_ACTION, REDEPLOY_INCIDENT_TEXT } from "@/features/deploy-redeploy/lib/redeploy-preview-query";
-import type { RedeployAcceptSubmission, RedeployPreviewView } from "@/features/deploy-redeploy/server/redeploy-preview";
+import type { RedeployAcceptSubmission, RedeployIncidentContext, RedeployPreviewView } from "@/features/deploy-redeploy/server/redeploy-preview";
 import type { DeployVersion } from "@/features/deploy-versions/lib/deploy-versions-view";
 import { deployVersionsHref } from "@/features/deploy-versions/ui/DeployVersionsScreen";
 import { formatKoreanTime, shortPrefix } from "@/features/deploys/lib/deploy-format";
@@ -115,13 +115,14 @@ function Direction({ direction }: { direction: RedeployDirection }) {
 
 const PASSWORD_FIELD_ID = "redeploy-password";
 
-function AcceptForm({ service, commitSha, confirmation, incidentId }: { service: string; commitSha: string; confirmation: string; incidentId: string | null }) {
+function AcceptForm({ service, commitSha, confirmation, incident }: { service: string; commitSha: string; confirmation: string; incident: RedeployIncidentContext | null }) {
   return (
     <form className={formStyles.form} method="post" action={REDEPLOY_ACCEPT_ACTION}>
       <input type="hidden" name="service" value={service} />
       <input type="hidden" name="commit" value={commitSha} />
       <input type="hidden" name="confirmation" value={confirmation} />
-      {incidentId !== null && <input type="hidden" name="incident" value={incidentId} />}
+      {incident !== null && <input type="hidden" name="incident" value={incident.incidentId} />}
+      {incident !== null && <input type="hidden" name="action" value={incident.action} />}
       <div className={formStyles.field}>
         <label className={formStyles.label} htmlFor={PASSWORD_FIELD_ID}>비밀번호</label>
         <input className={formStyles.input} id={PASSWORD_FIELD_ID} type="password" name="password" autoComplete="current-password" required />
@@ -132,8 +133,8 @@ function AcceptForm({ service, commitSha, confirmation, incidentId }: { service:
 }
 
 /** commitSha = 확인 값에 서명한 커밋(주소의 commit 또는 문제의 조치에서 서버가 정한 판 — 소문자 40자). */
-function Submission({ preview, submission, commitSha, incidentId }: {
-  preview: Extract<RedeployPreview, { kind: "comparison" }>; submission: RedeployAcceptSubmission; commitSha: string; incidentId: string | null;
+function Submission({ preview, submission, commitSha, incident }: {
+  preview: Extract<RedeployPreview, { kind: "comparison" }>; submission: RedeployAcceptSubmission; commitSha: string; incident: RedeployIncidentContext | null;
 }) {
   if (submission.kind === "incident_account_too_long") {
     return (
@@ -156,12 +157,12 @@ function Submission({ preview, submission, commitSha, incidentId }: {
         <p className={parts.count}>그래도 올리려면 두 커밋을 따로 확인한 뒤 비밀번호를 넣어 접수하세요.</p>
       )}
       <p className={parts.count}>접수하면 배포 서버가 이 커밋을 다시 빌드해 올립니다. 비밀번호를 다시 확인합니다(이 확인 화면은 5분 동안만 쓸 수 있습니다).</p>
-      <AcceptForm service={preview.service} commitSha={commitSha} confirmation={submission.confirmation} incidentId={incidentId} />
+      <AcceptForm service={preview.service} commitSha={commitSha} confirmation={submission.confirmation} incident={incident} />
     </>
   );
 }
 
-function Preview({ preview, submission, commitSha, incidentId }: { preview: RedeployPreview; submission: RedeployAcceptSubmission | null; commitSha: string; incidentId: string | null }) {
+function Preview({ preview, submission, commitSha, incident }: { preview: RedeployPreview; submission: RedeployAcceptSubmission | null; commitSha: string; incident: RedeployIncidentContext | null }) {
   if (preview.kind === "not_deployable") {
     return (
       <div className={parts.problem} role="alert">
@@ -186,7 +187,7 @@ function Preview({ preview, submission, commitSha, incidentId }: { preview: Rede
       <VersionLine label="지금 버전" version={preview.current} />
       <VersionLine label="고른 버전" version={preview.chosen} />
       <Direction direction={preview.direction} />
-      {submission !== null && <Submission preview={preview} submission={submission} commitSha={commitSha} incidentId={incidentId} />}
+      {submission !== null && <Submission preview={preview} submission={submission} commitSha={commitSha} incident={incident} />}
     </>
   );
 }
@@ -234,7 +235,7 @@ export function RedeployPreviewScreen({ view }: { view: RedeployPreviewView }) {
       )}
 
       {showPreview && preview.ok && view.query !== null && (
-        <Preview preview={preview.value} submission={submission} commitSha={view.query.commitSha} incidentId={incident?.incidentId ?? null} />
+        <Preview preview={preview.value} submission={submission} commitSha={view.query.commitSha} incident={incident ?? null} />
       )}
     </main>
   );

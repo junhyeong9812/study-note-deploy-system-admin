@@ -10,17 +10,20 @@
  *   들면(isUncovered) { kind: "unchecked" }(열려 있는지 확인하지 못함), 아니면 { kind: "closed" }(그 범위를 확인했고 지금 열려 있지 않음) — 2단계 호출 없음.
  *   목록의 범위 줄과 이 판정은 같은 값(list.uncovered)을 읽는다.
  * 호출 수: 목록 INCIDENT_LIST_CALLS + 근거 INCIDENT_EVIDENCE_MAXIMUM_CALLS 이하.
- * 조치(명세 ⑫ §24): 근거 묶음과 함께 조치 구역(incidentActionsView — 목록이 읽은 배포 이력에서 판 · 이 문제에서 접수한 배포, 새 호출 없음)을 낸다.
+ * 조치(명세 ⑫ §24 · §25): 근거 묶음과 함께 조치 구역(incidentActionsView)을 낸다 — 조치할 서비스가 하나로 정해지면 그 서비스의 이력
+ *   (master `/deploys?service=<서비스>&limit=200` — ⑥ 의 확인 화면과 같은 출처 · 같은 상한)을 한 번 더 읽어 판과 이 문제에서 접수한 배포를 정한다(정해지지 않으면 부르지 않는다).
  *   "Claude 가 권함"은 options.latestAnalysisAction(분석의 저장소 — 없으면 권함 없음)이 준 같은 발생의 가장 최근 끝난 분석의 권하는 조치.
  * lookupIncident — 같은 1 · 2단계로 고른 문제 하나만(분석 화면 · 보내기가 쓴다): 열려 있으면 그 문제와 (원하면) **맞추기 전의** 근거 묶음(분석은 가린 뒤에 맞춘다),
  *   아니면 닫힘 · 확인하지 못함(같은 판정). 근거를 원하지 않으면 목록의 네 호출뿐. */
 import type { FetchLike, TimeoutSignalFactory } from "@/features/auth/lib/types";
 import { createDeployGitClient, type DeployGitClient } from "@/features/deploy-detail/lib/deploy-git-client";
-import { createDeployHistoryClient } from "@/features/deploys/lib/deploy-history-client";
+import { createDeployHistoryClient, type DeploymentSummary } from "@/features/deploys/lib/deploy-history-client";
 import { INCIDENT_DEPLOY_LOOKUP_LIMIT, ERROR_LOG_COUNT_LIMIT, ERROR_LOG_WINDOW_MILLISECONDS, isUncovered, openIncidentsFrom } from "@/features/incidents/lib/incident-list";
 import type { IncidentList, IncidentSources, OpenIncident } from "@/features/incidents/lib/incident-list";
 import { buildIncidentEvidence, type IncidentEvidence, type IncidentEvidenceDependencies } from "@/features/incidents/lib/incident-evidence";
-import { incidentActionsView, type IncidentActionsView } from "@/features/incidents/lib/incident-actions";
+import { incidentActionService, incidentActionsView, type IncidentActionsView } from "@/features/incidents/lib/incident-actions";
+import { DEPLOY_VERSIONS_HISTORY_LIMIT } from "@/features/deploy-versions/lib/deploy-versions-view";
+import type { DeployService } from "@/features/deploys/lib/deploy-history-query";
 import type { AnalysisAction } from "@/features/incident-analysis/lib/analysis-answer";
 import { fitIncidentEvidence, incidentEvidenceText } from "@/features/incidents/lib/incident-evidence-text";
 import { createIncidentClient, type IncidentClient } from "@/features/log-trace/lib/incident-client";
@@ -147,6 +150,13 @@ function logFailures(options: IncidentsScreenOptions, sources: IncidentSources, 
   for (const [cell, value] of cells) if (value.state === "failed") options.logFailure(cell, value.failure);
 }
 
+/** 조치할 서비스의 배포 이력(⑥ 의 버전 목록 · 확인 화면과 같은 출처 · 같은 상한) — 설정이 없으면 호출 없이 not_configured. 거부하지 않는다. */
+function serviceDeployments(options: IncidentsScreenOptions, service: DeployService): Promise<UpstreamResult<DeploymentSummary[]>> {
+  if (!configured(options.deployMasterUrl, options.deploySecret)) return Promise.resolve(NOT_CONFIGURED);
+  return settled(() => createDeployHistoryClient({ baseUrl: options.deployMasterUrl, secret: options.deploySecret, fetch: options.fetch, timeoutSignal: options.timeoutSignal })
+    .listDeployments({ service, limit: DEPLOY_VERSIONS_HISTORY_LIMIT }));
+}
+
 /** 목록에 없는 문제 — 덮지 못한 범위에 들면 확인하지 못함, 아니면 닫힘. */
 function notListedKind(list: IncidentList, incidentId: string): "closed" | "unchecked" {
   return isUncovered(list.uncovered, incidentId) ? "unchecked" : "closed";
@@ -163,8 +173,10 @@ async function selectedIncident(options: IncidentsScreenOptions, incidentId: str
     buildIncidentEvidence(evidenceDependencies(options), { incident, sources, nowMilliseconds }),
     options.latestAnalysisAction === undefined ? Promise.resolve(null) : options.latestAnalysisAction(incident.id, incident.since).catch(() => null),
   ]);
+  const service = incidentActionService(built);
+  const serviceHistory = service.ok ? await serviceDeployments(options, service.service) : null;
   const evidence = fitIncidentEvidence(built);
-  return { kind: "evidence", evidence, text: incidentEvidenceText(evidence), actions: incidentActionsView(built, sources.deployments, recommendedAction) };
+  return { kind: "evidence", evidence, text: incidentEvidenceText(evidence), actions: incidentActionsView(built, serviceHistory, recommendedAction) };
 }
 
 export async function collectIncidentsScreen(options: IncidentsScreenOptions, incidentId: string | null): Promise<IncidentsScreenData> {

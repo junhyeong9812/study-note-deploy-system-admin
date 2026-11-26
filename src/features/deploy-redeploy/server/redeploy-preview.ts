@@ -57,8 +57,9 @@ export interface RedeployPreviewView {
   incident?: RedeployIncidentContext;
 }
 
-/** 접수 폼 — 폼을 둘 수 없으면 null. 문제의 조치면 확인 값이 그 ID 를 묶는다. */
-function submissionFor(query: RedeployPreviewQuery, preview: UpstreamResult<RedeployPreview>, config: ServerConfig, incidentId: string | null): RedeployAcceptSubmission | null {
+/** 접수 폼 — 폼을 둘 수 없으면 null. 문제의 조치면 확인 값이 그 ID 와 조치의 종류를 묶는다. */
+function submissionFor(query: RedeployPreviewQuery, preview: UpstreamResult<RedeployPreview>, config: ServerConfig, incident: RedeployIncidentContext | undefined): RedeployAcceptSubmission | null {
+  const incidentId = incident?.incidentId ?? null;
   if (!preview.ok || preview.value.kind !== "comparison" || preview.value.inProgress !== null) return null;
   if (requestedByFor(config.adminUser) === null) return { kind: "account_not_allowed" };
   if (incidentId !== null && incidentRequestedByFor(config.adminUser, incidentId) === null) return { kind: "incident_account_too_long" };
@@ -67,15 +68,24 @@ function submissionFor(query: RedeployPreviewQuery, preview: UpstreamResult<Rede
   const requestId = newRedeployRequestId();
   const confirmation = issueRedeployConfirmation(signingKey, {
     service: query.service, commitSha: query.commitSha, requestId, issuedAt: Date.now(), account: config.adminUser,
-    ...(incidentId === null ? {} : { incidentId }),
+    ...(incident === undefined ? {} : { incidentId: incident.incidentId, action: incident.action }),
   });
   return { kind: "form", confirmation, requestId };
 }
 
 type IncidentRequest = Extract<RedeployPreviewRequest, { kind: "incident" }>;
 
-/** 문제의 조치 — 그 순간의 문제 · 서비스 · 이력에서 판을 정한다. 판을 정하지 못하면 까닭의 글. 부르는 쪽이 master 설정을 확인했다. */
-async function incidentTarget(config: ServerConfig, request: IncidentRequest): Promise<{ commitSha: string } | { reason: string }> {
+/** 문제의 조치를 정하지 못한 까닭의 낱말 — 접수 직전에 다시 정할 때 로그 `redeploy:incident_changed reason=<낱말>` 에 쓴다(명세 ⑫ §25). */
+export type IncidentActionChangedReason = "target_changed" | "incident_closed" | "incident_unchecked" | "service_changed" | "history_unavailable";
+
+/** 문제의 조치의 판 — 정했으면 그 커밋, 아니면 까닭의 낱말과 화면의 글. */
+export type IncidentActionResolution = { ok: true; commitSha: string } | { ok: false; reason: IncidentActionChangedReason; text: string };
+
+/** 문제의 조치 — 그 순간의 문제 · 서비스 · 이력에서 판을 정한다(확인 화면과 접수 직전이 같은 판정을 쓴다). master 설정이 없으면 history_unavailable. */
+export async function resolveIncidentAction(config: ServerConfig, request: Omit<IncidentRequest, "kind">): Promise<IncidentActionResolution> {
+  if (!isHttpBaseUrl(config.deployMasterUrl) || config.deploySecret.length === 0) {
+    return { ok: false, reason: "history_unavailable", text: INCIDENT_ACTION_TEXT.targetReasons.history_unavailable };
+  }
   const fetchUpstream = (input: string, init: RequestInit) => fetch(input, init);
   const found = await lookupIncident({
     alertUrl: config.alertUrl, alertSecret: config.alertSecret, observeUrl: config.observeUrl, observeSecret: config.observeSecret,
@@ -85,16 +95,17 @@ async function incidentTarget(config: ServerConfig, request: IncidentRequest): P
       if (logLine !== null) void log("screen-deploy-redeploy", logLine, "warning");
     },
   }, request.incidentId, true);
-  if (found.kind === "closed") return { reason: REDEPLOY_INCIDENT_TEXT.closed };
-  if (found.kind === "unchecked") return { reason: REDEPLOY_INCIDENT_TEXT.unchecked };
-  if (found.evidence === null) return { reason: REDEPLOY_INCIDENT_TEXT.evidenceUnavailable };
+  if (found.kind === "closed") return { ok: false, reason: "incident_closed", text: REDEPLOY_INCIDENT_TEXT.closed };
+  if (found.kind === "unchecked") return { ok: false, reason: "incident_unchecked", text: REDEPLOY_INCIDENT_TEXT.unchecked };
+  if (found.evidence === null) return { ok: false, reason: "service_changed", text: REDEPLOY_INCIDENT_TEXT.evidenceUnavailable };
   const service = incidentActionService(found.evidence);
-  if (!service.ok) return { reason: INCIDENT_ACTION_TEXT.serviceReasons[service.reason] };
-  if (service.service !== request.service) return { reason: REDEPLOY_INCIDENT_TEXT.serviceMismatch };
+  if (!service.ok) return { ok: false, reason: "service_changed", text: INCIDENT_ACTION_TEXT.serviceReasons[service.reason] };
+  if (service.service !== request.service) return { ok: false, reason: "service_changed", text: REDEPLOY_INCIDENT_TEXT.serviceMismatch };
   const history = await createDeployHistoryClient({ baseUrl: config.deployMasterUrl, secret: config.deploySecret, fetch: fetchUpstream })
     .listDeployments({ service: request.service, limit: DEPLOY_VERSIONS_HISTORY_LIMIT });
   const target = incidentActionTargets(history, request.service)[request.action];
-  return target.ok ? { commitSha: target.commitSha } : { reason: INCIDENT_ACTION_TEXT.targetReasons[target.reason] };
+  if (target.ok) return { ok: true, commitSha: target.commitSha };
+  return { ok: false, reason: target.reason === "history_unavailable" ? "history_unavailable" : "target_changed", text: INCIDENT_ACTION_TEXT.targetReasons[target.reason] };
 }
 
 /** 입력이 틀렸을 때 돌아갈 버전 목록의 서비스 — service 를 먼저 보므로 field 가 service 가 아니면 service 는 허용 목록 안의 글자 하나다. */
@@ -119,10 +130,10 @@ async function buildRedeployPreviewView(searchParams: SearchParamsInput): Promis
     if (!masterConfigured) {
       return { query: null, service: request.service, preview: upstreamFailure("not_configured"), submission: null, incident: { ...context, reason: null } };
     }
-    const target = await incidentTarget(config, request);
-    if ("reason" in target) {
+    const target = await resolveIncidentAction(config, request);
+    if (!target.ok) {
       // 확인 화면을 내지 않는다 — preview 는 화면이 그리지 않는 자리표(까닭이 먼저)
-      return { query: null, service: request.service, preview: upstreamFailure("not_found"), submission: null, incident: { ...context, reason: target.reason } };
+      return { query: null, service: request.service, preview: upstreamFailure("not_found"), submission: null, incident: { ...context, reason: target.text } };
     }
     query = { service: request.service, commitSha: target.commitSha };
     incident = { ...context, reason: null };
@@ -142,7 +153,7 @@ async function buildRedeployPreviewView(searchParams: SearchParamsInput): Promis
     const logLine = upstreamFailureLogLine("deploy-redeploy", cell, result);
     if (logLine !== null) void log("screen-deploy-redeploy", logLine, "warning");
   }
-  const submission = submissionFor(query, preview, config, incident?.incidentId ?? null);
+  const submission = submissionFor(query, preview, config, incident);
   return incident === undefined ? { query, service: query.service, preview, submission } : { query, service: query.service, preview, submission, incident };
 }
 

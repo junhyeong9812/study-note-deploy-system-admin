@@ -11,7 +11,7 @@
  *   (이 차례), 줄인 것이 있으면 그 뒤에 evidence-reductions. facts 의 값 · 시각은 글과 같은 글자 그대로(KST 는 덧붙여도 된다). 커밋 · 요청 ID 는 전체 글자.
  * - 조치(명세 ⑫ §24): `<section aria-labelledby="incident-actions">` — 서비스가 하나로 정해지면 조치마다 ⑥ 의 확인 화면으로 가는 링크
  *   (`/deploys/redeploy?service=&incident=&action=` — 판은 글에만 보이고 주소에 싣지 않는다 · 판을 정할 수 없으면 링크 대신 까닭) · "Claude 가 권함"은 표시일 뿐 ·
- *   이 문제에서 접수한 배포(배포 이력의 그 배포로). 폼 · 단추는 두지 않는다(첫 걸음은 GET 링크).
+ *   이 문제에서 접수한 배포(그 서비스의 최근 200건에서 — 배포 이력의 그 배포로 · 서비스가 정해지지 않으면 이 줄이 없다). 폼 · 단추는 두지 않는다(첫 걸음은 GET 링크).
  * - 근거 묶음의 머리에 그 문제의 분석 화면(`/incidents/analysis?incident=<식별자>` — 저장된 분석 · 분석 요청)으로 가는 링크 "분석".
  * - 닫힘 · 확인하지 못함 · 입력 거절(UPSTREAM_FAILURE_MESSAGES.invalid_input)에는 `<a href="/incidents">문제 목록으로</a>`.
  * - 본문의 링크는 /incidents(· /incidents/analysis) · /logs · /deploys · /resources 로만(요청 추적 화면은 아직 없다). 폼 · 단추 · 입력 칸 · on* 속성 없음. */
@@ -268,8 +268,8 @@ function ActionsBlock({ incidentId, actions }: { incidentId: string; actions: In
           })}
         </ul>
       )}
-      <h3 className={styles.meta}>{INCIDENT_ACTION_TEXT.actionsTitle}</h3>
-      {!taken.ok ? <p className={styles.muted}>{INCIDENT_ACTION_TEXT.actionsUnavailable}</p>
+      {taken !== null && <h3 className={styles.meta}>{INCIDENT_ACTION_TEXT.actionsTitle}</h3>}
+      {taken === null ? null : !taken.ok ? <p className={styles.muted}>{INCIDENT_ACTION_TEXT.actionsUnavailable}</p>
         : taken.deployments.length === 0 ? <p className={styles.muted}>{INCIDENT_ACTION_TEXT.noActions}</p> : (
           <ul className={styles.entries}>
             {taken.deployments.map((deployment) => {

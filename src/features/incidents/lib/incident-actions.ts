@@ -25,7 +25,7 @@ export const INCIDENT_ACTION_TEXT = {
   title: "조치",
   recommended: "Claude 가 권함",
   actionsTitle: "이 문제에서 접수한 조치",
-  noActions: "이 문제에서 접수한 조치가 없습니다",
+  noActions: "최근 200건 안에 이 문제에서 접수한 조치가 없습니다",
   actionsUnavailable: "배포 이력을 읽지 못해 이 문제에서 접수한 조치를 보이지 못합니다",
   serviceReasons: {
     unmapped: "감시 대상이 대응 표에 없어 서비스를 정할 수 없습니다",
@@ -103,17 +103,18 @@ export interface IncidentActionsView {
   targets: Record<IncidentActionKind, IncidentActionTarget> | null;
   /** "Claude 가 권함" 의 조치(표시일 뿐) */
   recommended: IncidentActionKind | null;
-  /** 이 문제에서 접수한 배포 — 배포 이력을 읽지 못했으면 ok: false */
-  taken: { ok: true; deployments: DeploymentSummary[] } | { ok: false };
+  /** 이 문제에서 접수한 배포(그 서비스의 이력에서) — 이력을 읽지 못했으면 ok: false · 서비스가 정해지지 않아 읽지 않았으면 null */
+  taken: { ok: true; deployments: DeploymentSummary[] } | { ok: false } | null;
 }
 
-/** 근거 · 목록이 이미 읽은 배포 이력(모든 서비스 · 최신순) · 같은 발생의 가장 최근 분석의 권하는 조치 → 조치 구역. 새 호출 없음. */
-export function incidentActionsView(evidence: IncidentEvidence, history: UpstreamResult<readonly DeploymentSummary[]>, recommendedAction: AnalysisAction | null): IncidentActionsView {
+/** 근거 · 그 서비스의 배포 이력(⑥ 의 확인 화면과 같은 출처 — 서비스가 정해졌을 때만 읽은 것, 아니면 null) · 같은 발생의 가장 최근 분석의 권하는 조치 → 조치 구역. */
+export function incidentActionsView(evidence: IncidentEvidence, serviceHistory: UpstreamResult<readonly DeploymentSummary[]> | null, recommendedAction: AnalysisAction | null): IncidentActionsView {
   const service = incidentActionService(evidence);
+  if (!service.ok || serviceHistory === null) return { service, targets: null, recommended: recommendedIncidentAction(recommendedAction), taken: null };
   return {
     service,
-    targets: service.ok ? incidentActionTargets(history, service.service) : null,
+    targets: incidentActionTargets(serviceHistory, service.service),
     recommended: recommendedIncidentAction(recommendedAction),
-    taken: history.ok ? { ok: true, deployments: incidentActionDeployments(history.value, evidence.incident.id) } : { ok: false },
+    taken: serviceHistory.ok ? { ok: true, deployments: incidentActionDeployments(serviceHistory.value, evidence.incident.id) } : { ok: false },
   };
 }
