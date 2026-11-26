@@ -70,7 +70,7 @@ describe("용도 목록의 꼴 · 이름 · 칸 이름", () => {
 describe("parseClaudeLimitsForm — 맞는 폼", () => {
   it("여섯 칸을 바꾸려는 값으로 · 비밀번호는 그대로", () => {
     expect(parseClaudeLimitsForm(formFields({ password: "pw-xq7" }), CHAT)).toEqual({
-      ok: true, password: "pw-xq7",
+      ok: true, password: "pw-xq7", confirmation: "",
       change: { enabled: true, total: { perDay: 30, perHour: 10 }, purposes: { chat: { perDay: 20, perHour: 5 } } },
     });
   });
@@ -123,6 +123,25 @@ describe("parseClaudeLimitsForm — 꼴이 틀리면 malformed", () => {
   });
 });
 
+describe("parseClaudeLimitsForm — 확인 값 칸(명세 §16 — 넓히는 바꿈의 두 번째 걸음)", () => {
+  it("confirmation 칸은 글자 그대로 · 없으면 빈 글자", () => {
+    expect(parseClaudeLimitsForm(formFields({ confirmation: "cc1.1.abc" }), CHAT)).toMatchObject({ ok: true, confirmation: "cc1.1.abc" });
+    expect(parseClaudeLimitsForm(formFields(), CHAT)).toMatchObject({ ok: true, confirmation: "" });
+  });
+
+  it.each([
+    ["확인 값이 둘", { confirmation: ["cc1.1.a", "cc1.1.b"] }],
+    ["확인 값 129자", { confirmation: "c".repeat(129) }],
+    ["폼이 보낸 '앞 값' 칸", { confirmation: "cc1.1.a", before_total_per_day: "0" }],
+  ] as [string, Record<string, string | string[] | null>][])("%s → malformed", (_label, overrides) => {
+    expect(parseClaudeLimitsForm(formFields(overrides), CHAT)).toEqual({ ok: false, reason: "malformed" });
+  });
+
+  it("확인 값 128자는 받는다(꼴은 확인 값 모듈이 가른다)", () => {
+    expect(parseClaudeLimitsForm(formFields({ confirmation: "c".repeat(128) }), CHAT)).toMatchObject({ ok: true, confirmation: "c".repeat(128) });
+  });
+});
+
 describe("parseClaudeLimitsForm — 칸의 목록은 지금 상한의 용도에서(어드민에 박지 않는다)", () => {
   const twoFields = (overrides: Record<string, string | string[] | null> = {}) =>
     formFields({ purpose_analysis_per_day: "6", purpose_analysis_per_hour: "2", ...overrides });
@@ -130,7 +149,7 @@ describe("parseClaudeLimitsForm — 칸의 목록은 지금 상한의 용도에�
   it("용도 둘 — 여섯 수의 칸을 받는다(용도의 차례는 지금 상한의 차례)", () => {
     const result = parseClaudeLimitsForm(twoFields(), TWO);
     expect(result).toEqual({
-      ok: true, password: "",
+      ok: true, password: "", confirmation: "",
       change: { enabled: true, total: { perDay: 30, perHour: 10 }, purposes: { chat: { perDay: 20, perHour: 5 }, analysis: { perDay: 6, perHour: 2 } } },
     });
     expect(result.ok && Object.keys(result.change.purposes)).toEqual(["chat", "analysis"]);

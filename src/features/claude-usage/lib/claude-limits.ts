@@ -65,7 +65,9 @@ export function isClaudePurposeList(names: readonly string[]): boolean {
 }
 
 export type ClaudeLimitsFormResult =
-  | { ok: true; change: ClaudeLimitsChange; password: string }
+  /** confirmation: 넓히는 바꿈의 두 번째 걸음의 확인 값(칸이 없으면 빈 글자 · 128자 넘거나 둘이면 malformed) — 명세 §16.
+   * 뼈대: 테스트 설계 워커가 칸을 더했다(지금 구현이 채우지 않아 선택으로 둔다 — 구현 워커가 필수로 바꾼다). */
+  | { ok: true; change: ClaudeLimitsChange; password: string; confirmation?: string }
   /** 칸이 빠짐(지금 상한의 용도 포함) · 같은 칸이 둘 · 목록 밖의 칸(지금 상한에 없는 용도 포함) · enabled 가 true/false 가 아님 · 비밀번호가 너무 김 */
   | { ok: false; reason: "malformed" }
   /** 수의 칸이 10진 정수가 아님 · 범위(0~1000) 밖 — field 는 그 칸 이름(폼의 칸 이름 그대로) */
