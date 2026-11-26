@@ -1,7 +1,9 @@
 /** POST /api/claude-usage/limits — 상한 · 켬/끔 바꾸기(명세 §2 "상한 · 켬/끔은 어드민 화면에서 바꾼다(바꾼 사람 · 시각을 기록)" · §14).
  * 실제 route · 실제 loginService(argon2 · 잠금 판정 — 재배포 접수의 비밀번호 재확인을 그대로 다시 쓴다) · 실제 설정 읽기 +
  * 가짜 fetch(실행 자리 — GET /limits · PUT /limits, 관측 서버 — 로그인 시도 · 잠금, 알림 서버).
- * 차례: 출처 → 세션 → 입력의 꼴 · 값 → 계정 이름 → 설정 → 지금 상한을 서버가 다시 읽기 → (올림이면) 비밀번호 → PUT 한 번.
+ * 차례: 출처 → 세션 → 입력의 꼴 · 값 → 계정 이름 → 설정 → 지금 상한을 서버가 다시 읽기 → (넓히면) 두 걸음 → PUT 한 번.
+ * 넓히는 바꿈(§16 — 켬 · 어느 상한이든 커짐)은 두 걸음이다: 확인 값 없이 오면 확인 화면(200 — 지금 값 → 새 값 · 서명한 확인 값 cc1 · 비밀번호 칸)만 내고,
+ * 확인 값과 비밀번호가 함께 와야(재배포 접수와 같은 로그인 흐름) PUT 을 부른다. 확인 값 = (계정 · 만든 시각 · 앞 값 · 새 값 전부)의 서명, 5분.
  * 앞 단계가 거절하면 뒤 단계의 호출(실행 자리 읽기 · 관측 서버의 시도 기록 · 실행 자리 PUT)이 0 임을 가짜의 기록으로 본다. */
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -29,6 +31,7 @@ import {
   CLAUDE_FORBIDDEN_IN_RESULTS, CLAUDE_SETTINGS_HEADER, FAKE_CLAUDE_RUNNER_SETTINGS_SECRET, FAKE_CLAUDE_RUNNER_URL, createFakeClaudeRunner,
   defaultRunnerLimits, useTwoPurposes, type FakeClaudeRunner,
 } from "@/features/claude-usage/lib/claude-runner-test-fakes";
+import { issueClaudeLimitsConfirmation } from "@/features/claude-usage/lib/claude-limits-confirmation";
 import { CLAUDE_LIMITS_BODY_MAX_BYTES } from "@/features/claude-usage/server/claude-limits-change";
 import { bodyCutResponse, fetchFailureWithoutCause, undiciFetchFailure } from "@/features/deploy-redeploy/lib/redeploy-test-fakes";
 import { middleware } from "@/middleware";
@@ -120,6 +123,42 @@ function limitRows(html: string): Record<string, string[]> {
     rows[textOf(head[1]).trim()] = [...row.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)].map((cell) => textOf(cell[1]).trim());
   }
   return rows;
+}
+
+/** 확인 화면의 폼 — action · 숨은 칸(이름 → 값, 이스케이프를 푼 글) · 비밀번호 칸이 있는지. 폼이 없으면 null. */
+function confirmationFormOf(html: string): { action: string; hidden: Record<string, string>; passwordInput: string | null; button: string | null } | null {
+  const form = /<form([^>]*)>([\s\S]*?)<\/form>/.exec(html);
+  if (form === null) return null;
+  const unescape = (text: string) => text.replace(/&quot;/g, "\"").replace(/&#x27;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+  const hidden: Record<string, string> = {};
+  for (const [input] of form[2].matchAll(/<input[^>]*>/g)) {
+    if (!/type="hidden"/.test(input)) continue;
+    const name = /name="([^"]*)"/.exec(input)?.[1];
+    const value = /value="([^"]*)"/.exec(input)?.[1];
+    if (name !== undefined) hidden[name] = unescape(value ?? "");
+  }
+  return {
+    action: unescape(/action="([^"]*)"/.exec(form[1])?.[1] ?? ""),
+    hidden,
+    passwordInput: /<input[^>]*type="password"[^>]*>/.exec(form[2])?.[0] ?? null,
+    button: /<button[^>]*type="submit"[^>]*>([^<]*)<\/button>/.exec(form[2])?.[1] ?? null,
+  };
+}
+
+/** 첫 걸음 — 넓히는 바꿈을 보내고 확인 화면(200)의 숨은 칸을 받는다. */
+async function confirmationStep(form: Record<string, string | string[] | null>): Promise<Record<string, string>> {
+  const response = await POST(limitsRequest({ fields: { ...form, password: null } }));
+  const html = await response.text();
+  expect(response.status, textOf(html).slice(0, 200)).toBe(200);
+  const confirmation = confirmationFormOf(html);
+  expect(confirmation, "확인 화면의 폼").not.toBeNull();
+  return confirmation!.hidden;
+}
+
+/** 두 걸음 — 확인 화면의 숨은 칸 그대로 + 비밀번호. */
+async function confirmedChange(form: Record<string, string | string[] | null>, password: string): Promise<Response> {
+  const hidden = await confirmationStep(form);
+  return POST(limitsRequest({ fields: { ...hidden, password } }));
 }
 
 beforeAll(async () => {
@@ -348,53 +387,75 @@ describe("6 내리거나 끄는 변경 — 비밀번호 재확인 없이(로그�
   });
 });
 
-describe("7 올리거나 켜는 변경 — 비밀번호 재확인(재배포 접수와 같은 로그인 흐름)", () => {
+describe("7 올리거나 켜는 변경 — 두 걸음(확인 화면 → 비밀번호 · 재배포 접수와 같은 로그인 흐름)", () => {
   const raises: [string, Record<string, string | string[] | null>, () => void][] = [
     ["전체 하루를 올림", fields({ total_per_day: "31" }), () => undefined],
     ["채팅 한 시간을 올림", fields({ purpose_chat_per_hour: "11" }), () => undefined],
-    ["하나를 올리고 나머지는 내림", fields({ total_per_day: "1", total_per_hour: "1", purpose_chat_per_day: "1", purpose_chat_per_hour: "11" }), () => undefined],
+    ["하나를 올리고 나머지는 내림(내리는 척 한 칸만 올림)", fields({ total_per_day: "1", total_per_hour: "1", purpose_chat_per_day: "1", purpose_chat_per_hour: "11" }), () => undefined],
     ["꺼진 것을 켬(값은 그대로)", fields(), () => { runner.limits = defaultRunnerLimits({ enabled: false }); }],
   ];
 
   for (const [label, form, arrange] of raises) {
-    it(`${label} · 비밀번호 없음 → 401 '비밀번호를 다시 넣어야 합니다' · 로그인 흐름 0 · PUT 0`, async () => {
+    it(`${label} · 확인 값 없음 → 200 확인 화면(바꾸지 않는다) · 로그인 흐름 0 · PUT 0`, async () => {
       arrange();
       validSession();
       const response = await POST(limitsRequest({ fields: { ...form, password: null } }));
-      expect(response.status).toBe(401);
+      expect(response.status).toBe(200);
       expectHtml(response);
-      expect(await response.text()).toContain("비밀번호를 다시 넣어야 합니다");
+      const html = await response.text();
+      expect(textOf(html)).toContain("상한을 넓히는 바꿈입니다 — 비밀번호를 다시 확인합니다");
+      expect(confirmationFormOf(html)?.hidden.confirmation ?? "").toMatch(/^cc1\.\d+\.[A-Za-z0-9_-]{43}$/);
       expectNoPasswordCheckAndNoPut();
       expect(response.headers.get("set-cookie")).toBeNull();
     });
 
-    it(`${label} · 빈 비밀번호 → 401 · 로그인 흐름 0 · PUT 0`, async () => {
+    it(`${label} · 확인 값 없이 맞는 비밀번호를 함께 보내도(4a 의 한 걸음 길) 확인 화면 · 로그인 흐름 0 · PUT 0`, async () => {
       arrange();
       validSession();
-      const response = await POST(limitsRequest({ fields: { ...form, password: "" } }));
-      expect(response.status).toBe(401);
+      const response = await POST(limitsRequest({ fields: { ...form, password: FAKE_PASSWORD } }));
+      expect(response.status).toBe(200);
+      const html = await response.text();
+      expect(textOf(html)).toContain("상한을 넓히는 바꿈입니다");
+      expect(html).not.toContain(FAKE_PASSWORD);
       expectNoPasswordCheckAndNoPut();
     });
 
-    it(`${label} · 틀린 비밀번호 → 401 '비밀번호가 맞지 않습니다' · 실패 시도 기록(credential_ok false) · PUT 0`, async () => {
+    it(`${label} · 두 번째 걸음에 빈 비밀번호 → 401 '비밀번호를 다시 넣어야 합니다' · 같은 확인 값의 폼 · 로그인 흐름 0 · PUT 0`, async () => {
       arrange();
       validSession();
-      const response = await POST(limitsRequest({ fields: { ...form, password: WRONG_PASSWORD } }));
+      const hidden = await confirmationStep(form);
+      const response = await POST(limitsRequest({ fields: { ...hidden, password: "" } }));
       expect(response.status).toBe(401);
-      const text = await response.text();
-      expect(text).toContain("비밀번호가 맞지 않습니다");
-      expect(text).not.toContain(WRONG_PASSWORD);
+      const html = await response.text();
+      expect(textOf(html)).toContain("비밀번호를 다시 넣어야 합니다");
+      expect(confirmationFormOf(html)?.hidden.confirmation).toBe(hidden.confirmation);
+      expectNoPasswordCheckAndNoPut();
+    });
+
+    it(`${label} · 두 번째 걸음에 틀린 비밀번호 → 401 '비밀번호가 맞지 않습니다' · 실패 시도 기록 · PUT 0 · 같은 확인 값의 폼(비밀번호는 싣지 않는다)`, async () => {
+      arrange();
+      validSession();
+      const hidden = await confirmationStep(form);
+      const response = await POST(limitsRequest({ fields: { ...hidden, password: WRONG_PASSWORD } }));
+      expect(response.status).toBe(401);
+      const html = await response.text();
+      expect(html).toContain("비밀번호가 맞지 않습니다");
+      expect(html).not.toContain(WRONG_PASSWORD);
+      expect(confirmationFormOf(html)?.hidden.confirmation).toBe(hidden.confirmation);
       expect(attemptCalls()).toHaveLength(1);
       expect(attemptCalls()[0].body.credential_ok).toBe(false);
       expect(limitPuts()).toHaveLength(0);
       expect(response.headers.get("set-cookie")).toBeNull();
     });
 
-    it(`${label} · 맞는 비밀번호 → 200 · 성공 시도 기록 → PUT 한 번(그 차례)`, async () => {
+    it(`${label} · 두 번째 걸음에 맞는 비밀번호 → 200 '상한을 바꿨습니다' · 지금 값 다시 읽기 → 성공 시도 기록 → PUT 한 번`, async () => {
       arrange();
       validSession();
-      const response = await POST(limitsRequest({ fields: { ...form, password: FAKE_PASSWORD } }));
+      const hidden = await confirmationStep(form);
+      callOrder.length = 0;
+      const response = await POST(limitsRequest({ fields: { ...hidden, password: FAKE_PASSWORD } }));
       expect(response.status).toBe(200);
+      expect(textOf(await response.text())).toContain("상한을 바꿨습니다");
       expect(attemptCalls()).toHaveLength(1);
       expect(attemptCalls()[0].body.credential_ok).toBe(true);
       expect(JSON.stringify(attemptCalls()[0].body)).not.toContain(FAKE_PASSWORD);
@@ -412,7 +473,7 @@ describe("7 올리거나 켜는 변경 — 비밀번호 재확인(재배포 접�
   it("잠겨 있으면 맞는 비밀번호도 423 '잠겨 있습니다' · PUT 0", async () => {
     respondAttempt = () => verdict({ allowed: false, outcome: "locked", locked_until: "2026-11-26T01:15:00.000Z", failures: 5 });
     validSession();
-    const response = await POST(limitsRequest({ fields: fields({ total_per_day: "100", password: FAKE_PASSWORD }) }));
+    const response = await confirmedChange(fields({ total_per_day: "100" }), FAKE_PASSWORD);
     expect(response.status).toBe(423);
     expect(await response.text()).toContain("잠겨 있습니다");
     expect(limitPuts()).toHaveLength(0);
@@ -421,29 +482,32 @@ describe("7 올리거나 켜는 변경 — 비밀번호 재확인(재배포 접�
   it("관측 서버에 닿지 않는 동안 틀린 비밀번호가 쌓이면 로그인처럼 잠근다(임시 제한 3회) — 그 뒤 맞는 비밀번호도 423 · PUT 0", async () => {
     respondAttempt = () => Promise.reject(leakyNetworkError());
     validSession();
+    const hidden = await confirmationStep(fields({ total_per_day: "100" }));
     const statuses: number[] = [];
-    for (let attempt = 0; attempt < 3; attempt += 1) statuses.push((await POST(limitsRequest({ fields: fields({ total_per_day: "100", password: WRONG_PASSWORD }) }))).status);
+    for (let attempt = 0; attempt < 3; attempt += 1) statuses.push((await POST(limitsRequest({ fields: { ...hidden, password: WRONG_PASSWORD } }))).status);
     expect(statuses).toEqual([401, 401, 423]);
-    expect((await POST(limitsRequest({ fields: fields({ total_per_day: "100", password: FAKE_PASSWORD }) }))).status).toBe(423);
+    expect((await POST(limitsRequest({ fields: { ...hidden, password: FAKE_PASSWORD } }))).status).toBe(423);
     expect(limitPuts()).toHaveLength(0);
   });
 });
 
 describe("8 올림의 판정은 서버가 지금 상한을 다시 읽어서 — 브라우저 · 화면을 연 때의 값을 믿지 않는다", () => {
-  it("화면을 연 뒤 다른 곳에서 5 로 내려 두었으면, 화면의 30 보다 낮은 20 도 올림 — 비밀번호 없이 401 · PUT 0", async () => {
+  it("화면을 연 뒤 다른 곳에서 5 로 내려 두었으면, 화면의 30 보다 낮은 20 도 넓힘 — 확인 화면(지금 5 → 20) · PUT 0", async () => {
     runner.limits = defaultRunnerLimits({ total: { per_day: 5, per_hour: 10 } });
     validSession();
     const response = await POST(limitsRequest({ fields: fields({ total_per_day: "20" }) }));
-    expect(response.status).toBe(401);
+    expect(response.status).toBe(200);
+    expect(limitRows(await response.text())["전체"]).toEqual(["5", "20", "10", "10"]);
     expect(limitReads()).toHaveLength(1);
     expectNoPasswordCheckAndNoPut();
   });
 
-  it("화면을 연 뒤 다른 곳에서 꺼 두었으면, 켬을 그대로 보내는 것도 켜기 — 비밀번호 없이 401 · PUT 0", async () => {
+  it("화면을 연 뒤 다른 곳에서 꺼 두었으면, 켬을 그대로 보내는 것도 켜기 — 확인 화면 · PUT 0", async () => {
     runner.limits = defaultRunnerLimits({ enabled: false });
     validSession();
     const response = await POST(limitsRequest({ fields: fields({ total_per_day: "1" }) }));
-    expect(response.status).toBe(401);
+    expect(response.status).toBe(200);
+    expect(textOf(await response.text())).toContain("꺼짐 → 켜짐");
     expectNoPasswordCheckAndNoPut();
   });
 
@@ -487,13 +551,14 @@ describe("8b 용도의 목록은 지금 상한에서 — 용도 둘(chat · anal
     expect(limitRows(await response.text())).toMatchObject({ "전체": ["30", "10"], "채팅 (chat)": ["30", "10"], "analysis": ["6", "1"] });
   });
 
-  it("analysis 하나만 올려도 올림 — 비밀번호 없이 401 · PUT 0, 맞는 비밀번호면 PUT 한 번", async () => {
+  it("analysis 하나만 올려도 넓힘 — 확인 화면 · PUT 0, 두 걸음(맞는 비밀번호)이면 PUT 한 번", async () => {
     useTwoPurposes(runner);
     validSession();
     const without = await POST(limitsRequest({ fields: twoFields({ purpose_analysis_per_day: "7" }) }));
-    expect(without.status).toBe(401);
+    expect(without.status).toBe(200);
+    expect(confirmationFormOf(await without.text())?.hidden.confirmation).toBeTruthy();
     expectNoPasswordCheckAndNoPut();
-    const withPassword = await POST(limitsRequest({ fields: twoFields({ purpose_analysis_per_day: "7", password: FAKE_PASSWORD }) }));
+    const withPassword = await confirmedChange(twoFields({ purpose_analysis_per_day: "7" }), FAKE_PASSWORD);
     expect(withPassword.status).toBe(200);
     expect(limitPuts()).toHaveLength(1);
     expect(limitPuts()[0].body).toMatchObject({ purposes: { analysis: { per_day: 7, per_hour: 2 } } });
@@ -610,13 +675,13 @@ describe("9 실행 자리의 답 — 바뀜은 돌려받은 값을 보인다 · 
 
   const writtenThenFailed: [string, Record<string, string | string[] | null>, { per_day: number; per_hour: number }, boolean][] = [
     ["내림", fields({ total_per_day: "5", total_per_hour: "3" }), { per_day: 5, per_hour: 3 }, false],
-    ["올림(맞는 비밀번호)", fields({ total_per_day: "50", total_per_hour: "20", password: FAKE_PASSWORD }), { per_day: 50, per_hour: 20 }, true],
+    ["올림(두 걸음 · 맞는 비밀번호)", fields({ total_per_day: "50", total_per_hour: "20" }), { per_day: 50, per_hour: 20 }, true],
   ];
   for (const [label, form, expectedTotal, raise] of writtenThenFailed) {
     it(`실행 자리가 값을 쓴 뒤 503 을 낸다 — ${label} → 504 모름(바뀌지 않았다고 말하지 않는다) · PUT 한 번 · 다시 읽으면 바뀐 값`, async () => {
       runner.failAfterWrite = 503;
       validSession();
-      const response = await POST(limitsRequest({ fields: form }));
+      const response = raise ? await confirmedChange(form, FAKE_PASSWORD) : await POST(limitsRequest({ fields: form }));
       expect(response.status).toBe(504);
       const text = textOf(await response.text());
       expect(text).toContain("바뀌었는지 모릅니다 — 다시 읽어 확인하세요");
@@ -625,7 +690,10 @@ describe("9 실행 자리의 답 — 바뀜은 돌려받은 값을 보인다 · 
       expect(limitPuts()).toHaveLength(1);
       expect(attemptCalls()).toHaveLength(raise ? 1 : 0);
       expect(runner.limits.total).toEqual(expectedTotal);   // 실제 실행 자리처럼 값은 바뀌어 있다
-      expect(consoleLines.filter((line) => line.includes(":claude-limits:"))[0]).toMatch(new RegExp(`:claude-limits:unknown status=503\\b.*raise=${raise}`));
+      const outcomeLine = consoleLines.filter((line) => line.includes(":claude-limits:")).at(-1) ?? "";
+      expect(outcomeLine).toMatch(new RegExp(`:claude-limits:unknown status=503\\b.*raise=${raise}`));
+      // 넓히는 바꿈은 모름이어도 무엇을 얼마로 보냈는지 남긴다(§16)
+      if (raise) expect(outcomeLine).toContain(" from=on;total=30/10;chat=30/10 to=on;total=50/20;chat=30/10");
       // 화면을 다시 읽으면(GET /api/claude-usage — 실행 자리를 새로 읽는다) 바뀐 값이 보인다
       runner.failAfterWrite = null;
       const screen = await (await claudeUsageGet(new Request(new URL("/api/claude-usage", FAKE_ORIGIN)))).json() as { data: { limits: { ok: boolean; value: { total: unknown } } } };
@@ -660,23 +728,30 @@ describe("9 실행 자리의 답 — 바뀜은 돌려받은 값을 보인다 · 
 });
 
 describe("10 로그 — 한 번에 한 줄(결과 · 계정 · 올림 여부), 비밀번호 · 비밀값 · 실행 자리의 주소는 어디에도 없다", () => {
-  it("바뀜(내림) · 재확인 없는 올림 · 틀린 비밀번호 · 맞는 비밀번호의 올림", async () => {
+  it("바뀜(내림) · 넓힘의 확인 화면 · 틀린 비밀번호 · 맞는 비밀번호의 넓힘 — 넓힘이 일어나면 누가 · 무엇을 얼마에서 얼마로(§16)", async () => {
     validSession();
     await POST(limitsRequest({ fields: fields({ total_per_day: "5" }) }));
-    const needPassword = await POST(limitsRequest({ fields: fields({ total_per_day: "100" }) }));
-    const wrong = await POST(limitsRequest({ fields: fields({ total_per_day: "100", password: WRONG_PASSWORD }) }));
-    await POST(limitsRequest({ fields: fields({ total_per_day: "100", password: FAKE_PASSWORD }) }));
+    const needConfirmation = await POST(limitsRequest({ fields: fields({ total_per_day: "100" }) }));
+    const confirmationHtml = await needConfirmation.text();
+    const hidden = confirmationFormOf(confirmationHtml)!.hidden;
+    const wrong = await POST(limitsRequest({ fields: { ...hidden, password: WRONG_PASSWORD } }));
+    await POST(limitsRequest({ fields: { ...hidden, password: FAKE_PASSWORD } }));
     const lines = consoleLines.filter((line) => line.includes(":claude-limits:"))   // 로그 한 줄 = `<요청ID>:admin:claude-limits:<결과> …`;
     expect(lines).toHaveLength(4);
     expect(lines.every((line) => line.includes(`account=${FAKE_ADMIN_ID}`))).toBe(true);
     expect(lines[0]).toMatch(/claude-limits:replaced\b.*raise=false/);
-    expect(lines[1]).toMatch(/claude-limits:password_required\b.*raise=true/);
+    expect(lines[0]).not.toContain("from=");   // 좁히는 바꿈의 줄에는 값을 싣지 않는다(4a 그대로)
+    expect(lines[1]).toMatch(/claude-limits:confirmation_required\b.*raise=true/);
     expect(lines[2]).toMatch(/claude-limits:password_failure\b.*raise=true/);
     expect(lines[3]).toMatch(/claude-limits:replaced\b.*raise=true/);
-    const everything = consoleLines.join("\n") + await needPassword.text() + await wrong.text();
+    // 그 사이 첫 요청이 5 로 내렸으므로 앞 값은 5
+    expect(lines[3]).toContain(" from=on;total=5/10;chat=30/10 to=on;total=100/10;chat=30/10");
+    const everything = consoleLines.join("\n") + confirmationHtml + await wrong.text();
     for (const secret of [FAKE_PASSWORD, WRONG_PASSWORD, FAKE_CLAUDE_RUNNER_SETTINGS_SECRET, FAKE_SIGNING_KEY, passwordHash, "claude-runner.example.test"]) {
       expect(everything).not.toContain(secret);
     }
+    // 확인 값은 로그에 싣지 않는다
+    expect(consoleLines.join("\n")).not.toContain(hidden.confirmation);
   });
 
   it("모름(시간 초과)도 한 줄 — claude-limits:unknown", async () => {
@@ -686,5 +761,182 @@ describe("10 로그 — 한 번에 한 줄(결과 · 계정 · 올림 여부), �
     const lines = consoleLines.filter((line) => line.includes(":claude-limits:"))   // 로그 한 줄 = `<요청ID>:admin:claude-limits:<결과> …`;
     expect(lines).toHaveLength(1);
     expect(lines[0]).toMatch(/claude-limits:unknown\b/);
+  });
+});
+
+describe("11 확인 화면 — 무엇이 얼마에서 얼마로 · 비밀번호 칸 · 스크립트 없이(§16)", () => {
+  it("표(지금 → 새 — 전체 · 용도마다) · 켬/끔 · 숨은 칸(새 값 전부 + 확인 값) · 비밀번호 칸 · 단추 · 돌아가는 링크", async () => {
+    useTwoPurposes(runner);
+    runner.limits.enabled = false;
+    validSession();
+    const response = await POST(limitsRequest({ fields: fields({ total_per_day: "40", purpose_analysis_per_day: "6", purpose_analysis_per_hour: "3" }) }));
+    expect(response.status).toBe(200);
+    expectHtml(response);
+    const html = await response.text();
+    expect([...html.matchAll(/<th[^>]*scope="col"[^>]*>([^<]*)<\/th>/g)].map((match) => match[1].trim())).toEqual(["범위", "지금 하루", "새 하루", "지금 한 시간", "새 한 시간"]);
+    expect(limitRows(html)).toEqual({ "전체": ["30", "40", "10", "10"], "채팅 (chat)": ["30", "30", "10", "10"], "analysis": ["6", "6", "2", "3"] });
+    expect(textOf(html)).toContain("꺼짐 → 켜짐");
+    const form = confirmationFormOf(html)!;
+    expect(form.action).toBe("/api/claude-usage/limits");
+    expect(html).toMatch(/<form[^>]*method="post"/i);
+    expect(form.hidden).toEqual({
+      enabled: "true", total_per_day: "40", total_per_hour: "10", purpose_chat_per_day: "30", purpose_chat_per_hour: "10",
+      purpose_analysis_per_day: "6", purpose_analysis_per_hour: "3", confirmation: form.hidden.confirmation,
+    });
+    expect(form.passwordInput).toMatch(/name="password"/);
+    expect(form.passwordInput).toMatch(/autocomplete="current-password"/i);
+    expect(form.passwordInput).toMatch(/\brequired\b/);
+    const passwordId = /id="([^"]+)"/.exec(form.passwordInput!)?.[1];
+    expect(html).toMatch(new RegExp(`<label[^>]*for="${passwordId}"[^>]*>[^<]*비밀번호`));
+    expect(form.button).toBe("비밀번호를 확인하고 바꾸기");
+    expect(html).toContain('href="/claude-usage"');
+    expect(html).not.toContain("<script");
+    expectNoForbiddenText(html, CLAUDE_FORBIDDEN_IN_RESULTS);
+    expect(response.headers.get("set-cookie")).toBeNull();
+  });
+
+  it("좁히는 바꿈(내림 · 끔)은 확인 화면 없이 곧바로 바꾼다 — 확인 값이 와도 보지 않는다", async () => {
+    validSession();
+    const response = await POST(limitsRequest({ fields: fields({ enabled: "false", total_per_day: "1", confirmation: "cc1.1.garbage" }) }));
+    expect(response.status).toBe(200);
+    expect(textOf(await response.text())).toContain("상한을 바꿨습니다");
+    expect(attemptCalls()).toHaveLength(0);
+    expect(limitPuts()).toHaveLength(1);
+  });
+});
+
+describe("12 확인 값의 묶임 — 그 바꿈의 값 전부 · 앞 값 · 계정 · 5분(틀리면 비밀번호를 보지 않는다 — 잠금 횟수가 늘지 않는다)", () => {
+  const raise = () => fields({ total_per_day: "40" });
+
+  it("숨은 칸의 새 값을 바꿔 쓰면(40 → 1000) 409 '확인한 뒤 값이 달라졌습니다' · 새 확인 화면(그 값으로) · 로그인 흐름 · PUT 0", async () => {
+    validSession();
+    const hidden = await confirmationStep(raise());
+    const response = await POST(limitsRequest({ fields: { ...hidden, total_per_day: "1000", password: FAKE_PASSWORD } }));
+    expect(response.status).toBe(409);
+    expectHtml(response);
+    const html = await response.text();
+    expect(textOf(html)).toContain("확인한 뒤 값이 달라졌습니다 — 다시 확인하세요");
+    const fresh = confirmationFormOf(html)!;
+    expect(fresh.hidden.total_per_day).toBe("1000");
+    expect(fresh.hidden.confirmation).not.toBe(hidden.confirmation);
+    expect(fresh.passwordInput).not.toBeNull();
+    expectNoPasswordCheckAndNoPut();
+  });
+
+  it("용도를 바꿔 치기(chat 을 올린 확인 값으로 analysis 를 올림) → 409 · PUT 0", async () => {
+    useTwoPurposes(runner);
+    validSession();
+    const hidden = await confirmationStep(fields({ purpose_chat_per_day: "40", purpose_analysis_per_day: "6", purpose_analysis_per_hour: "2" }));
+    const swapped = { ...hidden, purpose_chat_per_day: "30", purpose_analysis_per_day: "40", password: FAKE_PASSWORD };
+    const response = await POST(limitsRequest({ fields: swapped }));
+    expect(response.status).toBe(409);
+    expectNoPasswordCheckAndNoPut();
+  });
+
+  it("다른 계정의 확인 값 → 409 · PUT 0", async () => {
+    validSession();
+    const hidden = await confirmationStep(raise());
+    const before = { enabled: true, total: { perDay: 30, perHour: 10 }, purposes: { chat: { perDay: 30, perHour: 10 } } };
+    const after = { ...before, total: { perDay: 40, perHour: 10 } };
+    const other = issueClaudeLimitsConfirmation(FAKE_SIGNING_KEY, { account: "fake-other-admin", issuedAt: Date.now(), beforeChangedAt: null, before, after });
+    const response = await POST(limitsRequest({ fields: { ...hidden, confirmation: other, password: FAKE_PASSWORD } }));
+    expect(response.status).toBe(409);
+    expectNoPasswordCheckAndNoPut();
+  });
+
+  it("확인 화면을 본 뒤 그 사이 누가 지금 상한을 바꿨으면(30 → 5) 409 · 새 확인 화면은 새 지금 값(5)으로 · PUT 0 — 다시 확인하게 한다", async () => {
+    validSession();
+    const hidden = await confirmationStep(raise());
+    runner.limits = defaultRunnerLimits({ total: { per_day: 5, per_hour: 10 } });
+    const response = await POST(limitsRequest({ fields: { ...hidden, password: FAKE_PASSWORD } }));
+    expect(response.status).toBe(409);
+    const html = await response.text();
+    expect(limitRows(html)["전체"]).toEqual(["5", "40", "10", "10"]);
+    expectNoPasswordCheckAndNoPut();
+    // 새 확인 화면으로 다시 보내면 바뀐다
+    const retried = await POST(limitsRequest({ fields: { ...confirmationFormOf(html)!.hidden, password: FAKE_PASSWORD } }));
+    expect(retried.status).toBe(200);
+    expect(limitPuts()).toHaveLength(1);
+  });
+
+  it("그 사이 누가 지금 상한을 더 높여(30 → 50) 이 바꿈이 좁히는 바꿈이 됐으면 확인 값 · 비밀번호를 보지 않고 바꾼다", async () => {
+    validSession();
+    const hidden = await confirmationStep(raise());
+    runner.limits = defaultRunnerLimits({ total: { per_day: 50, per_hour: 10 } });
+    const response = await POST(limitsRequest({ fields: { ...hidden, password: WRONG_PASSWORD } }));
+    expect(response.status).toBe(200);
+    expect(attemptCalls()).toHaveLength(0);
+    expect(limitPuts()).toHaveLength(1);
+  });
+
+  it("5분이 지난 확인 값 → 410 '확인한 지 5분이 지났습니다 — 다시 확인하세요' · 새 확인 화면 · 로그인 흐름 · PUT 0 / 4분 59초는 통한다", async () => {
+    validSession();
+    const hidden = await confirmationStep(raise());
+    vi.setSystemTime(Date.now() + 299_000);
+    const stillValid = await POST(limitsRequest({ fields: { ...hidden, password: "" } }));
+    expect(stillValid.status).toBe(401);   // 확인 값은 통했고 비밀번호가 비었다
+    vi.setSystemTime(Date.now() + 1_000);
+    const response = await POST(limitsRequest({ fields: { ...hidden, password: FAKE_PASSWORD } }));
+    expect(response.status).toBe(410);
+    const html = await response.text();
+    expect(textOf(html)).toContain("확인한 지 5분이 지났습니다 — 다시 확인하세요");
+    expect(confirmationFormOf(html)?.hidden.confirmation).not.toBe(hidden.confirmation);
+    expectNoPasswordCheckAndNoPut();
+  });
+
+  it.each([
+    ["꼴이 아닌 확인 값", "not-a-token"],
+    ["재배포의 확인 값 자리 바꿔 끼우기(rc1)", "rc1.adm-x.1.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"],
+  ])("%s → 400 '요청의 꼴이 맞지 않습니다' · 로그인 흐름 · PUT 0", async (_label, token) => {
+    validSession();
+    const hidden = await confirmationStep(raise());
+    const response = await POST(limitsRequest({ fields: { ...hidden, confirmation: token, password: FAKE_PASSWORD } }));
+    expect(response.status).toBe(400);
+    expect(await response.text()).toContain("요청의 꼴이 맞지 않습니다");
+    expectNoPasswordCheckAndNoPut();
+  });
+});
+
+describe("13 재확인을 건너뛰는 길이 없다", () => {
+  it("폼의 숨은 칸으로 '앞 값'을 낮게 속여도(before_* · current_*) 400 — 판정은 실행 자리가 지금 쥔 값", async () => {
+    validSession();
+    for (const extra of [{ before_total_per_day: "0" }, { current_total_per_day: "1000" }] as Record<string, string>[]) {
+      const response = await POST(limitsRequest({ fields: { ...fields({ total_per_day: "40", password: FAKE_PASSWORD }), ...extra } }));
+      expect(response.status).toBe(400);
+    }
+    expectNoPasswordCheckAndNoPut();
+  });
+
+  it("같은 두 번째 걸음을 두 번(새로 고침) — 첫 번은 바꾸고, 둘째는 이미 같은 값이라 좁히는 바꿈(비밀번호를 보지 않음) · 넓힘은 한 번", async () => {
+    validSession();
+    const hidden = await confirmationStep(fields({ total_per_day: "40" }));
+    const first = await POST(limitsRequest({ fields: { ...hidden, password: FAKE_PASSWORD } }));
+    const second = await POST(limitsRequest({ fields: { ...hidden, password: FAKE_PASSWORD } }));
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect(attemptCalls()).toHaveLength(1);
+    expect(runner.limits.total).toEqual({ per_day: 40, per_hour: 10 });
+    expect(consoleLines.filter((line) => /:claude-limits:replaced\b.*raise=true/.test(line))).toHaveLength(1);
+  });
+
+  it("넓힌 뒤 누가 다시 내렸으면 같은 확인 값을 다시 써도 넓히지 못한다 — 409 · PUT 은 첫 번의 한 번", async () => {
+    validSession();
+    const hidden = await confirmationStep(fields({ total_per_day: "40" }));
+    expect((await POST(limitsRequest({ fields: { ...hidden, password: FAKE_PASSWORD } }))).status).toBe(200);
+    // 다시 30 으로 — 실제 실행 자리처럼 바꾼 시각도 새로(바꿀 때마다 changed_at 이 바뀐다)
+    runner.limits = defaultRunnerLimits({ changed_at: "2026-11-26T13:12:00+09:00", changed_by: "admin:fake-other-admin" });
+    const replay = await POST(limitsRequest({ fields: { ...hidden, password: FAKE_PASSWORD } }));
+    expect(replay.status).toBe(409);
+    expect(limitPuts()).toHaveLength(1);
+    expect(attemptCalls()).toHaveLength(1);
+  });
+
+  it("두 번째 걸음의 PUT 이 5xx → 504 모름 · 다시 보내지 않는다(4a 의 규칙)", async () => {
+    runner.override["PUT /limits"] = () => jsonBody({ success: false, error: { code: "limits_unavailable" } }, 503);
+    validSession();
+    const response = await confirmedChange(fields({ total_per_day: "40" }), FAKE_PASSWORD);
+    expect(response.status).toBe(504);
+    expect(textOf(await response.text())).toContain("바뀌었는지 모릅니다 — 다시 읽어 확인하세요");
+    expect(limitPuts()).toHaveLength(1);
   });
 });

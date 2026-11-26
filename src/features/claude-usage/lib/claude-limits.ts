@@ -4,12 +4,13 @@
  *   한 응답에 1개 이상 CLAUDE_PURPOSES_MAXIMUM 개 이하 · 중복 없음(isClaudePurposeList). 이 꼴을 벗어난 응답은 해석하지 않는다(unparseable).
  * - 폼의 칸(application/x-www-form-urlencoded — 칸마다 정확히 하나): 닫힌 목록 = 고정 칸 + **서버가 방금 다시 읽은 지금 상한의 용도마다** 두 칸.
  *   enabled = "true" | "false" · total_per_day · total_per_hour · purpose_<용도>_per_day · purpose_<용도>_per_hour(10진 숫자 1~4자리, 0~1000)
- *   · password(선택 — 없거나 빈 글자 허용, 1024자 넘으면 malformed).
+ *   · password(선택 — 없거나 빈 글자 허용, 1024자 넘으면 malformed) · confirmation(선택 — 넓히는 바꿈의 두 번째 걸음, 128자 넘으면 malformed).
  *   지금 상한의 용도가 폼에 빠졌거나(일부만 바꾸지 않는다) 지금 상한에 없는 용도의 칸이 오면 malformed.
  * - 올림: 꺼져 있던 것을 켜면 올림 · 전체 둘과 모든 용도의 하루 · 한 시간 가운데 하나라도 지금보다 크면 올림
  *   (지금 상한에 없는 용도가 next 에 있으면 올림 — 닫힌 쪽). 그 밖(내림 · 끔 · 같은 값)은 올림이 아니다.
  *   지금 값을 읽지 못한 경우는 이 함수에 오지 않는다 — 용도를 모르면 바꾸지 않는다(route 가 503). */
 import { LOGIN_PASSWORD_MAX_LENGTH } from "@/features/auth/lib/login-body";
+import { CLAUDE_LIMITS_CONFIRMATION_MAX_LENGTH } from "@/features/claude-usage/lib/claude-limits-confirmation";
 
 /** 화면의 주소 · 상한을 바꾸는 폼이 보내는 곳(결과 화면이 화면으로 돌아가는 링크도 이 주소). */
 export const CLAUDE_USAGE_PATH = "/claude-usage";
@@ -65,7 +66,8 @@ export function isClaudePurposeList(names: readonly string[]): boolean {
 }
 
 export type ClaudeLimitsFormResult =
-  | { ok: true; change: ClaudeLimitsChange; password: string }
+  /** confirmation: 넓히는 바꿈의 두 번째 걸음의 확인 값(칸이 없으면 빈 글자 · 128자 넘거나 둘이면 malformed) — 명세 §16. */
+  | { ok: true; change: ClaudeLimitsChange; password: string; confirmation: string }
   /** 칸이 빠짐(지금 상한의 용도 포함) · 같은 칸이 둘 · 목록 밖의 칸(지금 상한에 없는 용도 포함) · enabled 가 true/false 가 아님 · 비밀번호가 너무 김 */
   | { ok: false; reason: "malformed" }
   /** 수의 칸이 10진 정수가 아님 · 범위(0~1000) 밖 — field 는 그 칸 이름(폼의 칸 이름 그대로) */
@@ -75,13 +77,15 @@ export type ClaudeLimitsFormResult =
 export function parseClaudeLimitsForm(fields: URLSearchParams, purposeNames: readonly string[]): ClaudeLimitsFormResult {
   const scopes: ("total" | { purpose: string })[] = ["total", ...purposeNames.map((purpose) => ({ purpose }))];
   const numberFields = scopes.flatMap((scope) => [claudeLimitFieldName(scope, "perDay"), claudeLimitFieldName(scope, "perHour")]);
-  const allowed = new Set(["enabled", "password", ...numberFields]);
+  const allowed = new Set(["enabled", "password", "confirmation", ...numberFields]);
   for (const name of fields.keys()) if (!allowed.has(name)) return { ok: false, reason: "malformed" };
   for (const name of allowed) if (fields.getAll(name).length > 1) return { ok: false, reason: "malformed" };
   const enabledText = fields.get("enabled");
   if (enabledText !== "true" && enabledText !== "false") return { ok: false, reason: "malformed" };
   const password = fields.get("password") ?? "";
   if (password.length > LOGIN_PASSWORD_MAX_LENGTH) return { ok: false, reason: "malformed" };
+  const confirmation = fields.get("confirmation") ?? "";
+  if (confirmation.length > CLAUDE_LIMITS_CONFIRMATION_MAX_LENGTH) return { ok: false, reason: "malformed" };
   if (numberFields.some((name) => !fields.has(name))) return { ok: false, reason: "malformed" };
   const pairs: ClaudeLimitPair[] = [];
   for (const scope of scopes) {
@@ -97,7 +101,7 @@ export function parseClaudeLimitsForm(fields: URLSearchParams, purposeNames: rea
   const [total, ...purposePairs] = pairs;
   const purposes: Record<string, ClaudeLimitPair> = {};
   purposeNames.forEach((name, index) => { purposes[name] = purposePairs[index]; });
-  return { ok: true, change: { enabled: enabledText === "true", total, purposes }, password };
+  return { ok: true, change: { enabled: enabledText === "true", total, purposes }, password, confirmation };
 }
 
 /** 10진 숫자 1~4자리이고 범위(0~1000) 안이면 그 수, 아니면 null. */

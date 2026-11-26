@@ -159,7 +159,7 @@ describe("정상 — 세 칸과 최근 호출", () => {
 });
 
 describe("상한을 바꾸는 폼 — 스크립트 없이 보낸다", () => {
-  it("POST /api/claude-usage/limits · 지금 값으로 채운 수의 칸 넷(0~1000 정수) · 켬/끔 · 비밀번호 · 이름 있는 단추", async () => {
+  it("POST /api/claude-usage/limits · 지금 값으로 채운 수의 칸 넷(0~1000 정수) · 켬/끔 · 이름 있는 단추 · 비밀번호 칸은 없다(넓히면 다음 화면에서 — §16)", async () => {
     runner.limits = defaultRunnerLimits({ total: { per_day: 40, per_hour: 12 }, purposes: { chat: { per_day: 25, per_hour: 8 } } });
     const limits = section(await render(), "limits");
     const forms = [...limits.matchAll(/<form([^>]*)>([\s\S]*?)<\/form>/g)];
@@ -188,16 +188,11 @@ describe("상한을 바꾸는 폼 — 스크립트 없이 보낸다", () => {
     expect(onRadio).toMatch(/checked/);
     expect(offRadio).not.toMatch(/checked/);
     for (const radio of [onRadio, offRadio]) expect(body).toMatch(new RegExp(`<label[^>]*for="${/id="([^"]+)"/.exec(radio)![1]}"`));
-    const password = /<input[^>]*type="password"[^>]*>/.exec(body)?.[0];
-    expect(password).toBeDefined();
-    expect(password).toContain('name="password"');
-    expect(password).toMatch(/autocomplete="current-password"/i);   // HTML 속성은 대소문자를 가리지 않는다(React 는 autoComplete 로 낸다)
-    expect(password).not.toMatch(/\brequired\b/);
-    expect(body).toMatch(new RegExp(`<label[^>]*for="${/id="([^"]+)"/.exec(password!)![1]}"[^>]*>[^<]*비밀번호`));
+    expect(body).not.toMatch(/<input[^>]*type="password"/);
     expect(body).toMatch(/<button[^>]*type="submit"[^>]*>상한 바꾸기<\/button>/);
     // 폼에는 '지금 값'이나 바꾼 사람을 싣는 칸이 없다 — 서버가 다시 읽고, 서버가 정한다
     const names = [...body.matchAll(/name="([^"]+)"/g)].map((match) => match[1]);
-    expect(new Set(names)).toEqual(new Set(["enabled", "total_per_day", "total_per_hour", "purpose_chat_per_day", "purpose_chat_per_hour", "password"]));
+    expect(new Set(names)).toEqual(new Set(["enabled", "total_per_day", "total_per_hour", "purpose_chat_per_day", "purpose_chat_per_hour"]));
   });
 
   it("꺼져 있으면 '끔'이 골라져 있다", async () => {
@@ -208,8 +203,8 @@ describe("상한을 바꾸는 폼 — 스크립트 없이 보낸다", () => {
     expect(textOf(limits)).toContain("꺼짐");
   });
 
-  it("비밀번호 칸 곁에 '올리거나 켤 때만' 다시 확인한다는 안내", async () => {
-    expect(textOf(section(await render(), "limits"))).toContain("상한을 올리거나 켤 때만");
+  it("단추 곁에 '올리거나 켜면 다음 화면에서 비밀번호를 다시 확인합니다' 안내", async () => {
+    expect(textOf(section(await render(), "limits"))).toContain("상한을 올리거나 켜면 다음 화면에서 비밀번호를 다시 확인합니다");
   });
 });
 
