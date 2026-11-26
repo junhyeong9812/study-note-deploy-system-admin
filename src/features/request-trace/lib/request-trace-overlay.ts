@@ -1,7 +1,8 @@
 /** 요청 추적의 겹친 시간 줄(순수) — 로그 줄과 구간을 한 시간 축(둘을 합친 범위)에 놓고, 서비스(규약 이름)마다 한 줄로 묶는다.
  * 구간의 시작 = 끝 − 걸린 시간 · nginx 안 = 걸린 시간 − upstream(upstream 이 없으면 null — 0 으로 메우지 않는다) · 5xx 는 serverError.
  * 시계가 어긋나 구간과 로그가 앞뒤로 엇갈려도 꾸미지 않는다 — 축이 둘을 다 품으므로 위치는 0 이상, 비율은 0~1.
- * 수신 상태의 알림(spanReceiptNotes)은 구간이 덜 들어왔을 수 있음을 드러낸다 — 버린 줄의 수는 조회 기간에 그 서버들이 버린 전체 수다(이 요청의 줄만 센 값이 아니다). */
+ * 수신 상태의 알림(spanReceiptNotes)은 구간이 덜 들어왔을 수 있음을 드러낸다 — 버린 줄의 수는 조회 기간에 그 서버들이 버린 전체 수다(이 요청의 줄만 센 값이 아니다).
+ * 순번의 틈(sequence_gaps)은 기간과 무관한 누적이라 그 까닭에 넣지 않고 lostItems 로 따로 낸다. */
 import type { LogEntryView, LogLevel } from "@/features/logs/lib/log-query";
 import { RECEIPT_FILLING_MARGIN_MILLISECONDS, type RequestSpans } from "@/features/request-trace/lib/request-trace-spans";
 import type { TrafficSpan } from "@/features/request-trace/lib/traffic-span-client";
@@ -16,7 +17,7 @@ export interface OverlaySpan extends TrafficSpan {
   startAt: string;
   startOffsetMilliseconds: number;
   endOffsetMilliseconds: number;
-  /** 걸린 시간 − upstream(upstream 이 없으면 null) */
+  /** 걸린 시간 − upstream(upstream 이 없으면 null) — 시계가 어긋나면 음수 그대로(화면이 글로 가른다) */
   nginxMilliseconds: number | null;
   startFraction: number;
   lengthFraction: number;
@@ -58,11 +59,15 @@ export interface SpanReceiptNotes {
   truncated: boolean;
   receiptFailure: UpstreamFailure | null;
   behindServers: string[];
+  /** 수신 지연이면서 진도가 못 미친 서버(behindServers 의 부분) */
   delayedServers: string[];
-  gapServers: string[];
+  /** 조회 기간에 받은 항목에 읽지 못한 범위(missing)가 있는 서버 */
+  missingServers: string[];
+  /** 순번의 틈이 있는 서버와 그 수 — 기간과 무관한 누적이라 mayBeIncomplete 의 까닭이 아니다 */
+  lostItems: { server: string; sequenceGaps: number }[];
   requestsDropped: number;
   requestsRejected: number;
-  /** truncated 를 뺀 나머지 가운데 하나라도 있으면 */
+  /** truncated · lostItems 를 뺀 나머지 가운데 하나라도 있으면 */
   mayBeIncomplete: boolean;
 }
 
@@ -172,24 +177,26 @@ export function buildSpanOverlay(logLines: readonly LogEntryView[] | null, spans
   };
 }
 
-/** 수신 상태 → 알림. 읽기 진도가 없거나 기준 + 30초에 못 미친 서버(정확히 30초는 따라잡음) · 수신 지연 · 틈이나 읽지 못한 범위가 있는 서버(받은 차례) ·
- * 버린 줄의 합. 수신 상태를 읽지 못했으면 그 실패 — "다 들어왔다"로 두지 않는다. 진도는 이번 조회의 값으로만 판정한다(앞선 조회를 기억하지 않는다). */
+/** 수신 상태 → 알림. 읽기 진도가 없거나 기준 + 30초에 못 미친 서버(정확히 30초는 따라잡음) · 그 가운데 수신 지연인 서버(지연은 "지금" 기준이라
+ * 진도가 이미 이 요청을 지난 서버의 지연은 세지 않는다) · 읽지 못한 범위가 있는 서버(받은 차례) · 버린 줄의 합. 순번의 틈은 lostItems 로만. 수신 상태를 읽지 못했으면 그 실패 — "다 들어왔다"로 두지 않는다. 진도는 이번 조회의 값으로만 판정한다(앞선 조회를 기억하지 않는다). */
 export function spanReceiptNotes(spans: RequestSpans): SpanReceiptNotes {
   const notes: SpanReceiptNotes = {
-    truncated: spans.truncated, receiptFailure: null, behindServers: [], delayedServers: [], gapServers: [], requestsDropped: 0, requestsRejected: 0,
-    mayBeIncomplete: false,
+    truncated: spans.truncated, receiptFailure: null, behindServers: [], delayedServers: [], missingServers: [], lostItems: [],
+    requestsDropped: 0, requestsRejected: 0, mayBeIncomplete: false,
   };
   if (!spans.receipt.ok) return { ...notes, receiptFailure: spans.receipt, mayBeIncomplete: true };
   const caughtUpAt = (parseIsoUtc(spans.referenceAt) ?? Number.POSITIVE_INFINITY) + RECEIPT_FILLING_MARGIN_MILLISECONDS;
   for (const receipt of spans.receipt.value) {
     const progress = receipt.readProgressAt === null ? null : parseIsoUtc(receipt.readProgressAt);
-    if (progress === null || progress < caughtUpAt) notes.behindServers.push(receipt.server);
-    if (receipt.receiveDelayed) notes.delayedServers.push(receipt.server);
-    if (receipt.sequenceGaps > 0 || receipt.missing.length > 0) notes.gapServers.push(receipt.server);
+    const behind = progress === null || progress < caughtUpAt;
+    if (behind) notes.behindServers.push(receipt.server);
+    if (behind && receipt.receiveDelayed) notes.delayedServers.push(receipt.server);
+    if (receipt.missing.length > 0) notes.missingServers.push(receipt.server);
+    if (receipt.sequenceGaps > 0) notes.lostItems.push({ server: receipt.server, sequenceGaps: receipt.sequenceGaps });
     notes.requestsDropped += receipt.requestsDropped;
     notes.requestsRejected += receipt.requestsRejected;
   }
-  notes.mayBeIncomplete = notes.behindServers.length > 0 || notes.delayedServers.length > 0 || notes.gapServers.length > 0
+  notes.mayBeIncomplete = notes.behindServers.length > 0 || notes.missingServers.length > 0
     || notes.requestsDropped > 0 || notes.requestsRejected > 0;
   return notes;
 }

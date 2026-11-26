@@ -1,6 +1,6 @@
 /** 요청 추적의 서버 쪽 진입 — 세션 검증을 **직접** 부른 뒤에만 입력을 해석하고 OBSERVE_URL · OBSERVE_SECRET 을 읽고 관측 서버를 부른다.
- * 관측 서버 호출은 차례대로 셋: 로그(`/logs`) → 구간(`/traffic/requests`) → 수신 상태(`/traffic/map`). 칸마다 따로 실패한다 — 로그가 실패해도 구간을 부르고
- * (창은 구간만으로), 구간이 실패하면 수신 상태는 부르지 않는다.
+ * 관측 서버 호출은 셋: 로그(`/logs`)와 구간(`/traffic/requests`)을 나란히 → 둘이 끝난 뒤 수신 상태(`/traffic/map` — 창이 로그 · 구간의 시각에 기댄다).
+ * 칸마다 따로 실패한다 — 로그가 실패해도 구간은 그대로(창은 구간만으로), 구간이 실패하면 수신 상태는 부르지 않는다.
  * 설정이 비었거나 주소가 http(s) 가 아니면 trace · spans 모두 not_configured(호출 없음). 시계는 Date.now, 네트워크는 부를 때의 전역 fetch.
  * 실패는 칸마다 앱 로그 1줄(upstreamFailureLogLine("request-trace", "trace" | "spans" | "receipt", 결과) — 이유 낱말 · 상태 코드만). 입력 거절 · 성공은 남기지 않는다. */
 import "server-only";
@@ -24,10 +24,11 @@ async function buildRequestTraceView(query: RequestTraceQuery): Promise<RequestT
   const configured = isHttpBaseUrl(config.observeUrl) && config.observeSecret.length > 0;
   const observeFetch: FetchLike = (input, init) => fetch(input, init);
   const clientOptions = { baseUrl: config.observeUrl, secret: config.observeSecret, fetch: observeFetch };
-  const trace = await buildRequestTrace(configured ? createLogClient(clientOptions) : null, query, Date.now());
-  // 구간의 창 · 구간 안 로그에 쓰는 로그 줄 — 로그를 읽지 못했으면 null(0 줄로 두지 않는다)
-  const logLines = trace.ok ? trace.value.timeline?.lines ?? [] : null;
-  const spans = await buildRequestSpans(configured ? createTrafficSpanClient(clientOptions) : null, query.requestId, logLines, Date.now());
+  const pendingTrace = buildRequestTrace(configured ? createLogClient(clientOptions) : null, query, Date.now());
+  // 구간의 창에 쓰는 로그 줄 — 로그를 읽지 못했으면 null(0 줄로 두지 않는다). 구간 조회는 이 답을 기다리지 않고 시작한다
+  const pendingLogLines = pendingTrace.then((result) => (result.ok ? result.value.timeline?.lines ?? [] : null));
+  const pendingSpans = buildRequestSpans(configured ? createTrafficSpanClient(clientOptions) : null, query.requestId, pendingLogLines, Date.now());
+  const [trace, spans] = await Promise.all([pendingTrace, pendingSpans]);
   const failureLogLines = [
     upstreamFailureLogLine("request-trace", "trace", trace),
     upstreamFailureLogLine("request-trace", "spans", spans),

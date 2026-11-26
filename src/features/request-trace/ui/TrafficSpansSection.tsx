@@ -1,5 +1,6 @@
 /** 요청 추적 화면의 "접속 기록의 구간" 절(서버 컴포넌트) — 서비스별 구간(로그와 구간을 합친 한 축) · 구간의 목록 · 칸마다의 실패 · 빈 상태 ·
- * 구간이 덜 들어왔을 수 있다는 알림(읽기 진도 · 수신 지연 · 틈 · 버린 줄 · 수신 상태 실패)과 잘림.
+ * 구간이 덜 들어왔을 수 있다는 알림(읽기 진도 · 수신 지연 · 읽지 못한 범위 · 버린 줄 · 수신 상태 실패)과 잘림 · 따로 한 줄로 최근에 잃은 항목(순번의 틈 — 기간과 무관한 누적).
+ * nginx 안이 음수(시계 어긋남)면 "—"(upstream 없음)와 다른 글.
  * 받은 값만 그린다 — 계산은 request-trace-overlay(순수)가 한다. 막대는 꾸밈(aria-hidden) — 같은 정보가 표의 글에 있다. 5xx 는 막대의 줄무늬와 함께 글("서버 오류")로도.
  * 경로 · 이름은 React 가 이스케이프하고, 경로는 앞 120자만 보인다(나머지는 HTML 에 싣지 않는다). */
 import { formatElapsed, formatGap } from "@/features/log-trace/ui/LogTracePanel";
@@ -71,6 +72,12 @@ function optionalElapsed(milliseconds: number | null): string {
   return milliseconds === null ? "—" : formatElapsed(milliseconds);
 }
 
+/** nginx 안 — upstream 이 없으면 "—", 음수(upstream 이 걸린 시간보다 김 — 시계 어긋남)면 그 값을 글로. */
+function nginxElapsed(milliseconds: number | null): string {
+  if (milliseconds === null) return "—";
+  return milliseconds < 0 ? `-${formatElapsed(-milliseconds)}(시계 어긋남)` : formatElapsed(milliseconds);
+}
+
 function SpanRow({ span }: { span: OverlaySpan }) {
   const path = displaySpanPath(span.path, span.pathTruncated);
   return (
@@ -83,7 +90,7 @@ function SpanRow({ span }: { span: OverlaySpan }) {
       <td><time dateTime={span.endAt}>{formatGap(span.endOffsetMilliseconds)}</time></td>
       <td>{formatElapsed(span.durationMilliseconds)}</td>
       <td>{optionalElapsed(span.upstreamMilliseconds)}</td>
-      <td>{optionalElapsed(span.nginxMilliseconds)}</td>
+      <td>{nginxElapsed(span.nginxMilliseconds)}</td>
       <td>{span.serverError ? <strong>{`${span.status} 서버 오류`}</strong> : String(span.status)}</td>
       <td>{`${span.bytesSent}바이트`}</td>
       <td>{span.logLinesInside === null ? "—" : `${span.logLinesInside}줄`}</td>
@@ -119,7 +126,8 @@ function SpanTable({ overlay }: { overlay: SpanOverlay }) {
   );
 }
 
-/** 구간이 덜 들어왔을 수 있다는 알림 — 까닭마다 한 줄. 버린 줄의 수는 조회 기간에 그 서버들이 버린 전체 수다(이 요청의 줄만이 아니다). */
+/** 구간이 덜 들어왔을 수 있다는 알림 — 까닭마다 한 줄. 버린 줄의 수는 조회 기간에 그 서버들이 버린 전체 수다(이 요청의 줄만이 아니다).
+ * 순번의 틈은 그 알림의 까닭이 아니라 머리 밖에 따로 한 줄(누적이라 이 요청과 무관할 수 있다). */
 function ReceiptNotes({ spans }: { spans: RequestSpans }) {
   const notes = spanReceiptNotes(spans);
   return (
@@ -136,7 +144,7 @@ function ReceiptNotes({ spans }: { spans: RequestSpans }) {
               <li>{`읽기 진도가 이 요청의 마지막 시각에 못 미친 서버: ${notes.behindServers.join(", ")}`} (마지막 시각 + 30초까지 읽지 않음 · 진도 없음)</li>
             )}
             {notes.delayedServers.length > 0 && <li>{`수신 지연: ${notes.delayedServers.join(", ")}`} (읽기 진도가 2분 넘게 멈춤)</li>}
-            {notes.gapServers.length > 0 && <li>{`잃었거나 읽지 못한 항목이 있는 서버: ${notes.gapServers.join(", ")}`}</li>}
+            {notes.missingServers.length > 0 && <li>{`읽지 못한 범위가 있는 서버: ${notes.missingServers.join(", ")}`}</li>}
             {notes.requestsDropped > 0 && (
               <li>{`상한으로 싣지 못한 요청별 줄: ${notes.requestsDropped}줄`} (조회 기간에 그 서버들이 버린 전체 수 — 이 요청의 줄인지는 알 수 없음)</li>
             )}
@@ -145,6 +153,11 @@ function ReceiptNotes({ spans }: { spans: RequestSpans }) {
             )}
           </ul>
         </div>
+      )}
+      {notes.lostItems.length > 0 && (
+        <p className={styles.note} role="note">
+          {`최근에 잃은 항목: ${notes.lostItems.map((item) => `${item.server} ${item.sequenceGaps}개`).join(", ")} — 이 요청의 것인지는 알 수 없습니다`}
+        </p>
       )}
     </>
   );

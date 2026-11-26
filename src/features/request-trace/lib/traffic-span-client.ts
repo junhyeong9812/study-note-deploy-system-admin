@@ -5,7 +5,8 @@
  * - `serverReceipts`: `GET <OBSERVE_URL>/traffic/map?from=&to=` 의 `servers[]`(TrafficController.kt:200-218) — 수신 상태만 쓴다(edges 는 읽지 않는다).
  * 헤더 `X-Observe-Secret`, 5초 기한, GET 만, redirect:"manual", no-store(getUpstream). 오류 상태는 failureForHttpStatus(원문 없음).
  * 꼴이 틀리면 전체 unparseable(0 · 빈 목록으로 메우지 않는다). 이름의 꼴은 관측 서버가 받는 꼴(TrafficEntry.kt:167-174)과 같다 —
- * 서버 SERVER_NAME · 서비스와 부른 쪽 NAME · 요청 방법 METHOD · 읽지 못한 범위 MISSING. 받은 응답의 request_id 가 물은 것과 다르면 unparseable. */
+ * 서버 SERVER_NAME · 서비스와 부른 쪽 NAME · 요청 방법 METHOD · 읽지 못한 범위 MISSING. 받은 응답의 request_id 가 물은 것과 다르면 unparseable.
+ * 걸린 시간 · upstream 은 7일 이하(그보다 크면 구간의 시작 시각을 만들 수 없다 — 날짜의 범위를 벗어나 화면이 예외로 깨지지 않게). 보낸 바이트는 상한 없음. */
 import type { FetchLike, TimeoutSignalFactory } from "@/features/auth/lib/types";
 import { parseIsoUtc } from "@/shared/lib/query-input";
 import { envelopeData, getUpstream, isNonNegativeInteger, isRecord, upstreamUrl, type UpstreamResponse } from "@/shared/lib/upstream-fetch";
@@ -63,6 +64,12 @@ const SERVER_NAME_PATTERN = /^[a-z0-9][a-z0-9._-]{0,62}$/;
 const SERVICE_NAME_PATTERN = /^[a-z][a-z0-9-]{0,31}$/;
 const METHOD_PATTERN = /^[A-Z_-]{0,32}$/;
 const MISSING_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}:[a-z_]{1,32}$/;
+/** 걸린 시간 · upstream 의 상한(포함) — 요청별 줄의 보관 기간 7일. */
+const MAXIMUM_SPAN_MILLISECONDS = 7 * 24 * 60 * 60 * 1000;
+
+function isSpanMilliseconds(value: unknown): value is number {
+  return isNonNegativeInteger(value) && value <= MAXIMUM_SPAN_MILLISECONDS;
+}
 
 function isIsoText(value: unknown): value is string {
   return typeof value === "string" && parseIsoUtc(value) !== null;
@@ -80,8 +87,8 @@ function parseSpan(row: unknown): TrafficSpan | null {
   } = row;
   if (!isNameMatching(server, SERVER_NAME_PATTERN) || !isNameMatching(service, SERVICE_NAME_PATTERN) || !isNameMatching(caller, SERVICE_NAME_PATTERN)) return null;
   if (!isNameMatching(method, METHOD_PATTERN) || typeof path !== "string" || typeof pathTruncated !== "boolean") return null;
-  if (!isNonNegativeInteger(status) || !isIsoText(endAt) || !isNonNegativeInteger(durationMilliseconds) || !isNonNegativeInteger(bytesSent)) return null;
-  if (upstreamMilliseconds !== null && !isNonNegativeInteger(upstreamMilliseconds)) return null;
+  if (!isNonNegativeInteger(status) || !isIsoText(endAt) || !isSpanMilliseconds(durationMilliseconds) || !isNonNegativeInteger(bytesSent)) return null;
+  if (upstreamMilliseconds !== null && !isSpanMilliseconds(upstreamMilliseconds)) return null;
   if ((upstreamStatus !== null && typeof upstreamStatus !== "string") || (slot !== null && typeof slot !== "string")) return null;
   return {
     server, service, caller, method, path, pathTruncated, status, endAt, durationMilliseconds,
