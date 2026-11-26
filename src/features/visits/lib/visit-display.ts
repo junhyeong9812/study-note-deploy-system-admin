@@ -15,49 +15,63 @@
  * - formatVisitCount(n): 천 단위 쉼표(`1,234,567` — 지역 설정에 기대지 않는다).
  * - formatVisitRatio(ratio): null → VISIT_NO_RATIO_TEXT("—" — 0% 로 꾸미지 않는다), 그 밖은 퍼센트 소수 한 자리(`0.25` → `25.0%` · `0` → `0.0%`). */
 
+import { formatPercent } from "@/features/resources/lib/resource-format";
+
 export const VISIT_TEXT_MAXIMUM_LENGTH = 120;
 export const VISIT_TEXT_ELLIPSIS = "…";
-export const VISIT_HIDDEN_CHARACTER_REPLACEMENT = "�";
+export const VISIT_HIDDEN_CHARACTER_REPLACEMENT = "\uFFFD";
 export const VISIT_DIRECT_TEXT = "직접";
 export const VISIT_NO_RATIO_TEXT = "—";
 
+/** 보이지 않는 글자 — 제어(Cc) · 서식(Cf — 방향 뒤집기 · 폭 없는 빈칸 · BOM) · 줄 구분(Zl) · 문단 구분(Zp). */
+const HIDDEN_CHARACTER_PATTERN = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
+const HIDDEN_CHARACTERS_PATTERN = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
+
+/** 보이지 않는 글자를 바꾸고 코드 포인트 VISIT_TEXT_MAXIMUM_LENGTH 개에서 자른다. */
+function visibleText(text: string): string {
+  const codePoints = Array.from(text.replace(HIDDEN_CHARACTERS_PATTERN, VISIT_HIDDEN_CHARACTER_REPLACEMENT));
+  if (codePoints.length <= VISIT_TEXT_MAXIMUM_LENGTH) return codePoints.join("");
+  return `${codePoints.slice(0, VISIT_TEXT_MAXIMUM_LENGTH).join("")}${VISIT_TEXT_ELLIPSIS}`;
+}
+
 export function decodeVisitPath(raw: string): string {
-  void raw;
-  throw new Error("구현 전");
+  // 정규식은 왼쪽부터 겹치지 않게 한 번 훑는다 — 바꾼 글자를 다시 보지 않는다(%2520 → %20)
+  return raw.replace(/%(?:20|25)/g, (encoded) => (encoded === "%20" ? " " : "%"));
 }
 
 export function displayVisitPath(raw: string): string {
-  void raw;
-  throw new Error("구현 전");
+  return visibleText(decodeVisitPath(raw));
 }
 
 export function displayReferrerHost(host: string | null): string {
-  void host;
-  throw new Error("구현 전");
+  if (host === null || host === "") return VISIT_DIRECT_TEXT;
+  return visibleText(host);
 }
 
 export function parseSiteOrigin(value: string): string | null {
-  void value;
-  throw new Error("구현 전");
+  const trimmed = value.trim();
+  if (!URL.canParse(trimmed)) return null;
+  const parsed = new URL(trimmed);
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+  return parsed.origin === trimmed ? trimmed : null;
 }
 
 export function siteHostOf(origin: string): string {
-  void origin;
-  throw new Error("구현 전");
+  return new URL(origin).hostname;
 }
 
 export function visitPathHref(siteOrigin: string | null, raw: string): string | null {
-  void siteOrigin;
-  void raw;
-  throw new Error("구현 전");
+  if (siteOrigin === null) return null;
+  if (!raw.startsWith("/") || raw.startsWith("//") || raw.includes("\\") || HIDDEN_CHARACTER_PATTERN.test(raw)) return null;
+  const href = `${siteOrigin}${raw}`;
+  if (!URL.canParse(href) || new URL(href).origin !== siteOrigin) return null;
+  return href;
 }
 
 export function formatVisitCount(value: number): string {
-  void value;
-  throw new Error("구현 전");
+  return String(value).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 }
 
 export function formatVisitRatio(ratio: number | null): string {
-  void ratio;
-  throw new Error("구현 전");
+  return ratio === null ? VISIT_NO_RATIO_TEXT : formatPercent(ratio * 100);
 }

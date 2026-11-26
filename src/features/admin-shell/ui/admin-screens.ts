@@ -14,4 +14,5 @@ export const ADMIN_SCREENS: readonly AdminScreen[] = [
   { key: "status", title: "상태 한눈에", description: "각 서버의 헬스와 감시 결과", path: "/status" },
   { key: "resources", title: "서버 자원", description: "서버별 CPU · 메모리 · 디스크 · 네트워크 · GPU 와 울리는 임계값", path: "/resources" },
   { key: "login-attempts", title: "로그인 시도 기록", description: "어드민 로그인 성공 · 실패 · 잠금 기록", path: "/login-attempts" },
+  { key: "visits", title: "방문 기록", description: "사이트의 날짜별 조회 수 · 순방문자 · 많이 본 경로 · 들어온 곳 · 봇 비율", path: "/visits" },
 ];

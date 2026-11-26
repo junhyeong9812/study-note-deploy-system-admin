@@ -21,6 +21,8 @@ export interface ServerConfig {
   logRedisUrl: string;
   /** GitHub REST API 토큰(배포 상세 task 07) — **선택**: 비어 있어도 뜬다(익명 한도). 값은 로그 · 응답 · 오류 문구에 내지 않는다. */
   githubToken: string;
+  /** 사이트의 공개 주소(방문 기록 화면 — 경로 링크 · 들어온 곳에서 자기 사이트 빼기) — **선택**: 비었거나 꼴이 틀리면 링크 · 빼기 없이 뜬다. */
+  siteOrigin: string;
   serverName: string;
 }
 
@@ -46,6 +48,7 @@ export function readServerConfig(): ServerConfig {
     backendUrl: environmentValue("BACKEND_URL"),
     logRedisUrl: environmentValue("LOG_REDIS_URL"),
     githubToken: environmentValue("GITHUB_TOKEN"),
+    siteOrigin: environmentValue("SITE_ORIGIN"),
     serverName: environmentValue("SERVER_NAME") || "admin",
   };
 }

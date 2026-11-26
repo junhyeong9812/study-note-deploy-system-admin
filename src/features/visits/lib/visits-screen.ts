@@ -17,9 +17,10 @@
  *   - devices 그대로. botRatio: devices 의 합이 0 이면 null("—"), 아니면 받은 bot_ratio.
  * siteOrigin 은 링크와 자기 사이트 빼기에만 쓴다(설정 없음이 요약 칸의 실패가 되지 않는다). */
 import type { FetchLike, TimeoutSignalFactory } from "@/features/auth/lib/types";
-import type { VisitDay } from "@/features/visits/lib/visit-summary-client";
-import type { VisitDays, VisitsQuery } from "@/features/visits/lib/visits-query";
-import type { UpstreamResult } from "@/shared/lib/upstream-result";
+import { displayReferrerHost, displayVisitPath, parseSiteOrigin, siteHostOf, visitPathHref } from "@/features/visits/lib/visit-display";
+import { createVisitSummaryClient, type VisitDay, type VisitSummary } from "@/features/visits/lib/visit-summary-client";
+import { VISIT_DAYS, VISIT_DAYS_LABELS, visitsHref, type VisitDays, type VisitsQuery } from "@/features/visits/lib/visits-query";
+import { upstreamFailure, type UpstreamResult } from "@/shared/lib/upstream-result";
 
 /** 화면에 보이는 고정 글(테스트가 이 글자를 고정한다). */
 export const VISITS_TEXT = {
@@ -89,12 +90,63 @@ export interface CollectVisitsScreenOptions {
   query: VisitsQuery;
 }
 
+/** 요약 → 화면 모델. siteOrigin 은 parseSiteOrigin 을 지난 값(null = 설정 없음). */
+function summaryView(summary: VisitSummary, siteOrigin: string | null): VisitsSummaryView {
+  const siteHost = siteOrigin === null ? null : siteHostOf(siteOrigin);
+  const referrers: VisitReferrerItem[] = [];
+  let excludedRows = 0;
+  let excludedViews = 0;
+  for (const { host, views } of summary.topReferrers.items) {
+    if (host !== null && host === siteHost) {
+      excludedRows += 1;
+      excludedViews += views;
+    } else {
+      referrers.push({ host, text: displayReferrerHost(host), views });
+    }
+  }
+  const siteInternal: VisitSiteInternal = siteOrigin === null ? { state: "not_configured" }
+    : excludedRows > 0 ? { state: "excluded", views: excludedViews } : { state: "absent" };
+  const { desktop, mobile, bot } = summary.devices;
+  return {
+    daily: summary.daily.map(({ date, views, viewsWithBots, visitors, visitorsWithBots }) => ({ date, views, viewsWithBots, visitors, visitorsWithBots })),
+    totals: {
+      views: summary.daily.reduce((total, day) => total + day.views, 0),
+      viewsWithBots: summary.daily.reduce((total, day) => total + day.viewsWithBots, 0),
+    },
+    empty: summary.daily.every((day) => day.viewsWithBots === 0),
+    topPaths: {
+      items: summary.topPaths.items.map(({ path, views }) => ({ path, text: displayVisitPath(path), href: visitPathHref(siteOrigin, path), views })),
+      truncated: summary.topPaths.truncated,
+    },
+    topReferrers: { items: referrers, truncated: summary.topReferrers.truncated },
+    siteInternal,
+    devices: { desktop, mobile, bot },
+    botRatio: desktop + mobile + bot === 0 ? null : summary.botRatio,
+  };
+}
+
 export async function collectVisitsScreen(options: CollectVisitsScreenOptions): Promise<VisitsScreen> {
-  void options;
-  throw new Error("구현 전");
+  const { days } = options.query;
+  // 설정이 없으면 클라이언트가 호출 없이 not_configured 를 돌려준다
+  const client = createVisitSummaryClient({ baseUrl: options.observeUrl, secret: options.observeSecret, fetch: options.fetch, timeoutSignal: options.timeoutSignal });
+  const result = await client.summary(days);
+  let summary: UpstreamResult<VisitsSummaryView>;
+  if (!result.ok) summary = result;
+  else {
+    try {
+      summary = { ok: true, value: summaryView(result.value, parseSiteOrigin(options.siteOrigin)) };
+    } catch {
+      summary = upstreamFailure("unparseable");
+    }
+  }
+  return {
+    days,
+    dayOptions: VISIT_DAYS.map((option) => ({ days: option, label: VISIT_DAYS_LABELS[option], href: visitsHref(option), selected: option === days })),
+    notice: VISITS_TEXT.untrustedNotice,
+    summary,
+  };
 }
 
 export function visitsScreenFailures(screen: VisitsScreen): [string, UpstreamResult<unknown>][] {
-  void screen;
-  throw new Error("구현 전");
+  return screen.summary.ok ? [] : [["summary", screen.summary]];
 }

@@ -5,6 +5,7 @@
  * - `days`: "7" · "30" · "90" 글자 그대로 하나. 없음 · 빈 값 · 배열(같은 이름 여러 번) · 목록 밖(" 7" · "07" · "7.0" · "1" 등) → VISIT_DEFAULT_DAYS.
  *
  * 주소: visitsHref(days) = `/visits?days=<days>`(기본값이어도 인자를 싣는다 — 링크 셋이 같은 꼴). */
+import { singleValue } from "@/shared/lib/query-input";
 import type { SearchParamsInput } from "@/shared/lib/upstream-result";
 
 export const VISITS_PATH = "/visits";
@@ -23,11 +24,11 @@ export interface VisitsQuery {
 }
 
 export function parseVisitsQuery(input: SearchParamsInput): VisitsQuery {
-  void input;
-  throw new Error("구현 전");
+  const value = singleValue(input, "days");
+  const days = VISIT_DAYS.find((candidate) => String(candidate) === value);
+  return { days: days ?? VISIT_DEFAULT_DAYS };
 }
 
 export function visitsHref(days: VisitDays): string {
-  void days;
-  throw new Error("구현 전");
+  return `${VISITS_PATH}?days=${days}`;
 }

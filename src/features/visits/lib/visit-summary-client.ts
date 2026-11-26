@@ -19,8 +19,9 @@
  * - data.bot_ratio: 0 이상 1 이하의 유한한 수(관측 서버는 방문이 없으면 0 을 준다 — 그 0 을 화면 모델이 "—" 로 바꾼다).
  * - data.timezone · from · to 는 옮기지 않는다(화면이 쓰지 않는다). */
 import type { FetchLike, TimeoutSignalFactory } from "@/features/auth/lib/types";
-import type { VisitDays } from "@/features/visits/lib/visits-query";
-import type { UpstreamResult } from "@/shared/lib/upstream-result";
+import { VISIT_DAYS, type VisitDays } from "@/features/visits/lib/visits-query";
+import { envelopeData, getUpstream, isHttpBaseUrl, isNonNegativeInteger, isRecord, upstreamUrl } from "@/shared/lib/upstream-fetch";
+import { failureForHttpStatus, invalidInput, upstreamFailure, type UpstreamResult } from "@/shared/lib/upstream-result";
 
 export const VISIT_SUMMARY_PATH = "/visits/summary";
 
@@ -71,7 +72,80 @@ export interface VisitSummaryClient {
   summary(days: VisitDays): Promise<UpstreamResult<VisitSummary>>;
 }
 
+const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+
+/** 꼴이 틀렸다 — summary() 가 받아 unparseable 로 바꾼다. */
+class UnexpectedShape extends Error {}
+
+function record(value: unknown): Record<string, unknown> {
+  if (!isRecord(value)) throw new UnexpectedShape();
+  return value;
+}
+
+function count(value: unknown): number {
+  if (!isNonNegativeInteger(value)) throw new UnexpectedShape();
+  return value;
+}
+
+function parseDay(value: unknown): VisitDay {
+  const row = record(value);
+  if (typeof row.date !== "string" || !DATE_PATTERN.test(row.date)) throw new UnexpectedShape();
+  return {
+    date: row.date, views: count(row.views), viewsWithBots: count(row.views_with_bots),
+    visitors: count(row.visitors), visitorsWithBots: count(row.visitors_with_bots),
+  };
+}
+
+function parseTop<Item>(value: unknown, parseItem: (row: Record<string, unknown>) => Item): { items: Item[]; truncated: boolean } {
+  const top = record(value);
+  if (!Array.isArray(top.items) || top.items.length > VISIT_TOP_LIMIT || typeof top.truncated !== "boolean") throw new UnexpectedShape();
+  return { items: top.items.map((row) => parseItem(record(row))), truncated: top.truncated };
+}
+
+function parsePath(row: Record<string, unknown>): VisitPathViews {
+  if (typeof row.path !== "string") throw new UnexpectedShape();
+  return { path: row.path, views: count(row.views) };
+}
+
+function parseReferrer(row: Record<string, unknown>): VisitReferrerViews {
+  const { host } = row;
+  if (host !== undefined && host !== null && typeof host !== "string") throw new UnexpectedShape();
+  return { host: typeof host === "string" && host !== "" ? host : null, views: count(row.views) };
+}
+
+function parseSummary(data: Record<string, unknown>, days: VisitDays): VisitSummary {
+  if (data.days !== days || !Array.isArray(data.daily) || data.daily.length !== days) throw new UnexpectedShape();
+  const devices = record(data.devices);
+  const botRatio = data.bot_ratio;
+  if (typeof botRatio !== "number" || !Number.isFinite(botRatio) || botRatio < 0 || botRatio > 1) throw new UnexpectedShape();
+  return {
+    days,
+    daily: data.daily.map(parseDay),
+    topPaths: parseTop(data.top_paths, parsePath),
+    topReferrers: parseTop(data.top_referrers, parseReferrer),
+    devices: { desktop: count(devices.desktop), mobile: count(devices.mobile), bot: count(devices.bot) },
+    botRatio,
+  };
+}
+
 export function createVisitSummaryClient(options: VisitSummaryClientOptions): VisitSummaryClient {
-  void options;
-  throw new Error("구현 전");
+  const configured = isHttpBaseUrl(options.baseUrl) && options.secret.length > 0;
+  return {
+    async summary(days) {
+      if (!configured) return upstreamFailure("not_configured");
+      if (!(VISIT_DAYS as readonly number[]).includes(days)) return invalidInput("days");
+      const response = await getUpstream(upstreamUrl(options.baseUrl, VISIT_SUMMARY_PATH, [["days", String(days)]]), {
+        fetch: options.fetch, timeoutSignal: options.timeoutSignal, headers: { "X-Observe-Secret": options.secret },
+      });
+      if (!response.ok) return response;
+      if (response.status < 200 || response.status >= 300) return failureForHttpStatus(response.status);
+      const data = envelopeData(response);
+      if (data === undefined) return upstreamFailure("unparseable");
+      try {
+        return { ok: true, value: parseSummary(data, days) };
+      } catch {
+        return upstreamFailure("unparseable");
+      }
+    },
+  };
 }
