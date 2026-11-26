@@ -198,7 +198,7 @@ describe("빈 목록의 말", () => {
 });
 
 describe("목록이 확인한 범위를 드러낸다(scopeNotes — 감시 대상 줄 · 배포 줄 차례)", () => {
-  const DEPLOY_NOTE_ALL_BUT_FRONT = "배포: 최근 200건 안에서만 확인 — backend, llm, alert, observe, admin 은 확인하지 못함";
+  const DEPLOY_NOTE_ALL_BUT_FRONT = "배포: 최근 200건 안에서만 확인 — backend, llm, alert, observe, admin, claude 은 확인하지 못함";
 
   function frontDeployments(count: number) {
     return Array.from({ length: count }, (_, index) => deployment({ service: "front", acceptedAt: iso(NOW - HOUR - index * MINUTE) }));
@@ -212,11 +212,11 @@ describe("목록이 확인한 범위를 드러낸다(scopeNotes — 감시 대�
   it("보이지 않은 서비스의 차례는 받은 차례가 아니라 정해진 차례", () => {
     const deployments = [...frontDeployments(197), deployment({ service: "admin" }), deployment({ service: "llm" }), deployment({ service: "backend" })];
     const list = openIncidentsFrom(quietSources({ deployments: ok(deployments) }));
-    expect(list.scopeNotes).toEqual(["배포: 최근 200건 안에서만 확인 — alert, observe 은 확인하지 못함"]);
+    expect(list.scopeNotes).toEqual(["배포: 최근 200건 안에서만 확인 — alert, observe, claude 은 확인하지 못함"]);
   });
 
   it("200건이어도 모든 서비스가 보였으면 배포 줄이 없다", () => {
-    const services = ["front", "backend", "llm", "alert", "observe", "admin"];
+    const services = ["front", "backend", "llm", "alert", "observe", "admin", "claude"];
     const deployments = Array.from({ length: 200 }, (_, index) => deployment({ service: services[index % services.length] }));
     expect(openIncidentsFrom(quietSources({ deployments: ok(deployments) })).scopeNotes).toEqual([]);
   });
@@ -288,9 +288,9 @@ describe("uncoveredScopes — 출처마다 덮지 못한 범위를 한 값으로
 
   it("배포 이력이 200건이면 그 안에 보이지 않은 서비스(DEPLOY_SERVICES 차례) · 199건이면 없음 · 모두 보였으면 없음", () => {
     expect(uncoveredScopes(quietSources({ deployments: ok(serviceDeployments(["observe", "front"], 200)) })).deploy_failed)
-      .toEqual({ all: false, names: ["backend", "llm", "alert", "admin"] });
+      .toEqual({ all: false, names: ["backend", "llm", "alert", "admin", "claude"] });
     expect(uncoveredScopes(quietSources({ deployments: ok(serviceDeployments(["front"], 199)) })).deploy_failed).toEqual(NONE);
-    expect(uncoveredScopes(quietSources({ deployments: ok(serviceDeployments(["front", "backend", "llm", "alert", "observe", "admin"], 200)) })).deploy_failed).toEqual(NONE);
+    expect(uncoveredScopes(quietSources({ deployments: ok(serviceDeployments(["front", "backend", "llm", "alert", "observe", "admin", "claude"], 200)) })).deploy_failed).toEqual(NONE);
   });
 
   it("상태를 모르는 감시 대상(UNKNOWN)의 이름(받은 차례) — UP · DOWN 은 아니다", () => {
@@ -331,7 +331,7 @@ describe("scopeNotesFrom — 목록의 범위 줄은 덮지 못한 범위의 값
     const sources = quietSources({ monitors: ok(monitors([monitor({ name: "front", status: "UNKNOWN" }), monitor({ name: "llm", status: "UNKNOWN" })])), deployments: ok(serviceDeployments(["front"], 200)) });
     const list = openIncidentsFrom(sources);
     expect(list.scopeNotes).toEqual(scopeNotesFrom(list.uncovered));
-    expect(list.scopeNotes).toEqual(["감시 대상 2개는 아직 상태를 모름", "배포: 최근 200건 안에서만 확인 — backend, llm, alert, observe, admin 은 확인하지 못함"]);
+    expect(list.scopeNotes).toEqual(["감시 대상 2개는 아직 상태를 모름", "배포: 최근 200건 안에서만 확인 — backend, llm, alert, observe, admin, claude 은 확인하지 못함"]);
   });
 });
 
@@ -363,7 +363,7 @@ describe("목록과 판정이 어긋나지 않는다 — 목록이 '확인하지
   const DEPLOY_CHOICES: [string, IncidentSources["deployments"]][] = [
     ["배포 2건", ok([deployment({ service: "front" }), deployment({ service: "backend" })])],
     ["배포 200건 front 만", ok(serviceDeployments(["front"], 200))],
-    ["배포 200건 모든 서비스", ok(serviceDeployments(["front", "backend", "llm", "alert", "observe", "admin"], 200))],
+    ["배포 200건 모든 서비스", ok(serviceDeployments(["front", "backend", "llm", "alert", "observe", "admin", "claude"], 200))],
     ["배포 199건 front 만", ok(serviceDeployments(["front"], 199))],
     ["배포 실패", UNREACHABLE],
   ];

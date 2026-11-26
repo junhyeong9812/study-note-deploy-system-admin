@@ -11,7 +11,7 @@ describe("parseDeployVersionsQuery — 서비스 고르기", () => {
   });
 
   it("고를 수 있는 서비스는 배포 이력 화면과 같은 목록(master 가 아는 서비스) 전부", () => {
-    expect([...DEPLOY_SERVICES]).toEqual(["front", "backend", "llm", "alert", "observe", "admin"]);
+    expect([...DEPLOY_SERVICES]).toEqual(["front", "backend", "llm", "alert", "observe", "admin", "claude"]);
     for (const service of DEPLOY_SERVICES) {
       expect(parseDeployVersionsQuery({ service })).toEqual({ ok: true, query: { service } });
     }

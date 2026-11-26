@@ -440,7 +440,7 @@ describe("목록이 확인한 범위를 드러낸다", () => {
     overrides[`${FAKE_DEPLOY_MASTER_URL}/deploys`] = () => jsonBody(deploymentsBody(Array.from({ length: 200 }, (_, index) => deploymentRow({ request_id: `req-${index}`, service: "front" }))));
     const text = listText(await render());
     expect(text).toContain("감시 대상 1개는 아직 상태를 모름");
-    expect(text).toContain("배포: 최근 200건 안에서만 확인 — backend, llm, alert, observe, admin 은 확인하지 못함");
+    expect(text).toContain("배포: 최근 200건 안에서만 확인 — backend, llm, alert, observe, admin, claude 은 확인하지 못함");
     expect(text).toContain("확인된 범위에서는 열린 문제가 없습니다");
     expect(text.replace("확인된 범위에서는 열린 문제가 없습니다", "")).not.toContain("열린 문제가 없습니다");
   });

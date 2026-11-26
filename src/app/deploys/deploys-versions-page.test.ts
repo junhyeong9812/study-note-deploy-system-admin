@@ -246,7 +246,7 @@ describe("실패 — 그 구역에만 '확인하지 못함'과 까닭, 머리 ·
 describe("서비스 고르기(링크 · GET)", () => {
   it("서비스 여섯을 링크로 — 고른 것에 aria-current, '전체' 는 없다", async () => {
     const main = mainOf(await renderVersions({ service: "backend" }));
-    for (const service of ["front", "backend", "llm", "alert", "observe", "admin"]) expect(main).toContain(`href="/deploys/versions?service=${service}"`);
+    for (const service of ["front", "backend", "llm", "alert", "observe", "admin", "claude"]) expect(main).toContain(`href="/deploys/versions?service=${service}"`);
     expect(main).toMatch(/href="\/deploys\/versions\?service=backend" aria-current="page"/);
     expect(main).not.toMatch(/href="\/deploys\/versions\?service=front" aria-current/);
     expect(main).not.toContain(">전체<");
@@ -255,7 +255,7 @@ describe("서비스 고르기(링크 · GET)", () => {
   it("고르지 않았으면 안내 · 서비스 링크 · master 를 부르지 않는다", async () => {
     const main = mainOf(await renderVersions());
     expect(main).toContain("서비스를 고르면");
-    for (const service of ["front", "backend", "llm", "alert", "observe", "admin"]) expect(main).toContain(`href="/deploys/versions?service=${service}"`);
+    for (const service of ["front", "backend", "llm", "alert", "observe", "admin", "claude"]) expect(main).toContain(`href="/deploys/versions?service=${service}"`);
     expect(main).not.toContain("aria-current");
     expect(master.fetch).not.toHaveBeenCalled();
   });

@@ -295,7 +295,7 @@ describe("덮지 못한 범위의 문제를 고르면 '닫힘'이 아니라 '확
     ...Array.from({ length: 198 }, (_, index) => deploymentRow({ request_id: `req-front-${index}`, service: "front", accepted_at: iso(NOW - 4 * 60 * MINUTE - index * MINUTE) })),
   ]));
   const ALL_SERVICES_200 = () => jsonBody(deploymentsBody(Array.from({ length: 200 }, (_, index) => deploymentRow({
-    request_id: `req-${index}`, service: ["front", "backend", "llm", "alert", "observe", "admin"][index % 6], accepted_at: iso(NOW - 2 * 60 * MINUTE - index * MINUTE),
+    request_id: `req-${index}`, service: ["front", "backend", "llm", "alert", "observe", "admin", "claude"][index % 7], accepted_at: iso(NOW - 2 * 60 * MINUTE - index * MINUTE),
   }))));
   const FRONT_UNKNOWN = () => jsonBody(monitorsBody([
     { name: "front", status: "UNKNOWN", down_since: "", reason: "연결 실패" }, { name: "backend", status: "UP", down_since: "", reason: "" },
@@ -305,7 +305,7 @@ describe("덮지 못한 범위의 문제를 고르면 '닫힘'이 아니라 '확
   it("재현 — 배포 이력이 front 200건이면 deploy:llm:r999 는 unchecked(목록은 llm 을 확인하지 못했다고 말한다)", async () => {
     const fetch = fakeServers({ [`${FAKE_DEPLOY_MASTER_URL}/deploys`]: FRONT_ONLY_200 });
     const data = await collectIncidentsScreen(options(fetch), "deploy:llm:r999");
-    expect(data.list.scopeNotes).toContain("배포: 최근 200건 안에서만 확인 — backend, llm, alert, observe, admin 은 확인하지 못함");
+    expect(data.list.scopeNotes).toContain("배포: 최근 200건 안에서만 확인 — backend, llm, alert, observe, admin, claude 은 확인하지 못함");
     expect(data.selected).toEqual({ kind: "unchecked", incidentId: "deploy:llm:r999" });
     expect(fetch).toHaveBeenCalledTimes(INCIDENT_LIST_CALLS);
   });
