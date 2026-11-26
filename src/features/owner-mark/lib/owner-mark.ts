@@ -97,6 +97,15 @@ export function checkOwnerMarkSettings(input: { secret: string | undefined; doma
   return { ok: false, problems, clearableDomain: clearable ? input.domain : null };
 }
 
+/** 날 `Cookie` 머리글에서 이름이 정확히 study_owner 인 조각의 값들(명세 §18 — Next 의 cookies() 는 같은 이름이면 마지막 값 하나만 준다).
+ * 조각은 `;` 로 나누고 앞뒤 공백을 다듬는다 · 이름은 첫 `=` 앞(글자까지 같아야 — 대소문자 · 접두 · 접미가 다르면 세지 않는다) · 값은 첫 `=` 뒤 그대로
+ * (`=` · 따옴표가 들어 있어도 — 꼴은 verifyOwnerMark 가 본다) · 빈 값(`study_owner=`)도 하나로 센다 · `=` 없이 이름만인 조각(`study_owner`)은 빈 값으로 센다(닫힌 쪽)
+ * · 머리글이 없으면 빈 목록.
+ * 뼈대: 테스트 설계 워커가 계약만 고정했다. 몸은 구현 워커가 채운다. */
+export function ownerCookieValuesFromHeader(_cookieHeader: string | null): string[] {
+  throw new Error("not implemented: ownerCookieValuesFromHeader");
+}
+
 /** cookieValues = 요청에 실려 온 study_owner 의 값들(없으면 빈 목록). */
 export function verifyOwnerMark(cookieValues: readonly string[], secret: string | undefined, nowMilliseconds: number): OwnerMarkVerdict {
   if (secret === undefined || !isUsableOwnerSecret(secret)) return { owner: false, reason: "no_secret" };

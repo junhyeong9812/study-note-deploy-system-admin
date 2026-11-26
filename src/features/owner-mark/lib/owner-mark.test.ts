@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   OWNER_COOKIE_MAX_AGE_SECONDS, OWNER_COOKIE_NAME, OWNER_MARK_FUTURE_TOLERANCE_MILLISECONDS, OWNER_MARK_LIFETIME_MILLISECONDS, OWNER_SECRET_MINIMUM_BYTES,
   buildClearedOwnerMarkCookieHeader, buildOwnerMarkCookieHeader, checkOwnerMarkSettings, isHostWithinDomain, isUsableOwnerSecret, isValidOwnerCookieDomain,
-  ownerMarkSignature, ownerMarkValue, verifyOwnerMark,
+  ownerCookieValuesFromHeader, ownerMarkSignature, ownerMarkValue, verifyOwnerMark,
 } from "@/features/owner-mark/lib/owner-mark";
 
 const VECTOR_SECRET = "0123456789abcdef0123456789abcdef";
@@ -172,5 +172,32 @@ describe("3 · 4 쿠키의 머리글 — 속성을 하나씩 값으로", () => {
     expect(pair).toBe("study_owner=");
     expect(new Set(attributes)).toEqual(new Set(["Domain=example.test", "Path=/", "Max-Age=0", "Secure", "HttpOnly", "SameSite=Lax"]));
     expect(attributes).toHaveLength(6);
+  });
+});
+
+describe("§18 ① 날 Cookie 머리글에서 study_owner 를 센다 — backend(톰캣)와 같게", () => {
+  it.each([
+    ["머리글 없음", null, []],
+    ["빈 머리글", "", []],
+    ["하나", "study_owner=ow1.1.abc", ["ow1.1.abc"]],
+    ["둘(같은 값)", "study_owner=a; study_owner=a", ["a", "a"]],
+    ["둘(쓰레기 먼저)", "study_owner=junk; study_owner=ow1.1.abc", ["junk", "ow1.1.abc"]],
+    ["다른 쿠키 사이", "admin_session=v1.1.x; study_owner=ow1.1.abc; theme=dark", ["ow1.1.abc"]],
+    ["조각 앞뒤 공백", "  study_owner=ow1.1.abc  ;x=1", ["ow1.1.abc"]],
+    ["빈 값도 하나로 센다", "study_owner=ow1.1.abc; study_owner=", ["ow1.1.abc", ""]],
+    ["값 안의 = 는 그대로", "study_owner=a=b=c", ["a=b=c"]],
+    ["따옴표로 감싼 값은 그대로", "study_owner=\"ow1.1.abc\"", ["\"ow1.1.abc\""]],
+    ["비슷한 이름은 세지 않는다", "xstudy_owner=a; study_owner2=b; STUDY_OWNER=c; study_owne=d; study-owner=e", []],
+    ["= 가 없이 이름만인 조각은 빈 값으로 센다(닫힌 쪽)", "study_owner; study_owner=ok", ["", "ok"]],
+    ["= 가 없는 다른 이름은 세지 않는다", "junk; study_owner=ok", ["ok"]],
+  ] as [string, string | null, string[]][])("%s", (_label, header, values) => {
+    expect(ownerCookieValuesFromHeader(header)).toEqual(values);
+  });
+
+  it("센 값을 판정에 넘기면 — 둘이면 malformed, 따옴표면 malformed", () => {
+    const good = ownerMarkValue(VECTOR_SECRET, NOW);
+    expect(verifyOwnerMark(ownerCookieValuesFromHeader(`study_owner=${good}; study_owner=${good}`), VECTOR_SECRET, NOW)).toEqual({ owner: false, reason: "malformed" });
+    expect(verifyOwnerMark(ownerCookieValuesFromHeader(`study_owner="${good}"`), VECTOR_SECRET, NOW)).toEqual({ owner: false, reason: "malformed" });
+    expect(verifyOwnerMark(ownerCookieValuesFromHeader(`study_owner=${good}`), VECTOR_SECRET, NOW)).toMatchObject({ owner: true });
   });
 });

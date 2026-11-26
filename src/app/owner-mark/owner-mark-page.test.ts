@@ -5,17 +5,39 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const state = vi.hoisted(() => ({ cookies: new Map<string, string>() }));
+/** 요청의 쿠키 — 사례는 Map 으로 한 이름에 한 값을 두거나(cookies), 날 `Cookie` 머리글을 그대로 둔다(rawCookieHeader — 같은 이름 둘 · 공백 · 빈 값).
+ * 가짜 headers() 는 그 날 머리글을, 가짜 cookies() 는 Next 처럼 그 머리글을 풀어 **같은 이름이면 마지막 값 하나만** 준다(명세 §18 — 실행으로 확인된 Next 의 동작). */
+const state = vi.hoisted(() => {
+  const cookies = new Map<string, string>();
+  const holder = { cookies, rawCookieHeader: null as string | null };
+  const header = (): string | null => holder.rawCookieHeader ?? (cookies.size === 0 ? null : [...cookies].map(([name, value]) => `${name}=${value}`).join("; "));
+  const parsed = (): Map<string, string> => {
+    const result = new Map<string, string>();
+    for (const piece of (header() ?? "").split(";")) {
+      const at = piece.indexOf("=");
+      if (at < 0) continue;
+      result.set(piece.slice(0, at).trim(), piece.slice(at + 1).trim());   // 같은 이름은 마지막 값이 남는다
+    }
+    return result;
+  };
+  return Object.assign(holder, { header, parsed });
+});
 
 vi.mock("server-only", () => ({}));
 vi.mock("@/features/auth/server/temporary-restriction-status", () => ({ isTemporaryRestrictionActive: () => false }));
 vi.mock("next/headers", () => ({
-  cookies: async () => ({
-    get: (name: string) => (state.cookies.has(name) ? { name, value: state.cookies.get(name)! } : undefined),
-    has: (name: string) => state.cookies.has(name),
-    getAll: (name?: string) => [...state.cookies].filter(([key]) => name === undefined || key === name).map(([key, value]) => ({ name: key, value })),
-  }),
-  headers: async () => new Headers(),
+  cookies: async () => {
+    const parsed = state.parsed();
+    return {
+      get: (name: string) => (parsed.has(name) ? { name, value: parsed.get(name)! } : undefined),
+      has: (name: string) => parsed.has(name),
+      getAll: (name?: string) => [...parsed].filter(([key]) => name === undefined || key === name).map(([key, value]) => ({ name: key, value })),
+    };
+  },
+  headers: async () => {
+    const header = state.header();
+    return new Headers(header === null ? {} : { cookie: header });
+  },
 }));
 vi.mock("next/navigation", () => ({ redirect: (location: string) => { throw new Error(`redirect:${location}`); } }));
 
@@ -71,6 +93,7 @@ beforeEach(() => {
   vi.stubEnv("OWNER_COOKIE_SECRET", FAKE_OWNER_COOKIE_SECRET);
   vi.stubEnv("OWNER_COOKIE_DOMAIN", FAKE_OWNER_COOKIE_DOMAIN);
   state.cookies.clear();
+  state.rawCookieHeader = null;
   state.cookies.set(SESSION_COOKIE_NAME, issueSessionToken(FAKE_SIGNING_KEY, NOW - 60_000));
   vi.stubGlobal("fetch", vi.fn(() => { throw new Error("주인 표시 화면은 다른 서버를 부르지 않는다"); }));
   for (const method of ["log", "warn", "error", "info", "debug"] as const) vi.spyOn(console, method).mockImplementation(() => undefined);
@@ -172,6 +195,57 @@ describe("2 설정이 쓸 수 없으면 — 단추 대신 '설정 없음'(무엇
   it("어드민이 그 도메인 밖이면 까닭을 글로 — '브라우저가 쿠키를 버립니다'", async () => {
     vi.stubEnv("OWNER_COOKIE_DOMAIN", "other.test");
     expect(alerts(section(await render(), "actions"))[0]).toContain("브라우저가 쿠키를 버립니다");
+  });
+});
+
+describe("§18 ① 같은 이름의 쿠키 둘 — 날 Cookie 머리글에서 세어 backend 와 같게(둘 이상 → malformed)", () => {
+  const sessionPiece = () => `${SESSION_COOKIE_NAME}=${issueSessionToken(FAKE_SIGNING_KEY, NOW - 60_000)}`;
+  const good = () => ownerMarkValue(FAKE_OWNER_COOKIE_SECRET, NOW - DAY);
+
+  it.each([
+    ["맞는 값 둘", () => `study_owner=${good()}; study_owner=${good()}`],
+    ["쓰레기 다음 맞는 값(Next 는 맞는 값만 준다)", () => `study_owner=junk; study_owner=${good()}`],
+    ["맞는 값 다음 쓰레기", () => `study_owner=${good()}; study_owner=junk`],
+    ["맞는 값 다음 빈 값(빈 값도 하나로 센다)", () => `study_owner=${good()}; study_owner=`],
+  ] as [string, () => string][])("%s → '표시가 있으나 쓸 수 없음 (malformed)'", async (_label, makePieces) => {
+    state.rawCookieHeader = `${sessionPiece()}; ${makePieces()}`;
+    const status = textOf(section(await render(), "status"));
+    expect(status).toContain("표시가 있으나 쓸 수 없음 (malformed)");
+    expect(status).not.toContain("주인으로 표시됨");
+  });
+
+  it("하나면 지금 그대로 — 조각 앞뒤의 공백 · 다른 이름(xstudy_owner · study_owner2 · STUDY_OWNER)은 세지 않는다", async () => {
+    state.rawCookieHeader = `xstudy_owner=junk;${sessionPiece()};   study_owner=${good()}  ; study_owner2=junk; STUDY_OWNER=junk`;
+    expect(textOf(section(await render(), "status"))).toContain("주인으로 표시됨");
+  });
+
+  it("GET /api/owner-mark 도 같은 판정 — 둘이면 verdict malformed", async () => {
+    state.rawCookieHeader = `${sessionPiece()}; study_owner=${good()}; study_owner=${good()}`;
+    const body = await (await ownerMarkGet(new Request(new URL("/api/owner-mark", FAKE_ORIGIN)))).json() as { data: { verdict: unknown } };
+    expect(body.data.verdict).toEqual({ owner: false, reason: "malformed" });
+  });
+});
+
+describe("§18 ② '표시 없음'의 까닭 후보 — 표시 없음이고 설정이 맞을 때만 한 줄", () => {
+  const HINT = "표시하기를 눌렀는데도 표시 없음이면";
+
+  it("표시 없음 + 설정 ok → 한 줄(OWNER_COOKIE_DOMAIN · 공개 접미사 · 브라우저가 쿠키를 막았)", async () => {
+    const status = textOf(section(await render(), "status"));
+    expect(status).toContain("표시 없음");
+    expect(status).toContain(HINT);
+    const hint = status.slice(status.indexOf(HINT));
+    for (const words of ["OWNER_COOKIE_DOMAIN", "공개 접미사", "브라우저가 쿠키를 막았"]) expect(hint).toContain(words);
+  });
+
+  it.each([
+    ["주인", () => { state.cookies.set("study_owner", ownerMarkValue(FAKE_OWNER_COOKIE_SECRET, NOW - DAY)); }],
+    ["쓸 수 없음(expired)", () => { state.cookies.set("study_owner", ownerMarkValue(FAKE_OWNER_COOKIE_SECRET, NOW - 31 * DAY)); }],
+    ["설정 없음 — 열쇠(no_secret)", () => { vi.stubEnv("OWNER_COOKIE_SECRET", ""); }],
+    ["설정 없음 — 도메인(표시는 없지만 설정이 ok 가 아님)", () => { vi.stubEnv("OWNER_COOKIE_DOMAIN", ""); }],
+    ["설정 없음 — 어드민이 도메인 밖", () => { vi.stubEnv("OWNER_COOKIE_DOMAIN", "other.test"); }],
+  ] as [string, () => void][])("%s → 그 줄이 없다", async (_label, arrange) => {
+    arrange();
+    expect(textOf(await render())).not.toContain(HINT);
   });
 });
 
