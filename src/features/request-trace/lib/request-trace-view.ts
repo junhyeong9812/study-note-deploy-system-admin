@@ -5,6 +5,7 @@ import { LOG_ID_PATTERN } from "@/features/log-trace/lib/log-trace-query";
 import { hasLinesBefore } from "@/features/log-trace/lib/log-trace-view";
 import type { LogClient } from "@/features/logs/lib/log-client";
 import type { LogEntryView, LogQuery } from "@/features/logs/lib/log-query";
+import { protocolServiceName } from "@/features/request-trace/lib/request-trace-overlay";
 import type { RequestTraceQuery } from "@/features/request-trace/lib/request-trace-query";
 import type { RequestSpans } from "@/features/request-trace/lib/request-trace-spans";
 import { parseIsoUtc } from "@/shared/lib/query-input";
@@ -38,7 +39,7 @@ export interface ServiceSegment {
 
 /** 서비스 하나의 시간 줄. */
 export interface ServiceLane {
-  /** 규약 이름(T7 — 로그 이름 ci-agent-<서버> 는 ci-agent) */
+  /** 규약 이름(protocolServiceName — 로그 이름 ci-agent-<서버> 는 ci-agent) */
   service: string;
   /** 이 줄로 모인 원래 로그 이름(이름순, 겹치지 않게) */
   logServices: string[];
@@ -56,7 +57,7 @@ export interface ServiceLane {
   segments: ServiceSegment[];
 }
 
-/** 이웃한 두 줄 사이에 로그가 없는 구간. */
+/** 이웃한 두 줄 사이에 로그가 없는 구간(앞뒤 서비스는 규약 이름). */
 export interface TimelineGap {
   beforeService: string;
   afterService: string;
@@ -74,9 +75,9 @@ export interface RequestTimeline {
   lineCount: number;
   /** 처음 나타난 차례 */
   lanes: ServiceLane[];
-  /** 거친 차례 — 이웃한 같은 서비스는 하나로(front → backend → llm → backend → front) */
+  /** 거친 차례(규약 이름) — 이웃한 같은 서비스는 하나로(front → backend → llm → backend → front) */
   visits: string[];
-  /** 시간순(관측 서버의 정렬 열쇠 (밀리초, 순번)의 오름차순) */
+  /** 시간순(관측 서버의 정렬 열쇠 (밀리초, 순번)의 오름차순) — 줄마다의 서비스는 원래 로그 이름 */
   lines: RequestTimelineLine[];
   /** 긴 것부터 최대 TIMELINE_LONGEST_GAP_COUNT 개, 0ms 는 넣지 않는다, 길이가 같으면 이른 것부터 */
   longestGaps: TimelineGap[];
@@ -123,26 +124,29 @@ export function buildRequestTimeline(lines: readonly LogEntryView[]): RequestTim
   const lanes: ServiceLane[] = [];
   const visits: string[] = [];
   const gaps: TimelineGap[] = [];
-  let previous: RequestTimelineLine | null = null;
+  let previous: { service: string; at: string; offsetMilliseconds: number } | null = null;
   for (const line of timelineLines) {
-    let lane = lanes.find((candidate) => candidate.service === line.service);
+    // 줄 · 차례 · 틈은 규약 이름으로 묶는다(에이전트 둘의 줄은 한 줄) — lines 의 서비스는 원래 이름 그대로
+    const service = protocolServiceName(line.service);
+    let lane = lanes.find((candidate) => candidate.service === service);
     if (lane === undefined) {
       lane = {
-        service: line.service, logServices: [],   // T7 뼈대 — 짝짓기 구현 전
+        service, logServices: [],
         firstAt: line.at, lastAt: line.at, startOffsetMilliseconds: line.offsetMilliseconds, durationMilliseconds: 0,
         lineCount: 0, errorCount: 0, warningCount: 0, startFraction: 0, lengthFraction: 0, segments: [],
       };
       lanes.push(lane);
     }
     const isError = line.level === "error";
+    if (!lane.logServices.includes(line.service)) lane.logServices = [...lane.logServices, line.service].sort();
     lane.lastAt = line.at;
     lane.durationMilliseconds = line.offsetMilliseconds - lane.startOffsetMilliseconds;
     lane.lineCount += 1;
     if (isError) lane.errorCount += 1;
     if (line.level === "warning") lane.warningCount += 1;
-    if (previous === null || previous.service !== line.service) {
+    if (previous === null || previous.service !== service) {
       // 다른 서비스의 줄 뒤에 다시 나타나면 새 구간 — 사이의 빈 곳을 한 구간으로 메우지 않는다
-      visits.push(line.service);
+      visits.push(service);
       lane.segments.push({
         firstAt: line.at, lastAt: line.at, startOffsetMilliseconds: line.offsetMilliseconds, durationMilliseconds: 0,
         lineCount: 0, errorCount: 0, startFraction: 0, lengthFraction: 0,
@@ -155,11 +159,11 @@ export function buildRequestTimeline(lines: readonly LogEntryView[]): RequestTim
     if (isError) segment.errorCount += 1;
     if (previous !== null && line.offsetMilliseconds > previous.offsetMilliseconds) {
       gaps.push({
-        beforeService: previous.service, afterService: line.service, beforeAt: previous.at, afterAt: line.at,
+        beforeService: previous.service, afterService: service, beforeAt: previous.at, afterAt: line.at,
         startOffsetMilliseconds: previous.offsetMilliseconds, durationMilliseconds: line.offsetMilliseconds - previous.offsetMilliseconds,
       });
     }
-    previous = line;
+    previous = { service, at: line.at, offsetMilliseconds: line.offsetMilliseconds };
   }
   for (const lane of lanes) {
     lane.startFraction = fractionOf(lane.startOffsetMilliseconds, totalMilliseconds);

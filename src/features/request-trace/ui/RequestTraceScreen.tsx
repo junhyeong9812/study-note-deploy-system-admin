@@ -1,4 +1,5 @@
-/** 요청 추적 화면의 본문(서버 컴포넌트) — 폼 · 잘못된 입력 · 실패 · 요약(첫 줄부터 마지막 줄까지 · 줄 수 · 거친 차례) · 서비스별 시간 줄 표 · 가장 긴 틈 · 그 요청의 로그 · 한계 안내.
+/** 요청 추적 화면의 본문(서버 컴포넌트) — 폼 · 잘못된 입력 · 실패 · 요약(첫 줄부터 마지막 줄까지 · 줄 수 · 거친 차례) · 서비스별 시간 줄 표 · 가장 긴 틈 · 그 요청의 로그 · 한계 안내 ·
+ * 접속 기록의 구간(TrafficSpansSection — 로그 조회와 따로 실패한다). 서비스는 규약 이름(ci-agent-<서버> 는 ci-agent)으로 묶고 원래 이름은 줄 수 곁에 보인다.
  * 받은 값(진입 함수의 결과)과 주소의 글자만 그린다 — 다른 서버를 부르지 않고, 서버 모듈 · 클라이언트 · 설정을 임포트하지 않는다.
  * 폼은 GET 제출, 로그 화면으로 가는 것은 링크라 브라우저 스크립트 없이 동작한다.
  * 막대는 꾸밈(aria-hidden) — 시작 · 걸린 시간 · 줄 수 · 오류 · 경고는 표의 글자로 다 있다. 구간마다 막대 조각 하나(다시 나타난 서비스는 줄 안에서 끊겨 보인다),
@@ -8,7 +9,9 @@ import { LOG_QUERY_DEFAULT_LIMIT } from "@/features/logs/lib/log-query";
 import { LevelBadge, formatKoreanLogTime } from "@/features/logs/ui/LogTable";
 import { logsHref } from "@/features/logs/ui/logs-address";
 import logStyles from "@/features/logs/ui/LogSearchScreen.module.css";
+import { logServicesNote } from "@/features/request-trace/lib/request-trace-overlay";
 import { REQUEST_TRACE_MAXIMUM_LINES, type RequestTimeline, type RequestTraceView, type ServiceSegment } from "@/features/request-trace/lib/request-trace-view";
+import { TrafficSpansSection } from "@/features/request-trace/ui/TrafficSpansSection";
 import { REQUEST_TRACE_PATH } from "@/features/request-trace/ui/request-trace-address";
 import styles from "@/features/request-trace/ui/RequestTraceScreen.module.css";
 import parts from "@/shared/ui/screen-parts.module.css";
@@ -91,7 +94,7 @@ function Timeline({ requestId, timeline, truncated }: { requestId: string; timel
                 <th scope="row">{lane.service}</th>
                 <td>{formatGap(lane.startOffsetMilliseconds)}</td>
                 <td>{formatElapsed(lane.durationMilliseconds)}</td>
-                <td>{`${lane.lineCount}줄`}</td>
+                <td>{`${lane.lineCount}줄${logServicesNote(lane.service, lane.logServices)}`}</td>
                 <td>{`${lane.errorCount}건`}</td>
                 <td>{`${lane.warningCount}건`}</td>
                 <td className={styles.barCell}>
@@ -161,7 +164,7 @@ export interface RequestTraceScreenProps {
 }
 
 export function RequestTraceScreen({ view, typedRequestId }: RequestTraceScreenProps) {
-  const { trace, requestId } = view;
+  const { trace, requestId, spans } = view;
   const invalid = trace !== null && !trace.ok && trace.reason === "invalid_input";
   return (
     <main className={logStyles.main}>
@@ -197,6 +200,10 @@ export function RequestTraceScreen({ view, typedRequestId }: RequestTraceScreenP
             : <Timeline requestId={requestId} timeline={trace.value.timeline} truncated={trace.value.truncated} />}
           <LimitNotes />
         </section>
+      )}
+
+      {spans !== null && trace !== null && (
+        <TrafficSpansSection spans={spans} logLines={trace.ok ? trace.value.timeline?.lines ?? [] : null} />
       )}
     </main>
   );
