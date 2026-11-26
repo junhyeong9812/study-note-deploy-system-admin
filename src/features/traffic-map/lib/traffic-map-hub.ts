@@ -30,6 +30,9 @@ export interface TrafficMapHub {
   snapshot(range: TrafficMapRange): Promise<TrafficMapEvent>;
   /** 마지막 사건들을 잊는다(다음 조회가 관측 서버를 새로 부른다) */
   clear(): void;
+  /** 멈춘다(프로세스가 끝날 때 — T8 리뷰 1): 걸린 타이머를 모두 거두고, 그 뒤로는 관측 서버를 부르지 않는다
+   * (도는 조회가 끝나도 보내지 · 다시 걸지 않는다 · subscribe 는 아무것도 하지 않는 떠나기를 돌려준다 · snapshot 은 부르지 않고 unavailable 사건). 두 번 불러도 같다. */
+  stop(): void;
 }
 
 export interface TrafficMapHubOptions {
@@ -130,6 +133,9 @@ export function createTrafficMapHub(options: TrafficMapHubOptions): TrafficMapHu
         state.last = null;
         state.lastAt = 0;
       }
+    },
+    stop() {
+      throw new Error("T8 리뷰 1: 구현 전");
     },
   };
 }

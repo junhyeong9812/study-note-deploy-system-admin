@@ -9,6 +9,7 @@ import { unrefScheduler, type Scheduler, type ScheduledTask } from "@/features/a
 import { requireApiSession, requireSession } from "@/features/auth/server/require-session";
 import { createTrafficMapClient } from "@/features/traffic-map/lib/traffic-map-client";
 import { createTrafficMapHub, type TrafficMapEvent, type TrafficMapHub } from "@/features/traffic-map/lib/traffic-map-hub";
+import type { TrafficStreamRegistry } from "@/features/traffic-map/lib/traffic-stream-registry";
 import { parseTrafficMapRange, trafficMapWindow, type TrafficMapRange } from "@/features/traffic-map/lib/traffic-map-query";
 import { buildTrafficMapView, type TrafficMapView } from "@/features/traffic-map/lib/traffic-map-view";
 import { readServerConfig } from "@/shared/config/server-config";
@@ -31,6 +32,8 @@ export interface TrafficMapScreen {
 
 export interface TrafficStreamOptions {
   hub?: TrafficMapHub;
+  /** 열린 흐름의 목록 — 기본 defaultTrafficStreamRegistry()(T8 리뷰 1) */
+  streams?: TrafficStreamRegistry;
   /** 연결마다의 타이머(주석 줄 · 세션 끝) — 기본 unrefScheduler */
   scheduler?: Scheduler;
   now?: () => number;
@@ -124,4 +127,25 @@ export async function trafficStreamResponse(request: Request, options: TrafficSt
     status: 200,
     headers: { "Content-Type": "text/event-stream; charset=utf-8", "Cache-Control": "no-store, no-transform", "X-Accel-Buffering": "no" },
   });
+}
+
+/** 멈춤 신호를 물리는 이음매 — 기본은 process.once(signal, handler). 테스트는 가짜를 준다(T8 리뷰 1 — 뼈대). */
+export type ShutdownSignal = "SIGTERM" | "SIGINT";
+export type ShutdownSignalRegistrar = (signal: ShutdownSignal, handler: () => void) => void;
+
+/** 프로세스에 하나인 열린 흐름의 목록(T8 리뷰 1 — 뼈대, 구현 전). */
+export function defaultTrafficStreamRegistry(): TrafficStreamRegistry {
+  throw new Error("T8 리뷰 1: 구현 전");
+}
+
+/** 멈춘다 — 허브를 멈추고(타이머 · 조회) 열린 흐름을 모두 닫는다(닫기 전에 사건을 보내지 않는다). 그 뒤의 새 흐름은 503(T8 리뷰 1 — 뼈대, 구현 전). */
+export function shutdownTrafficMap(hub: TrafficMapHub = defaultTrafficMapHub(), streams: TrafficStreamRegistry = defaultTrafficStreamRegistry()): void {
+  void hub; void streams;
+  throw new Error("T8 리뷰 1: 구현 전");
+}
+
+/** SIGTERM · SIGINT 에 shutdownTrafficMap 을 물린다 — 프로세스에 한 번(두 번째부터는 아무것도 하지 않는다). instrumentation 의 register() 가 부른다(T8 리뷰 1 — 뼈대, 구현 전). */
+export function registerTrafficMapShutdown(registrar?: ShutdownSignalRegistrar): void {
+  void registrar;
+  throw new Error("T8 리뷰 1: 구현 전");
 }

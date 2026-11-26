@@ -159,6 +159,44 @@ describe("연결", () => {
   });
 });
 
+describe("다시 붙은 직후 — 새 지도를 받을 때까지 낡은 값(T8 리뷰 2)", () => {
+  const live = () => run(initialTrafficMapStreamState(trafficMapEventOf(5, [fakeEdge({ count: 10 })])), { type: "open" }, mapAction(trafficMapEventOf(6, [fakeEdge({ count: 11 })])));
+
+  it("끊김 → open(새 map 전) — connection 은 reopened(open 이 아니다) · 지도 · 마지막으로 받은 시각은 그대로", () => {
+    const before = live();
+    const state = run(before, { type: "error" }, { type: "open" });
+    expect(state).toMatchObject({ connection: "reopened", lastReceivedAt: before.lastReceivedAt, lastSequence: null });
+    expect(countOf(state).count).toBe(11);
+  });
+
+  it("다시 붙은 뒤 깨진 사건은 받은 것이 아니다 — reopened 그대로", () => {
+    expect(run(live(), { type: "error" }, { type: "open" }, { type: "map", data: "{broken" }).connection).toBe("reopened");
+  });
+
+  it("다시 붙은 뒤 새 map 을 받으면 open · 그 시각", () => {
+    const next = trafficMapEventOf(1, [fakeEdge({ count: 50 })]);
+    const state = run(live(), { type: "error" }, { type: "open" }, mapAction(next));
+    expect(state).toMatchObject({ connection: "open", lastReceivedAt: next.fetchedAt, lastSequence: 1 });
+  });
+
+  it("다시 붙은 뒤의 실패 사건도 받은 것 — open · failure(앞 지도는 그대로)", () => {
+    const state = run(live(), { type: "error" }, { type: "open" }, mapAction({ sequence: 1, fetchedAt: "2026-11-25T04:11:00.000Z", range: "5m", map: upstreamFailure("unavailable", { status: 503 }) }));
+    expect(state).toMatchObject({ connection: "open", failure: { reason: "unavailable" } });
+    expect(countOf(state).count).toBe(11);
+  });
+
+  it("다시 붙은 채 또 끊기면 reconnecting · 세션 끝이면 session_ended", () => {
+    expect(run(live(), { type: "error" }, { type: "open" }, { type: "error" }).connection).toBe("reconnecting");
+    expect(run(live(), { type: "error" }, { type: "open" }, { type: "session" }).connection).toBe("session_ended");
+  });
+
+  it("맨 처음 붙을 때(받은 지도가 서버의 첫 그림뿐) — open 만으로는 connecting 그대로 · 첫 map 에 open", () => {
+    const initial = initialTrafficMapStreamState(trafficMapEventOf(5, [fakeEdge({ count: 10 })]));
+    expect(run(initial, { type: "open" }).connection).toBe("connecting");
+    expect(run(initial, { type: "open" }, mapAction(trafficMapEventOf(5, [fakeEdge({ count: 10 })]))).connection).toBe("open");
+  });
+});
+
 describe("connectTrafficMapStream — 가짜 EventSource", () => {
   beforeEach(() => { FakeEventSource.instances = []; });
 

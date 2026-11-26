@@ -225,16 +225,16 @@ describe("선의 표 — 그림 말고 표로도 같은 값", () => {
 });
 
 describe("모름을 드러낸다 — 서버의 수신 상태", () => {
-  it("수집 상태 표 — 서버 · 읽기 진도 · 수신 · 잃은 순번 · 버린 요청별 줄", async () => {
+  it("수집 상태 표 — 서버 · 읽기 진도 · 수신 · 잃은 순번 · 읽지 못한 구간 · 버린 요청별 줄", async () => {
     observe.store.servers = [
       fakeMapServer({ server: "ci-agent-158" }),
       fakeMapServer({ server: "ci-agent-164", readProgressMilliseconds: null, receiveDelayed: true, sequenceGaps: 2, requestsDropped: 3, requestsRejected: 1 }),
     ];
     const html = await renderPage();
-    expect(headerOf(html, "수집 상태")).toEqual(["서버", "읽기 진도", "수신", "잃은 순번", "버린 요청별 줄"]);
+    expect(headerOf(html, "수집 상태")).toEqual(["서버", "읽기 진도", "수신", "잃은 순번", "읽지 못한 구간", "버린 요청별 줄"]);
     expect(rowsOf(html, "수집 상태")).toEqual([
-      ["ci-agent-158", formatKoreanLogTime("2026-11-25T04:09:00Z"), "정상", "0개", "0줄"],
-      ["ci-agent-164", "아직 없음", "수신 지연", "2개", "4줄"],
+      ["ci-agent-158", formatKoreanLogTime("2026-11-25T04:09:00Z"), "정상", "0개", "없음", "0줄"],
+      ["ci-agent-164", "아직 없음", "수신 지연", "2개", "없음", "4줄"],
     ]);
   });
 
@@ -244,7 +244,9 @@ describe("모름을 드러낸다 — 서버의 수신 상태", () => {
     const text = textOf(html);
     expect(text).toContain("수집이 밀린 서버: ci-agent-164 — 그 서버가 받은 요청은 지도에 덜 들어왔을 수 있습니다");
     expect(text).toContain("채우는 중인 선이 있습니다 — 그 수는 아직 늘 수 있고 판정(색)에 쓰지 않습니다");
-    expect(text).toContain("잃은 순번이 있는 서버: ci-agent-164 2개 — 잃은 항목의 요청은 지도에 없습니다(확정된 잃음과 아직 기다리는 중을 가르지 않습니다)");
+    expect(text).toContain("최근에 잃은 항목: ci-agent-164 2개 — 이 기간의 것인지는 알 수 없습니다");
+    expect(text).not.toContain("잃은 항목의 요청은 지도에 없습니다");
+    expect(text).not.toContain("잃은 순번이 있는 서버");
     expect(html.match(/role="note"/g)?.length ?? 0).toBeGreaterThanOrEqual(3);
   });
 
@@ -253,7 +255,61 @@ describe("모름을 드러낸다 — 서버의 수신 상태", () => {
     const text = textOf(await renderPage());
     expect(text).not.toContain("수집이 밀린 서버");
     expect(text).not.toContain("채우는 중인 선이 있습니다");
-    expect(text).not.toContain("잃은 순번이 있는 서버");
+    expect(text).not.toContain("최근에 잃은 항목");
+    expect(text).not.toContain("읽지 못한 구간이 있는 서버");
+  });
+
+  it("읽지 못한 구간(missing) — 칸의 글: 없음 · 하나 · 쉼표 · 넷부터는 앞의 셋과 '외 n개' · 주소 꼴은 가림(T8 리뷰 4)", async () => {
+    observe.store.servers = [
+      fakeMapServer({ server: "a-one", missing: ["backend-nginx:rotated"] }),
+      fakeMapServer({ server: "b-three", missing: ["a:rotated", "b:replaced", "c:unreadable"] }),
+      fakeMapServer({ server: "c-five", missing: ["a:rotated", "b:rotated", "c:rotated", "d:rotated", "e:rotated"] }),
+      fakeMapServer({ server: "d-address", missing: ["nginx-192.0.2.4:rotated"] }),
+      fakeMapServer({ server: "e-none" }),
+    ];
+    const html = await renderPage();
+    expect(rowsOf(html, "수집 상태").map((row) => [row[0], row[4]])).toEqual([
+      ["a-one", "backend-nginx:rotated"], ["b-three", "a:rotated, b:replaced, c:unreadable"], ["c-five", "a:rotated, b:rotated, c:rotated 외 2개"],
+      ["d-address", "nginx-(주소):rotated"], ["e-none", "없음"],
+    ]);
+    expect(html).not.toContain("192.0.2.4");
+  });
+
+  it("읽지 못한 구간이 있는 서버 — 알림 한 줄(role=note)", async () => {
+    observe.store.servers = [fakeMapServer({ server: "ci-agent-158", missing: ["backend-nginx:rotated"] }), fakeMapServer({ server: "ci-agent-164" })];
+    const html = await renderPage();
+    expect(textOf(html)).toContain("읽지 못한 구간이 있는 서버: ci-agent-158 — 그 구간의 요청은 지도에 덜 들어왔을 수 있습니다");
+    expect(html).toMatch(/role="note"[^>]*>읽지 못한 구간이 있는 서버: /);
+  });
+
+  it("선이 없고 읽지 못한 구간만 있으면 — '아직 모를 수 있습니다'(0 이라 하지 않는다)", async () => {
+    observe.store.edges = [];
+    observe.store.servers = [fakeMapServer({ missing: ["backend-nginx:rotated"] })];
+    const text = textOf(await renderPage());
+    expect(text).toContain("이 기간에 받은 선이 없습니다 — 읽지 못한 구간이 있는 서버가 있어 아직 모를 수 있습니다");
+    expect(text).not.toContain("지나간 요청이 없습니다");
+  });
+
+  it("두 표의 머리는 낭독기가 열의 머리로 읽는다(th scope=col)", async () => {
+    const html = await renderPage();
+    for (const label of ["통신 선", "수집 상태"]) {
+      const head = /<thead[\s>][\s\S]*?<\/thead>/.exec(tableByLabel(html, label))![0];
+      const cells = head.match(/<th(?=[\s>])[^>]*>/g) ?? [];
+      expect(cells.length).toBeGreaterThan(0);
+      for (const cell of cells) expect(cell, label).toContain('scope="col"');
+    }
+  });
+
+  it("옛 문구('잃은 항목의 요청은 지도에 없습니다')가 지도 기능의 소스 어디에도 없다(T8 리뷰 5)", async () => {
+    const { readdirSync, readFileSync, statSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const { fileURLToPath } = await import("node:url");
+    const root = fileURLToPath(new URL("../../features/traffic-map", import.meta.url));
+    const walk = (directory: string): string[] => readdirSync(directory).flatMap((entry) => {
+      const full = join(directory, entry);
+      return statSync(full).isDirectory() ? walk(full) : /\.(ts|tsx)$/.test(entry) && !/\.test\.tsx?$/.test(entry) ? [full] : [];
+    });
+    for (const file of walk(root)) expect(readFileSync(file, "utf8"), file).not.toContain("잃은 항목의 요청은 지도에 없습니다");
   });
 
   it("관측 서버에 닿지 못하면(첫 그림) — '지도를 읽지 못했습니다' · 표 없음 · 원문 없음", async () => {
@@ -287,6 +343,24 @@ describe("연결의 상태 — 본문을 상태마다", () => {
     expect(statusText(html)).toBe(`끊김 — 다시 붙는 중 · 마지막으로 받은 시각 ${firstTime}`);
     expect(textOf(html)).toContain(`아래 값은 ${firstTime} 의 것입니다 — 지금 값이 아닐 수 있습니다`);
     expect(html).toMatch(/role="note"[^>]*>[^<]*아래 값은/);
+  });
+
+  it("다시 붙은 직후(새 map 전) — '다시 붙음 — 새 값을 기다리는 중 · 마지막으로 받은 시각 <시각>' · 낡은 값 안내는 그대로(실시간이 아니다 — T8 리뷰 2)", async () => {
+    const html = await renderBody(stateAfter(first, { type: "open" }, { type: "error" }, { type: "open" }));
+    expect(statusText(html)).toBe(`다시 붙음 — 새 값을 기다리는 중 · 마지막으로 받은 시각 ${firstTime}`);
+    expect(statusText(html)).not.toContain("실시간");
+    expect(textOf(html)).toContain(`아래 값은 ${firstTime} 의 것입니다 — 지금 값이 아닐 수 있습니다`);
+  });
+
+  it("다시 붙은 뒤 새 map 을 받으면 — '실시간 · 마지막 갱신 <새 시각>' · 낡은 값 안내가 없어진다", async () => {
+    const next = trafficMapEventOf(1, [fakeEdge({ service: "front", caller: "edge", count: 7 })], { fetchedAt: Date.UTC(2026, 10, 25, 4, 12, 0, 0) });
+    const html = await renderBody(stateAfter(first, { type: "open" }, { type: "error" }, { type: "open" }, mapAction(next)));
+    expect(statusText(html)).toBe(`실시간 · 마지막 갱신 ${formatKoreanLogTime(next.fetchedAt)}`);
+    expect(textOf(html)).not.toContain("지금 값이 아닐 수 있습니다");
+  });
+
+  it("맨 처음 붙을 때(새 map 전) — '연결 중 · 마지막 갱신 <첫 그림의 시각>'(실시간이 아니다)", async () => {
+    expect(statusText(await renderBody(stateAfter(first, { type: "open" })))).toBe(`연결 중 · 마지막 갱신 ${firstTime}`);
   });
 
   it("열려 있을 때는 낡은 값이라는 글이 없다", async () => {

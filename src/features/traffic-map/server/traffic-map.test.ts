@@ -127,6 +127,7 @@ function recordingHub() {
     }),
     snapshot: vi.fn(async (range: TrafficMapRange) => trafficMapEventOf(1, chatMapEdges(), { range })),
     clear: vi.fn(),
+    stop: vi.fn(),
   };
   return { hub, listeners, unsubscribeCalls, send: (event: TrafficMapEvent) => { for (const listener of [...listeners.keys()]) listener(event); } };
 }
