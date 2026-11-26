@@ -1,6 +1,8 @@
-/** 분석 화면의 꼴(순수 — 서버 진입 함수가 채우고 화면이 그린다) · 경로 · 고정 글. 계약: ui/IncidentAnalysisScreen.test.ts · app/incidents/incident-analysis-page.test.ts.
- * 뼈대: 상수 · 형만 — incidentAnalysisHref 는 구현 워커가 채운다. */
+/** 분석 화면의 꼴(순수 — 서버 진입 함수가 채우고 화면이 그린다) · 경로와 입력 검증 · 고정 글. 계약: ui/IncidentAnalysisScreen.test.ts · app/incidents/incident-analysis-page.test.ts. */
 import type { AnalysisMaskKind } from "@/features/incident-analysis/lib/analysis-masking";
+import { isIncidentId } from "@/features/incidents/lib/incident-id";
+import { singleValue } from "@/shared/lib/query-input";
+import { invalidInput, type SearchParamsInput, type UpstreamFailure } from "@/shared/lib/upstream-result";
 import type { AnalysisEntry, AnalysisFailureReason } from "@/features/incident-analysis/lib/incident-analysis-service";
 
 export const INCIDENT_ANALYSIS_PATH = "/incidents/analysis";
@@ -93,6 +95,21 @@ export type IncidentAnalysisScreenOutcome =
 
 /** `/incidents/analysis?incident=<식별자>`(+ `&preview=1`). */
 export function incidentAnalysisHref(incidentId: string, preview = false): string {
-  void incidentId; void preview;
-  throw new Error("incidentAnalysisHref: 구현 전");
+  const search = new URLSearchParams({ incident: incidentId });
+  if (preview) search.set("preview", "1");
+  return `${INCIDENT_ANALYSIS_PATH}?${search.toString()}`;
+}
+
+export interface IncidentAnalysisQuery {
+  incidentId: string;
+  preview: boolean;
+}
+
+/** 입력: `incident`(필수 · isIncidentId) · `preview`(없음 또는 정확히 "1"). 같은 이름이 여러 번이면 거절 — 거절이면 다른 서버를 부르지 않는다. */
+export function parseIncidentAnalysisQuery(input: SearchParamsInput): { ok: true; query: IncidentAnalysisQuery } | UpstreamFailure {
+  const incident = singleValue(input, "incident");
+  if (incident === null || incident === "many" || !isIncidentId(incident)) return invalidInput("incident");
+  const preview = singleValue(input, "preview");
+  if (preview === "many" || (preview !== null && preview !== "1")) return invalidInput("preview");
+  return { ok: true, query: { incidentId: incident, preview: preview === "1" } };
 }

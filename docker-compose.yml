@@ -20,6 +20,7 @@ x-admin: &admin
     GITHUB_TOKEN: ${GITHUB_TOKEN:-}               # 배포 상세(GitHub 읽기) — 선택
     CLAUDE_RUNNER_URL: ${CLAUDE_RUNNER_URL:-}     # Claude 사용량 화면 — 선택
     CLAUDE_RUNNER_SETTINGS_SECRET: ${CLAUDE_RUNNER_SETTINGS_SECRET:-}
+    CLAUDE_RUNNER_SECRET: ${CLAUDE_RUNNER_SECRET:-}  # 문제 화면의 분석(실행 자리 호출) — 선택
     SERVER_NAME: admin
   healthcheck:
     # localhost 금지 — 컨테이너 안에서 ::1로 풀리는 함정 (규약)

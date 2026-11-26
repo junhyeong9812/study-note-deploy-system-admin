@@ -25,6 +25,9 @@ export interface ServerConfig {
    * 비면 그 화면의 칸이 "설정 없음". 설정용 비밀값은 머리글로만 싣고 로그 · 응답 · 오류 문구에 내지 않는다. */
   claudeRunnerUrl: string;
   claudeRunnerSettingsSecret: string;
+  /** 실행 자리의 **호출용** 비밀값(X-Claude-Runner-Secret — 문제 화면의 분석 POST /runs) — **선택**: 비면 분석을 시작하지 않는다(503 "설정 없음").
+   * 설정용 비밀값과 다른 값. 머리글로만 싣고 로그 · 응답 · 오류 문구에 내지 않는다. */
+  claudeRunnerCallSecret: string;
   serverName: string;
 }
 
@@ -52,6 +55,7 @@ export function readServerConfig(): ServerConfig {
     githubToken: environmentValue("GITHUB_TOKEN"),
     claudeRunnerUrl: environmentValue("CLAUDE_RUNNER_URL"),
     claudeRunnerSettingsSecret: environmentValue("CLAUDE_RUNNER_SETTINGS_SECRET"),
+    claudeRunnerCallSecret: environmentValue("CLAUDE_RUNNER_SECRET"),
     serverName: environmentValue("SERVER_NAME") || "admin",
   };
 }

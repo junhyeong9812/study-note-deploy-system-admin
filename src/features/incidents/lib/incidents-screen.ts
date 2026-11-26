@@ -9,12 +9,14 @@
  *   목록에 없으면: 그 식별자가 목록이 덮지 못한 범위(list.uncovered — 출처 실패 · 오류 로그 상한 · 상태를 모르는 감시 대상 · 배포 이력 상한 안에 보이지 않은 서비스)에
  *   들면(isUncovered) { kind: "unchecked" }(열려 있는지 확인하지 못함), 아니면 { kind: "closed" }(그 범위를 확인했고 지금 열려 있지 않음) — 2단계 호출 없음.
  *   목록의 범위 줄과 이 판정은 같은 값(list.uncovered)을 읽는다.
- * 호출 수: 목록 INCIDENT_LIST_CALLS + 근거 INCIDENT_EVIDENCE_MAXIMUM_CALLS 이하. */
+ * 호출 수: 목록 INCIDENT_LIST_CALLS + 근거 INCIDENT_EVIDENCE_MAXIMUM_CALLS 이하.
+ * lookupIncident — 같은 1 · 2단계로 고른 문제 하나만(분석 화면 · 보내기가 쓴다): 열려 있으면 그 문제와 (원하면) **맞추기 전의** 근거 묶음(분석은 가린 뒤에 맞춘다),
+ *   아니면 닫힘 · 확인하지 못함(같은 판정). 근거를 원하지 않으면 목록의 네 호출뿐. */
 import type { FetchLike, TimeoutSignalFactory } from "@/features/auth/lib/types";
 import { createDeployGitClient, type DeployGitClient } from "@/features/deploy-detail/lib/deploy-git-client";
 import { createDeployHistoryClient } from "@/features/deploys/lib/deploy-history-client";
 import { INCIDENT_DEPLOY_LOOKUP_LIMIT, ERROR_LOG_COUNT_LIMIT, ERROR_LOG_WINDOW_MILLISECONDS, isUncovered, openIncidentsFrom } from "@/features/incidents/lib/incident-list";
-import type { IncidentList, IncidentSources } from "@/features/incidents/lib/incident-list";
+import type { IncidentList, IncidentSources, OpenIncident } from "@/features/incidents/lib/incident-list";
 import { buildIncidentEvidence, type IncidentEvidence, type IncidentEvidenceDependencies } from "@/features/incidents/lib/incident-evidence";
 import { fitIncidentEvidence, incidentEvidenceText } from "@/features/incidents/lib/incident-evidence-text";
 import { createIncidentClient, type IncidentClient } from "@/features/log-trace/lib/incident-client";
@@ -138,12 +140,17 @@ function logFailures(options: IncidentsScreenOptions, sources: IncidentSources, 
   for (const [cell, value] of cells) if (value.state === "failed") options.logFailure(cell, value.failure);
 }
 
+/** 목록에 없는 문제 — 덮지 못한 범위에 들면 확인하지 못함, 아니면 닫힘. */
+function notListedKind(list: IncidentList, incidentId: string): "closed" | "unchecked" {
+  return isUncovered(list.uncovered, incidentId) ? "unchecked" : "closed";
+}
+
 /** 2단계 — 고른 문제가 목록에 있으면 근거 묶음(맞춘 묶음과 그 글), 없으면 닫힘 · 확인하지 못함(호출 없음). */
 async function selectedIncident(options: IncidentsScreenOptions, incidentId: string, list: IncidentList, sources: IncidentSources,
                                  nowMilliseconds: number): Promise<SelectedIncident> {
   const incident = list.incidents.find((candidate) => candidate.id === incidentId);
   if (incident === undefined) {
-    return { kind: isUncovered(list.uncovered, incidentId) ? "unchecked" : "closed", incidentId };
+    return { kind: notListedKind(list, incidentId), incidentId };
   }
   const evidence = fitIncidentEvidence(await buildIncidentEvidence(evidenceDependencies(options), { incident, sources, nowMilliseconds }));
   return { kind: "evidence", evidence, text: incidentEvidenceText(evidence) };
@@ -156,4 +163,24 @@ export async function collectIncidentsScreen(options: IncidentsScreenOptions, in
   const selected = incidentId === null ? null : await selectedIncident(options, incidentId, list, sources, nowMilliseconds);
   logFailures(options, sources, selected?.kind === "evidence" ? selected.evidence : null);
   return { checkedAt: new Date(nowMilliseconds).toISOString(), list, selected };
+}
+
+/** 고른 문제 하나 — 열려 있으면 그 문제와 맞추기 전의 근거 묶음(withEvidence 일 때만 — 아니면 null), 아니면 닫힘 · 확인하지 못함. */
+export type IncidentLookup =
+  | { kind: "open"; incident: OpenIncident; evidence: IncidentEvidence | null }
+  | { kind: "closed" }
+  | { kind: "unchecked" };
+
+export async function lookupIncident(options: IncidentsScreenOptions, incidentId: string, withEvidence: boolean): Promise<IncidentLookup> {
+  const nowMilliseconds = options.now();
+  const sources = await collectIncidentSources(options, nowMilliseconds);
+  const list = openIncidentsFrom(sources);
+  const incident = list.incidents.find((candidate) => candidate.id === incidentId);
+  if (incident === undefined) {
+    logFailures(options, sources, null);
+    return { kind: notListedKind(list, incidentId) };
+  }
+  const evidence = withEvidence ? await buildIncidentEvidence(evidenceDependencies(options), { incident, sources, nowMilliseconds }) : null;
+  logFailures(options, sources, evidence);
+  return { kind: "open", incident, evidence };
 }

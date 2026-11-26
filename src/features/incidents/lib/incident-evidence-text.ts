@@ -84,8 +84,14 @@ function multiLine(text: string): MultiLineValue {
   return { multiLine: text };
 }
 
-function oneLine(text: string): string {
+/** 한 줄짜리 값의 거름(textLine 이 값마다 쓰는 것) — 분석의 글(incident-analysis/lib/analysis-prompt.ts)도 같은 거름을 쓴다. */
+export function oneLine(text: string): string {
   return text.replace(ONE_LINE_BREAK, " ");
+}
+
+/** 글을 줄 끝 글자 여덟 가지(`\r\n` 은 하나로)로 나눈 줄들 — 줄마다 거르지는 않는다(여러 줄 값과 같은 나눔). */
+export function splitTextLines(text: string): string[] {
+  return text.split(LINE_TERMINATOR);
 }
 
 /** 글을 만드는 동안의 거름 — 값 하나의 길이 상한(없으면 null)과 그 상한으로 자른 값의 수. */
@@ -98,7 +104,7 @@ type TextLineWriter = (template: TemplateStringsArray, ...values: (string | numb
 
 function textLineWriter(filter: TextFilter): TextLineWriter {
   const filtered = (value: string | number | MultiLineValue): string => {
-    if (typeof value === "object") return value.multiLine.split(LINE_TERMINATOR).map(oneLine).join("\n| ");
+    if (typeof value === "object") return splitTextLines(value.multiLine).map(oneLine).join("\n| ");
     const text = oneLine(String(value));
     if (filter.valueMaximumLength === null) return text;
     const codePoints = Array.from(text);
