@@ -11,7 +11,7 @@ function koreanTime(milliseconds: number): string {
   return formatKoreanTime(new Date(milliseconds).toISOString());
 }
 
-function StatusBody({ verdict }: { verdict: OwnerMarkVerdict }) {
+function StatusBody({ verdict, settingsOk }: { verdict: OwnerMarkVerdict; settingsOk: boolean }) {
   if (verdict.owner) {
     return (
       <>
@@ -20,7 +20,19 @@ function StatusBody({ verdict }: { verdict: OwnerMarkVerdict }) {
       </>
     );
   }
-  if (verdict.reason === "no_cookie") return <p>표시 없음</p>;
+  if (verdict.reason === "no_cookie") {
+    return (
+      <>
+        <p>표시 없음</p>
+        {/* 공개 접미사 · 도메인 밖이면 브라우저가 쿠키를 조용히 버린다 — 설정 검사로는 가릴 수 없어 까닭의 후보를 보인다 */}
+        {settingsOk && (
+          <p className={styles.meta}>
+            표시하기를 눌렀는데도 표시 없음이면: OWNER_COOKIE_DOMAIN 이 이 어드민과 사이트가 함께 속한 도메인이 아니거나 공개 접미사(co.kr · github.io 류)이거나, 브라우저가 쿠키를 막았을 수 있습니다.
+          </p>
+        )}
+      </>
+    );
+  }
   if (verdict.reason === "no_secret") return <p className={styles.failure}>판정할 수 없음 — 열쇠 설정 없음 (no_secret)</p>;
   return <p className={styles.failure}>{`표시가 있으나 쓸 수 없음 (${verdict.reason})`}</p>;
 }
@@ -55,7 +67,7 @@ export function OwnerMarkScreen({ screen }: { screen: OwnerMarkScreenData }) {
       </p>
       <section className={styles.section} aria-labelledby="owner-mark-status-title">
         <h2 className={styles.sectionTitle} id="owner-mark-status-title">이 브라우저의 상태</h2>
-        <StatusBody verdict={verdict} />
+        <StatusBody verdict={verdict} settingsOk={settings.ok} />
       </section>
       <section className={styles.section} aria-labelledby="owner-mark-actions-title">
         <h2 className={styles.sectionTitle} id="owner-mark-actions-title">표시하기 · 지우기</h2>
