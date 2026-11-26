@@ -204,6 +204,41 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+describe("서비스 이름의 짝짓기(T7 — 규약 2.1 · 7.1: 로그 이름 ci-agent-<서버> 를 ci-agent 로 읽는다)", () => {
+  const line = (offset: number, sequence: number, service: string, level = "info") =>
+    entryOf(fakeLogLine({ milliseconds: T + offset, sequence, service, level, message: `${service} ${offset}` }));
+
+  it("두 서버의 에이전트 로그는 한 줄(ci-agent) — 처음 나타난 차례 · 줄 수 · 오류 수 · 첫 줄과 마지막 줄이 합쳐지고, 원래 이름은 logServices(이름순)", () => {
+    const timeline = timelineOf([
+      line(0, 0, "ci-master"), line(100, 0, "ci-agent-9", "error"), line(300, 0, "ci-agent-158"), line(500, 0, "ci-master"), line(700, 0, "ci-agent-158", "warning"),
+    ]);
+    expect(timeline.lanes.map((lane) => [lane.service, lane.logServices, lane.lineCount, lane.errorCount, lane.warningCount])).toEqual([
+      ["ci-master", ["ci-master"], 2, 0, 0], ["ci-agent", ["ci-agent-158", "ci-agent-9"], 3, 1, 1],
+    ]);
+    const agent = timeline.lanes[1];
+    expect(agent).toMatchObject({ firstAt: javaInstantText(T + 100), lastAt: javaInstantText(T + 700), startOffsetMilliseconds: 100, durationMilliseconds: 600 });
+  });
+
+  it("이웃한 두 에이전트의 줄은 한 구간 · 거친 차례도 하나 — 다른 서비스가 끼면 끊긴다", () => {
+    const timeline = timelineOf([line(0, 0, "ci-master"), line(100, 0, "ci-agent-9"), line(300, 0, "ci-agent-158"), line(500, 0, "ci-master"), line(700, 0, "ci-agent-158")]);
+    expect(timeline.visits).toEqual(["ci-master", "ci-agent", "ci-master", "ci-agent"]);
+    expect(timeline.lanes[1].segments.map((segment) => [segment.startOffsetMilliseconds, segment.durationMilliseconds, segment.lineCount])).toEqual([[100, 200, 2], [700, 0, 1]]);
+    expect(timeline.longestGaps.map((gap) => [gap.beforeService, gap.afterService, gap.durationMilliseconds])).toEqual([
+      ["ci-agent", "ci-agent", 200], ["ci-agent", "ci-master", 200], ["ci-master", "ci-agent", 200],
+    ]);
+  });
+
+  it("줄 하나하나는 원래 로그 이름 그대로(로그 표 · 로그 화면 링크가 그 이름을 쓴다)", () => {
+    const timeline = timelineOf([line(0, 0, "ci-agent-9"), line(10, 0, "ci-agent-158")]);
+    expect(timeline.lines.map((entry) => entry.service)).toEqual(["ci-agent-9", "ci-agent-158"]);
+  });
+
+  it("llm 과 llm-wrapper 는 합치지 않는다 · 짝짓지 않는 이름은 logServices 가 자기 이름 하나", () => {
+    const timeline = timelineOf([line(0, 0, "llm"), line(10, 0, "llm-wrapper"), line(20, 0, "front")]);
+    expect(timeline.lanes.map((lane) => [lane.service, lane.logServices])).toEqual([["llm", ["llm"]], ["llm-wrapper", ["llm-wrapper"]], ["front", ["front"]]]);
+  });
+});
+
 describe("관측 서버 조회 — 부르는 조건", () => {
   it("한 번 — GET /logs?request_id&from=지금−30일&to=지금&limit=500, 그 밖의 조건 없음 · 비밀값 머리글", async () => {
     const fake = createFakeObserveLogs([...chatScenarioLines(), ...manyLines(0)]);

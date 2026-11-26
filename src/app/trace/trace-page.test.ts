@@ -27,6 +27,7 @@ import {
   javaInstantText, logIdOf, masterHandlerFor, observeCalls, type FakeLogLine,
 } from "@/features/log-trace/lib/log-trace-test-fakes";
 import { TRACE_REQUEST_ID, TRACE_START_MILLISECONDS, chatScenarioLines } from "@/features/request-trace/lib/request-trace-test-fakes";
+import { callsToPath, createFakeObserveTraffic, observeLogsAndTraffic } from "@/features/request-trace/lib/traffic-span-test-fakes";
 import {
   FAKE_ALERT_SECRET, FAKE_ALERT_URL, FAKE_DEPLOY_MASTER_URL, FAKE_DEPLOY_SECRET, FAKE_OBSERVE_SECRET, FAKE_OBSERVE_URL, expectNoForbiddenText,
   leakyErrorBody, leakyNetworkError, textResponse, type RoutedFetchHandler,
@@ -42,8 +43,9 @@ const networkFetch = createTraceFetch({
   alert: alertHandlerFor([]),
 });
 
+/** 관측 서버 하나 — 로그(`/logs`)와 통신(`/traffic/*` — T7, 비어 있음. 구간을 겹친 화면은 trace-spans-page.test). */
 function useLines(lines: FakeLogLine[]) {
-  observeHandler = createFakeObserveLogs(lines).handler;
+  observeHandler = observeLogsAndTraffic(createFakeObserveLogs(lines).handler, createFakeObserveTraffic().handler);
 }
 
 async function renderElement(element: unknown): Promise<string> {
@@ -240,6 +242,29 @@ describe("서비스별 시간 줄 — 글로 읽힌다", () => {
   });
 });
 
+describe("서비스 이름의 짝짓기(T7 — 에이전트의 로그 이름 ci-agent-<서버> 는 ci-agent 한 줄)", () => {
+  it("줄 머리는 ci-agent · 줄 수 곁에 원래 이름들 · 두 서버의 줄이 합쳐진 수 · llm 과 llm-wrapper 는 따로 · 로그 표는 원래 이름", async () => {
+    useLines([
+      fakeLogLine({ milliseconds: T, sequence: 0, service: "ci-master", level: "info", requestId: TRACE_REQUEST_ID, message: "배포 접수" }),
+      fakeLogLine({ milliseconds: T + 100, sequence: 0, service: "ci-agent-9", level: "error", requestId: TRACE_REQUEST_ID, message: "빌드 실패" }),
+      fakeLogLine({ milliseconds: T + 300, sequence: 0, service: "ci-agent-158", level: "info", requestId: TRACE_REQUEST_ID, message: "받음" }),
+      fakeLogLine({ milliseconds: T + 400, sequence: 0, service: "llm", level: "info", requestId: TRACE_REQUEST_ID, message: "옛 이름" }),
+      fakeLogLine({ milliseconds: T + 500, sequence: 0, service: "llm-wrapper", level: "info", requestId: TRACE_REQUEST_ID, message: "새 이름" }),
+    ]);
+    const html = await render({ request_id: TRACE_REQUEST_ID });
+    expect(cellTexts(laneRow(html, "ci-agent")).slice(0, 5)).toEqual(["+100ms", "200ms", "2줄(ci-agent-158, ci-agent-9)", "1건", "0건"]);
+    expect(cellTexts(laneRow(html, "ci-master")).slice(0, 5)).toEqual(["+0ms", "0ms", "1줄", "0건", "0건"]);
+    expect(cellTexts(laneRow(html, "llm")).slice(2, 3)).toEqual(["1줄"]);
+    expect(cellTexts(laneRow(html, "llm-wrapper")).slice(2, 3)).toEqual(["1줄"]);
+    const laneTable = elementByLabel(html, "table", "서비스별 시간 줄");
+    expect(laneTable).not.toMatch(/scope="row"[^>]*>ci-agent-/);
+    expect(textOf(html)).toContain("ci-master → ci-agent → llm → llm-wrapper");
+    const logTable = elementByLabel(html, "table", "이 요청의 로그");
+    expect(textOf(logTable)).toContain("ci-agent-9");
+    expect(textOf(logTable)).toContain("ci-agent-158");
+  });
+});
+
 describe("그 요청의 로그 전체", () => {
   it("시간순(같은 밀리초는 순번 차례)으로 서비스 · 수준(낱말) · 글", async () => {
     const html = await render({ request_id: TRACE_REQUEST_ID });
@@ -358,10 +383,10 @@ describe("HTML 에 없는 것 · 내비게이션", () => {
     expect(html).not.toContain(FAKE_OBSERVE_URL);
   });
 
-  it("내비게이션의 '요청 추적'에 aria-current, 관측 서버는 한 번만", async () => {
+  it("내비게이션의 '요청 추적'에 aria-current, 관측 서버의 로그 조회는 한 번만", async () => {
     const html = await render({ request_id: TRACE_REQUEST_ID });
     expect(html).toMatch(/href="\/trace" aria-current="page"[^>]*>요청 추적</);
-    expect(observeCalls(networkFetch)).toHaveLength(1);
+    expect(callsToPath(observeCalls(networkFetch), "/logs")).toHaveLength(1);
   });
 
   it("메타 제목", async () => {

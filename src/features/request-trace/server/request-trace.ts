@@ -22,15 +22,15 @@ async function buildRequestTraceView(query: RequestTraceQuery): Promise<RequestT
   const trace = await buildRequestTrace(logs, query, Date.now());
   const logLine = upstreamFailureLogLine("request-trace", "trace", trace);
   if (logLine !== null) void log("screen-request-trace", logLine, "warning");
-  return { requestId: query.requestId, trace };
+  return { requestId: query.requestId, trace, spans: null };   // T7 뼈대 — 구현 전
 }
 
 /** 화면용 — 세션이 없으면 /login(관측 서버를 부르지 않는다). 입력이 없으면 빈 폼(부르지 않는다) · 빈 값을 포함해 틀리면 invalid_input. */
 export async function loadRequestTrace(searchParams: SearchParamsInput): Promise<RequestTraceView> {
   await requireSession();
-  if (searchParams.request_id === undefined) return { requestId: null, trace: null };
+  if (searchParams.request_id === undefined) return { requestId: null, trace: null, spans: null };
   const parsed = parseRequestTraceQuery(searchParams);
-  if (!parsed.ok) return { requestId: null, trace: parsed };
+  if (!parsed.ok) return { requestId: null, trace: parsed, spans: null };
   return buildRequestTraceView(parsed.query);
 }
 

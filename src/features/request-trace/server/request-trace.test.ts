@@ -33,6 +33,7 @@ import { SESSION_COOKIE_NAME, SESSION_LIFETIME_MILLISECONDS, issueSessionToken }
 import { FAKE_ORIGIN, FAKE_SIGNING_KEY } from "@/features/auth/lib/test-fakes";
 import { createFakeObserveLogs } from "@/features/log-trace/lib/log-trace-test-fakes";
 import { TRACE_REQUEST_ID, chatScenarioLines } from "@/features/request-trace/lib/request-trace-test-fakes";
+import { callsToPath, createFakeObserveTraffic, observeLogsAndTraffic } from "@/features/request-trace/lib/traffic-span-test-fakes";
 import type { RequestTraceView } from "@/features/request-trace/lib/request-trace-view";
 import { loadRequestTrace, requestTraceResponse } from "@/features/request-trace/server/request-trace";
 import {
@@ -46,7 +47,12 @@ const FEATURE_DIRECTORY = join(SOURCE_DIRECTORY, "features", "request-trace");
 const OTHER_KEY = "fake-other-signing-key-for-tests-0000000000";
 const DAY = 24 * 60 * 60 * 1000;
 
-let observeHandler: RoutedFetchHandler = createFakeObserveLogs(chatScenarioLines()).handler;
+/** 관측 서버 하나 — 로그(`/logs`)와 통신(`/traffic/*` — T7, 비어 있음). */
+function defaultObserveHandler(): RoutedFetchHandler {
+  return observeLogsAndTraffic(createFakeObserveLogs(chatScenarioLines()).handler, createFakeObserveTraffic().handler);
+}
+
+let observeHandler: RoutedFetchHandler = defaultObserveHandler();
 const upstreamFetch = createRoutedFetch((url, init) => {
   if (url.origin !== new URL(FAKE_OBSERVE_URL).origin) throw new Error(`unexpected upstream ${url.hostname}`);
   return observeHandler(url, init);
@@ -95,7 +101,7 @@ beforeEach(() => {
   vi.stubEnv("ALERT_SECRET", FAKE_ALERT_SECRET);
   vi.stubEnv("BACKEND_URL", FAKE_BACKEND_URL);
   vi.stubEnv("LOG_REDIS_URL", "");
-  observeHandler = createFakeObserveLogs(chatScenarioLines()).handler;
+  observeHandler = defaultObserveHandler();
   upstreamFetch.mockClear();
   vi.stubGlobal("fetch", upstreamFetch);
   setSessionCookie(undefined);
@@ -155,7 +161,7 @@ describe("화면용 — 세션이 있으면", () => {
   beforeEach(() => { validSession(); });
 
   it("입력 없음 → 빈 화면(requestId · trace 둘 다 null), 부르지 않는다", async () => {
-    expect(await loadRequestTrace({})).toEqual({ requestId: null, trace: null });
+    expect(await loadRequestTrace({})).toEqual({ requestId: null, trace: null, spans: null });
     expect(upstreamFetch).not.toHaveBeenCalled();
   });
 
@@ -174,15 +180,16 @@ describe("화면용 — 세션이 있으면", () => {
     expect(upstreamFetch).not.toHaveBeenCalled();
   });
 
-  it("관측 서버를 한 번 — GET · 본문 없음 · no-store · X-Observe-Secret 만 · 창은 지금부터 거꾸로 30일", async () => {
+  it("관측 서버의 로그 조회를 한 번 — GET · 본문 없음 · no-store · X-Observe-Secret 만 · 창은 지금부터 거꾸로 30일(구간 조회는 T7 — request-trace-spans.test)", async () => {
     const before = Date.now();
     const view = await loadRequestTrace({ request_id: TRACE_REQUEST_ID });
     const after = Date.now();
     expect(view.requestId).toBe(TRACE_REQUEST_ID);
     const trace = okValue(view.trace!);
     expect(trace.timeline?.visits).toEqual(["front", "backend", "llm", "backend", "front"]);
-    expect(upstreamFetch).toHaveBeenCalledTimes(1);
-    const [input, init] = upstreamFetch.mock.calls[0];
+    const logCalls = callsToPath(upstreamFetch.mock.calls, "/logs");
+    expect(logCalls).toHaveLength(1);
+    const [input, init] = logCalls[0];
     const url = new URL(input);
     expect(url.pathname).toBe("/logs");
     expect(url.searchParams.get("request_id")).toBe(TRACE_REQUEST_ID);

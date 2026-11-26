@@ -6,6 +6,7 @@ import { hasLinesBefore } from "@/features/log-trace/lib/log-trace-view";
 import type { LogClient } from "@/features/logs/lib/log-client";
 import type { LogEntryView, LogQuery } from "@/features/logs/lib/log-query";
 import type { RequestTraceQuery } from "@/features/request-trace/lib/request-trace-query";
+import type { RequestSpans } from "@/features/request-trace/lib/request-trace-spans";
 import { parseIsoUtc } from "@/shared/lib/query-input";
 import { upstreamFailure, type UpstreamResult } from "@/shared/lib/upstream-result";
 
@@ -37,7 +38,10 @@ export interface ServiceSegment {
 
 /** 서비스 하나의 시간 줄. */
 export interface ServiceLane {
+  /** 규약 이름(T7 — 로그 이름 ci-agent-<서버> 는 ci-agent) */
   service: string;
+  /** 이 줄로 모인 원래 로그 이름(이름순, 겹치지 않게) */
+  logServices: string[];
   firstAt: string;
   lastAt: string;
   startOffsetMilliseconds: number;
@@ -93,6 +97,8 @@ export interface RequestTraceView {
   requestId: string | null;
   /** 입력 없음 = null(부르지 않는다) · 거절 = invalid_input(field "request_id") · 그 밖 = 관측 서버 조회의 결과 */
   trace: UpstreamResult<RequestTrace> | null;
+  /** 접속 기록의 구간(T7) — 입력 없음 · 거절 = null(부르지 않는다) · 그 밖 = 구간 조회의 결과(로그 조회와 따로 실패한다) */
+  spans: UpstreamResult<RequestSpans> | null;
 }
 
 /** 로그 id(`밀리초-순번`)의 순번 — 같은 밀리초 안의 차례(관측 서버의 정렬 열쇠). */
@@ -122,7 +128,8 @@ export function buildRequestTimeline(lines: readonly LogEntryView[]): RequestTim
     let lane = lanes.find((candidate) => candidate.service === line.service);
     if (lane === undefined) {
       lane = {
-        service: line.service, firstAt: line.at, lastAt: line.at, startOffsetMilliseconds: line.offsetMilliseconds, durationMilliseconds: 0,
+        service: line.service, logServices: [],   // T7 뼈대 — 짝짓기 구현 전
+        firstAt: line.at, lastAt: line.at, startOffsetMilliseconds: line.offsetMilliseconds, durationMilliseconds: 0,
         lineCount: 0, errorCount: 0, warningCount: 0, startFraction: 0, lengthFraction: 0, segments: [],
       };
       lanes.push(lane);
