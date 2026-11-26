@@ -62,7 +62,12 @@ export function incidentRedeployPreviewHref(service: DeployService, incidentId: 
 }
 
 /** 문제의 조치로 들어온 확인 화면 · 접수의 고정 글(명세 ⑫ §24). */
+/** 접수 직전의 다시 정하기(문제 모드) 전체의 기한 — 절대(명세 ⑫ §26). 넘으면 409 `recheck_timeout`. */
+export const INCIDENT_RECHECK_TIMEOUT_MILLISECONDS = 8_000;
+
 export const REDEPLOY_INCIDENT_TEXT = {
+  /** 다시 정하기가 기한을 넘었을 때 409 화면의 까닭 한 줄(명세 ⑫ §26) */
+  recheckTimeout: "상태를 제때 확인하지 못했습니다",
   /** 확인 화면 · 결과에 한 줄 — `문제 <ID> 의 조치` */
   headingPrefix: "문제 ",
   headingSuffix: " 의 조치",
