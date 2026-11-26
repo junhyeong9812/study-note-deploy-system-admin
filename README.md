@@ -2,7 +2,7 @@
 
 운영자 한 명이 배포 이력 · 로그 · 서비스 상태 · 로그인 시도 기록을 읽기 전용으로 보는 어드민 화면(Next.js 15 App Router).
 어드민 백엔드는 따로 두지 않는다 — 이 앱의 서버 쪽 코드가 master · 관측 · 알림 · backend 서버를 직접 부른다.
-지금 있는 것: 로그인(`/login`) · 로그인 뒤 홈(`/`, 화면 넷의 메뉴) · 화면 넷(`/deploys` · `/logs` · `/status` · `/login-attempts`) · `POST /api/auth/login` · `POST /api/auth/logout` · `GET /api/health` · 화면 넷과 두 상세의 데이터 경로(아래 "구성") · Claude 사용량(`/claude-usage` — 아래 "Claude 사용량").
+지금 있는 것: 로그인(`/login`) · 로그인 뒤 홈(`/`, 화면 넷의 메뉴) · 화면 넷(`/deploys` · `/logs` · `/status` · `/login-attempts`) · `POST /api/auth/login` · `POST /api/auth/logout` · `GET /api/health` · 화면 넷과 두 상세의 데이터 경로(아래 "구성") · Claude 사용량(`/claude-usage` — 아래 "Claude 사용량") · 주인 표시(`/owner-mark` — 아래 "주인 표시").
 
 ## 구성
 
@@ -72,6 +72,7 @@
 - **선택**: `LOG_REDIS_URL`(비면 stdout 만) — 비어 있으면 시작 로그에 이름만 1줄. `GITHUB_TOKEN`(배포 상세가 GitHub REST API 로 PR 제목 · 본문을 읽을 때 싣는 토큰 — 커밋 목록 · diff 는 GitHub 가 아니라 master 에서 읽는다) — 비면 토큰 없이 부른다(GitHub 익명 한도 IP 당 시간당 60회, 토큰이 있으면 5000회 — 한도를 넘으면 상세의 PR 구역만 "GitHub: 한도 초과"). 권한은 **공개 저장소 읽기 전용**만 준다(fine-grained token 의 "Public repositories (read-only)", 그 밖의 권한 없음). 값은 서버 쪽에만 있고 로그 · 응답 · 오류 문구에 나오지 않는다.
   `CLAUDE_RUNNER_URL`(Claude 실행 자리의 주소 — 해석되는 http(s), 끝의 `/` 허용) · `CLAUDE_RUNNER_SETTINGS_SECRET`(실행 자리의 **설정용** 비밀값 — 호출용 비밀값과 다른 값) — 비면 Claude 사용량 화면의 칸이 "설정 없음"이고 상한 바꾸기는 503(실행 자리가 배포되기 전에도 어드민이 뜬다 · 시작 검사에 넣지 않는다). 비밀값만 비면 헬스(인증 없음)는 읽는다.
   `CLAUDE_RUNNER_SECRET`(실행 자리의 **호출용** 비밀값 — 실행 자리의 것과 같은 값 · 설정용과 다른 값) — 비면(또는 `CLAUDE_RUNNER_URL` · `LOG_REDIS_URL` 이 비면) 문제의 분석은 "설정 없음"이고 보내기는 503.
+  `OWNER_COOKIE_SECRET`(주인 표시의 서명 열쇠 — backend 와 같은 값 · UTF-8 32바이트 이상 · **글자 그대로** 쓴다, 앞뒤 공백도 열쇠의 일부) · `OWNER_COOKIE_DOMAIN`(쿠키의 Domain — 어드민과 사이트가 함께 속한 상위 도메인, `ADMIN_ORIGIN` 의 호스트가 그 도메인이거나 그 아래) — 하나라도 쓸 수 없으면 주인 표시 화면이 "설정 없음"이고 표시하기는 503(시작 검사에 넣지 않는다). 열쇠만 없고 도메인이 맞으면 지우기는 된다.
 
 ## 보안 경계 요약
 
@@ -128,3 +129,13 @@
   - 확인 값 `cc1.<만든 시각>.<서명>` — 세션 서명 키의 HMAC-SHA256 으로 계정 · 만든 시각 · 앞 값의 바꾼 시각(`changed_at`) · 앞 값 · 새 값 전부를 묶는다(값 · 계정은 싣지 않는다, 상태 없음, 5분). 앞 값의 바꾼 시각을 묶어 넓힌 뒤 누가 같은 값으로 되돌려도 같은 확인 값으로 다시 넓히지 못한다. 용도 줄이 달라 재배포의 확인 값 · 세션 토큰과 서로 바꿔 끼워지지 않는다.
 - 결과(HTML): 바뀜 200(실행 자리가 돌려준 값) · 실행 자리가 값을 거절 422 · 설정 비밀값 거절 502 · 연결을 맺지 못함 502(바뀌지 않음 — 요청이 나가지 않았다고 말할 수 있을 때만) · **모름 504**(5xx · 기한 초과 · 보낸 뒤 끊김 — 실행 자리는 값을 쓴 뒤에도 5xx 를 낼 수 있다. 다시 보내지 않는다. 화면을 다시 열어 확인).
 - 로그: 한 번에 한 줄 `claude-limits:<결과> account=<계정> raise=<true|false|->`(올림인지 아직 모르는 단계의 거절은 `-` · 첫 걸음은 `confirmation_required`). 넓히는 바꿈의 PUT 결과 줄에만 ` from=<앞 값> to=<새 값>`(예 `on;total=30/10;chat=30/10` — 누가 무엇을 얼마에서 얼마로, 알림 서버에 보내는 사건은 아직 없다). 비밀번호 · 확인 값 · 비밀값 · 실행 자리의 주소는 로그 · 응답에 없다.
+
+## 주인 표시
+
+`/owner-mark` 는 로그인한 사람이 지금 쓰는 브라우저를 사이트의 **주인**으로 표시하거나 그 표시를 지우는 화면이다. 주인으로 표시된 브라우저에서만 사이트(front · backend)가 Claude 대체 답변과 실습을 연다 — 판정은 backend 가 이 쿠키로 한다(명세 §17 2a).
+
+- 무엇: 서명한 쿠키 `study_owner=ow1.<만든 시각 ms>.<서명>` — 서명 = HMAC-SHA256(`OWNER_COOKIE_SECRET` 의 UTF-8 바이트, `study-owner` LF `ow1` LF `<만든 시각>`)의 base64url 43자. 속성 `Domain=<OWNER_COOKIE_DOMAIN>; Path=/; Max-Age=2592000(30일); Secure; HttpOnly; SameSite=Lax`. 값 · 시각 · 도메인은 설정과 서버의 시계에서만 — 요청의 몸 · 질의 · Host 는 보지 않는다.
+- 전제: 어드민과 사이트가 **같은 상위 도메인**을 쓴다(어드민의 응답이 그 도메인에 쿠키를 심는다 — `ADMIN_ORIGIN` 의 호스트가 그 도메인 밖이면 브라우저가 쿠키를 버리므로 "설정 없음"). 엣지 · nginx 가 `Cookie` 를 backend 까지 넘긴다.
+- 차례(`POST /api/owner-mark` 심기 · `POST /api/owner-mark/clear` 지우기 — 폼, 스크립트 없음): 출처(403 JSON) → 세션(401 JSON) → 속도 제한(계정당 60초에 5번 · 심기와 지우기를 함께 — 429) → 설정(503 "설정 없음" + 확인할 환경 변수의 이름) → `Set-Cookie` + 303 `/owner-mark`. 화면은 이 브라우저의 상태(주인 · 만든 날 · 끝나는 날 / 표시 없음 / 쓸 수 없음과 까닭의 낱말)를 backend 와 같은 규칙으로 보인다. 쿠키의 값 · 서명은 화면 · 응답 · 로그에 없다.
+- 되돌리는 법: 그 브라우저에서 "주인 표시 지우기"(같은 이름 · Domain · Path 에 `Max-Age=0`) · 모든 표시를 한꺼번에 없애려면 `OWNER_COOKIE_SECRET` 을 바꾼다(어드민과 backend 를 함께).
+- 로그: 한 번에 한 줄 `owner-mark:<set|cleared|origin_rejected|unauthenticated|rate_limited|not_configured> action=<set|clear> account=<계정>`(`not_configured` 는 뒤에 ` problems=<secret_unusable|domain_invalid|admin_outside_domain,…>`).

@@ -10,7 +10,8 @@
  * - 도메인 설정의 꼴(isValidOwnerCookieDomain): 소문자 호스트 이름 · 조각 둘 이상 · 조각마다 [a-z0-9-] 1~63자(앞뒤 하이픈 없음) · 마지막 조각은 숫자만이 아님(IP 거절)
  *   · 전체 253자 이하 · 앞의 점 · 포트 · 경로 · 공백 · 대문자는 거절.
  * - 어드민의 호스트(ADMIN_ORIGIN 의 호스트)가 그 도메인과 같거나 그 아래(`.<도메인>` 으로 끝남 — 조각 단위)여야 브라우저가 쿠키를 받는다.
- * 뼈대: 테스트 설계 워커가 계약만 고정했다. 함수의 몸은 구현 워커가 채운다. */
+ */
+import { createHmac, timingSafeEqual } from "node:crypto";
 
 export const OWNER_COOKIE_NAME = "study_owner";
 export const OWNER_MARK_VERSION = "ow1";
@@ -38,43 +39,91 @@ export type OwnerMarkSettings =
   /** clearableDomain: 열쇠가 없어도 도메인이 맞고 어드민이 그 아래면 지우기는 된다(그 도메인) — 아니면 null(지울 수 없다) */
   | { ok: false; problems: OwnerMarkSettingsProblem[]; clearableDomain: string | null };
 
-export function ownerMarkSignature(_secret: string, _createdAtMilliseconds: number): string {
-  throw new Error("not implemented: ownerMarkSignature");
+/** 설정의 문제 → 화면 · 응답에 보이는 환경 변수의 이름(값은 보이지 않는다). */
+export const OWNER_MARK_PROBLEM_SETTING_NAMES: Readonly<Record<OwnerMarkSettingsProblem, readonly string[]>> = {
+  secret_unusable: ["OWNER_COOKIE_SECRET"],
+  domain_invalid: ["OWNER_COOKIE_DOMAIN"],
+  admin_outside_domain: ["ADMIN_ORIGIN", "OWNER_COOKIE_DOMAIN"],
+};
+
+/** 쿠키 값의 꼴 — 판 · 앞 0 없는 만든 시각(1~16자리) · 서명 43글자(backend VALUE_PATTERN 과 같다). */
+const OWNER_MARK_VALUE_PATTERN = /^ow1\.([1-9][0-9]{0,15})\.([A-Za-z0-9_-]{43})$/;
+const DOMAIN_LABEL_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+const DOMAIN_MAXIMUM_LENGTH = 253;
+
+/** 만든 시각의 10진 글자에 서명한다 — 16자리 시각도 글자 그대로(수로 바꾸며 자리가 바뀌지 않게). */
+function signatureOfText(secret: string, createdAtText: string): string {
+  return createHmac("sha256", Buffer.from(secret, "utf8"))
+    .update(`${OWNER_MARK_PURPOSE}\n${OWNER_MARK_VERSION}\n${createdAtText}`)
+    .digest("base64url");
 }
 
-export function ownerMarkValue(_secret: string, _createdAtMilliseconds: number): string {
-  throw new Error("not implemented: ownerMarkValue");
+export function ownerMarkSignature(secret: string, createdAtMilliseconds: number): string {
+  return signatureOfText(secret, String(createdAtMilliseconds));
 }
 
-export function isUsableOwnerSecret(_secret: string | undefined): boolean {
-  throw new Error("not implemented: isUsableOwnerSecret");
+export function ownerMarkValue(secret: string, createdAtMilliseconds: number): string {
+  return `${OWNER_MARK_VERSION}.${createdAtMilliseconds}.${ownerMarkSignature(secret, createdAtMilliseconds)}`;
 }
 
-export function isValidOwnerCookieDomain(_domain: string): boolean {
-  throw new Error("not implemented: isValidOwnerCookieDomain");
+export function isUsableOwnerSecret(secret: string | undefined): boolean {
+  return secret !== undefined && secret.trim().length > 0 && Buffer.byteLength(secret, "utf8") >= OWNER_SECRET_MINIMUM_BYTES;
+}
+
+export function isValidOwnerCookieDomain(domain: string): boolean {
+  if (domain.length === 0 || domain.length > DOMAIN_MAXIMUM_LENGTH) return false;
+  const labels = domain.split(".");
+  if (labels.length < 2 || !labels.every((label) => DOMAIN_LABEL_PATTERN.test(label))) return false;
+  return !/^[0-9]+$/.test(labels[labels.length - 1]);
 }
 
 /** host 가 domain 과 같거나 그 아래인가(조각 단위 — `badexample.test` 는 `example.test` 의 아래가 아니다). */
-export function isHostWithinDomain(_host: string, _domain: string): boolean {
-  throw new Error("not implemented: isHostWithinDomain");
+export function isHostWithinDomain(host: string, domain: string): boolean {
+  return host === domain || host.endsWith(`.${domain}`);
 }
 
 /** 문제의 차례: secret_unusable → domain_invalid → admin_outside_domain(도메인이 맞을 때만). */
-export function checkOwnerMarkSettings(_input: { secret: string | undefined; domain: string; adminOrigin: string }): OwnerMarkSettings {
-  throw new Error("not implemented: checkOwnerMarkSettings");
+export function checkOwnerMarkSettings(input: { secret: string | undefined; domain: string; adminOrigin: string }): OwnerMarkSettings {
+  const problems: OwnerMarkSettingsProblem[] = [];
+  if (!isUsableOwnerSecret(input.secret)) problems.push("secret_unusable");
+  const domainValid = isValidOwnerCookieDomain(input.domain);
+  if (!domainValid) problems.push("domain_invalid");
+  else {
+    const adminHost = URL.canParse(input.adminOrigin) ? new URL(input.adminOrigin).hostname : null;
+    if (adminHost === null || !isHostWithinDomain(adminHost, input.domain)) problems.push("admin_outside_domain");
+  }
+  if (problems.length === 0) return { ok: true, domain: input.domain };
+  const clearable = domainValid && !problems.includes("admin_outside_domain");
+  return { ok: false, problems, clearableDomain: clearable ? input.domain : null };
 }
 
 /** cookieValues = 요청에 실려 온 study_owner 의 값들(없으면 빈 목록). */
-export function verifyOwnerMark(_cookieValues: readonly string[], _secret: string | undefined, _nowMilliseconds: number): OwnerMarkVerdict {
-  throw new Error("not implemented: verifyOwnerMark");
+export function verifyOwnerMark(cookieValues: readonly string[], secret: string | undefined, nowMilliseconds: number): OwnerMarkVerdict {
+  if (secret === undefined || !isUsableOwnerSecret(secret)) return { owner: false, reason: "no_secret" };
+  if (cookieValues.length === 0) return { owner: false, reason: "no_cookie" };
+  if (cookieValues.length > 1) return { owner: false, reason: "malformed" };
+  const match = OWNER_MARK_VALUE_PATTERN.exec(cookieValues[0]);
+  if (match === null) return { owner: false, reason: "malformed" };
+  const [, createdAtText, signature] = match;
+  // 서명은 글자 그대로 상수 시간에 견준다 — 풀어서 바이트로 견주면 마지막 글자의 남는 비트만 다른 값도 같다고 본다
+  const expected = Buffer.from(signatureOfText(secret, createdAtText), "ascii");
+  const actual = Buffer.from(signature, "ascii");
+  if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) return { owner: false, reason: "bad_signature" };
+  const createdAt = BigInt(createdAtText);
+  if (createdAt > BigInt(nowMilliseconds) + BigInt(OWNER_MARK_FUTURE_TOLERANCE_MILLISECONDS)) return { owner: false, reason: "malformed" };
+  if (BigInt(nowMilliseconds) > createdAt + BigInt(OWNER_MARK_LIFETIME_MILLISECONDS)) return { owner: false, reason: "expired" };
+  const createdAtMilliseconds = Number(createdAtText);
+  return { owner: true, createdAt: createdAtMilliseconds, expiresAt: createdAtMilliseconds + OWNER_MARK_LIFETIME_MILLISECONDS };
 }
 
+const OWNER_COOKIE_ATTRIBUTES = "Path=/; Secure; HttpOnly; SameSite=Lax";
+
 /** `study_owner=<값>; Domain=<도메인>; Path=/; Max-Age=2592000; Secure; HttpOnly; SameSite=Lax` */
-export function buildOwnerMarkCookieHeader(_value: string, _domain: string): string {
-  throw new Error("not implemented: buildOwnerMarkCookieHeader");
+export function buildOwnerMarkCookieHeader(value: string, domain: string): string {
+  return `${OWNER_COOKIE_NAME}=${value}; Domain=${domain}; Max-Age=${OWNER_COOKIE_MAX_AGE_SECONDS}; ${OWNER_COOKIE_ATTRIBUTES}`;
 }
 
 /** `study_owner=; Domain=<도메인>; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Lax` */
-export function buildClearedOwnerMarkCookieHeader(_domain: string): string {
-  throw new Error("not implemented: buildClearedOwnerMarkCookieHeader");
+export function buildClearedOwnerMarkCookieHeader(domain: string): string {
+  return `${OWNER_COOKIE_NAME}=; Domain=${domain}; Max-Age=0; ${OWNER_COOKIE_ATTRIBUTES}`;
 }

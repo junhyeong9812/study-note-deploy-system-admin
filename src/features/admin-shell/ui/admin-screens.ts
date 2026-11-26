@@ -17,4 +17,5 @@ export const ADMIN_SCREENS: readonly AdminScreen[] = [
   { key: "resources", title: "서버 자원", description: "서버별 CPU · 메모리 · 디스크 · 네트워크 · GPU 와 울리는 임계값", path: "/resources" },
   { key: "login-attempts", title: "로그인 시도 기록", description: "어드민 로그인 성공 · 실패 · 잠금 기록", path: "/login-attempts" },
   { key: "claude-usage", title: "Claude 사용량", description: "Claude 실행 자리의 오늘 · 최근 한 시간 호출 수와 상한 · 켬/끔 바꾸기", path: "/claude-usage" },
+  { key: "owner-mark", title: "주인 표시", description: "이 브라우저를 사이트의 주인으로 표시하거나 지우기(Claude 대체 답변 · 실습)", path: "/owner-mark" },
 ];
