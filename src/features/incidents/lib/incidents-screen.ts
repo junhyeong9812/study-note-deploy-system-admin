@@ -13,6 +13,7 @@
  * 조치(명세 ⑫ §24 · §25): 근거 묶음과 함께 조치 구역(incidentActionsView)을 낸다 — 조치할 서비스가 하나로 정해지면 그 서비스의 이력
  *   (master `/deploys?service=<서비스>&limit=200` — ⑥ 의 확인 화면과 같은 출처 · 같은 상한)을 한 번 더 읽어 판과 이 문제에서 접수한 배포를 정한다(정해지지 않으면 부르지 않는다).
  *   "Claude 가 권함"은 options.latestAnalysisAction(분석의 저장소 — 없으면 권함 없음)이 준 같은 발생의 가장 최근 끝난 분석의 권하는 조치.
+ * lookupIncidentForAction — 조치의 다시 정하기용: 그 종류를 가르는 목록의 출처 하나만 읽어 같은 판정으로 고른 문제를 다시 찾는다.
  * lookupIncident — 같은 1 · 2단계로 고른 문제 하나만(분석 화면 · 보내기가 쓴다): 열려 있으면 그 문제와 (원하면) **맞추기 전의** 근거 묶음(분석은 가린 뒤에 맞춘다),
  *   아니면 닫힘 · 확인하지 못함(같은 판정). 근거를 원하지 않으면 목록의 네 호출뿐. */
 import type { FetchLike, TimeoutSignalFactory } from "@/features/auth/lib/types";
@@ -20,7 +21,8 @@ import { createDeployGitClient, type DeployGitClient } from "@/features/deploy-d
 import { createDeployHistoryClient, type DeploymentSummary } from "@/features/deploys/lib/deploy-history-client";
 import { INCIDENT_DEPLOY_LOOKUP_LIMIT, ERROR_LOG_COUNT_LIMIT, ERROR_LOG_WINDOW_MILLISECONDS, isUncovered, openIncidentsFrom } from "@/features/incidents/lib/incident-list";
 import type { IncidentList, IncidentSources, OpenIncident } from "@/features/incidents/lib/incident-list";
-import { buildIncidentEvidence, type IncidentEvidence, type IncidentEvidenceDependencies } from "@/features/incidents/lib/incident-evidence";
+import { buildIncidentEvidence, servicesOnServer, type IncidentEvidence, type IncidentEvidenceDependencies } from "@/features/incidents/lib/incident-evidence";
+import { incidentKindOfId, type IncidentKind } from "@/features/incidents/lib/incident-id";
 import { incidentActionService, incidentActionsView, type IncidentActionsView } from "@/features/incidents/lib/incident-actions";
 import { DEPLOY_VERSIONS_HISTORY_LIMIT } from "@/features/deploy-versions/lib/deploy-versions-view";
 import type { DeployService } from "@/features/deploys/lib/deploy-history-query";
@@ -95,24 +97,30 @@ async function fetchMonitors(options: IncidentsScreenOptions): Promise<UpstreamR
   return view === null ? upstreamFailure("unparseable") : { ok: true, value: view };
 }
 
+/** 목록의 출처 하나씩 — 읽는 법(각 5초 · 설정이 없으면 호출 없이 not_configured). 목록 · 다시 정하기가 같은 것을 쓴다. */
+const SOURCE_READERS: { [Source in keyof IncidentSources]: (options: IncidentsScreenOptions, nowMilliseconds: number) => Promise<IncidentSources[Source]> } = {
+  monitors: (options) => (configured(options.alertUrl, options.alertSecret) ? settled(() => fetchMonitors(options)) : Promise.resolve(NOT_CONFIGURED)),
+  // 설정이 없으면 클라이언트가 호출 없이 not_configured 를 돌려준다
+  latest: (options) => settled(() => createResourceMetricsClient({
+    baseUrl: options.observeUrl, secret: options.observeSecret, fetch: options.fetch, timeoutSignal: options.timeoutSignal,
+  }).latest()),
+  deployments: (options) => (configured(options.deployMasterUrl, options.deploySecret)
+    ? settled(() => createDeployHistoryClient({ baseUrl: options.deployMasterUrl, secret: options.deploySecret, fetch: options.fetch, timeoutSignal: options.timeoutSignal })
+      .listDeployments({ service: null, limit: INCIDENT_DEPLOY_LOOKUP_LIMIT }))
+    : Promise.resolve(NOT_CONFIGURED)),
+  errorLogs: (options, nowMilliseconds) => (configured(options.observeUrl, options.observeSecret)
+    ? settled(() => createLogClient({ baseUrl: options.observeUrl, secret: options.observeSecret, fetch: options.fetch, timeoutSignal: options.timeoutSignal }).searchLogs({
+      from: new Date(nowMilliseconds - ERROR_LOG_WINDOW_MILLISECONDS).toISOString(), to: new Date(nowMilliseconds).toISOString(),
+      service: null, level: "error", requestId: null, text: null, before: null, limit: ERROR_LOG_COUNT_LIMIT,
+    }))
+    : Promise.resolve(NOT_CONFIGURED)),
+};
+
 /** 목록의 네 호출을 한꺼번에(각 5초). */
 async function collectIncidentSources(options: IncidentsScreenOptions, nowMilliseconds: number): Promise<IncidentSources> {
-  const client = { fetch: options.fetch, timeoutSignal: options.timeoutSignal };
-  const observeConfigured = configured(options.observeUrl, options.observeSecret);
   const [monitors, latest, deployments, errorLogs] = await Promise.all([
-    configured(options.alertUrl, options.alertSecret) ? settled(() => fetchMonitors(options)) : Promise.resolve(NOT_CONFIGURED),
-    // 설정이 없으면 클라이언트가 호출 없이 not_configured 를 돌려준다
-    settled(() => createResourceMetricsClient({ baseUrl: options.observeUrl, secret: options.observeSecret, ...client }).latest()),
-    configured(options.deployMasterUrl, options.deploySecret)
-      ? settled(() => createDeployHistoryClient({ baseUrl: options.deployMasterUrl, secret: options.deploySecret, ...client })
-        .listDeployments({ service: null, limit: INCIDENT_DEPLOY_LOOKUP_LIMIT }))
-      : Promise.resolve(NOT_CONFIGURED),
-    observeConfigured
-      ? settled(() => createLogClient({ baseUrl: options.observeUrl, secret: options.observeSecret, ...client }).searchLogs({
-        from: new Date(nowMilliseconds - ERROR_LOG_WINDOW_MILLISECONDS).toISOString(), to: new Date(nowMilliseconds).toISOString(),
-        service: null, level: "error", requestId: null, text: null, before: null, limit: ERROR_LOG_COUNT_LIMIT,
-      }))
-      : Promise.resolve(NOT_CONFIGURED),
+    SOURCE_READERS.monitors(options, nowMilliseconds), SOURCE_READERS.latest(options, nowMilliseconds),
+    SOURCE_READERS.deployments(options, nowMilliseconds), SOURCE_READERS.errorLogs(options, nowMilliseconds),
   ]);
   return { monitors, latest, deployments, errorLogs };
 }
@@ -206,4 +214,38 @@ export async function lookupIncident(options: IncidentsScreenOptions, incidentId
   const evidence = withEvidence ? await buildIncidentEvidence(evidenceDependencies(options), { incident, sources, nowMilliseconds }) : null;
   logFailures(options, sources, evidence);
   return { kind: "open", incident, evidence };
+}
+
+/** 종류 → 그 종류의 문제를 가르는 목록의 출처. */
+const SOURCE_OF_KIND: Readonly<Record<IncidentKind, keyof IncidentSources>> = {
+  monitor_down: "monitors", deploy_failed: "deployments", resource_threshold: "latest", error_logs: "errorLogs",
+};
+
+/** 읽지 않은 출처의 자리표 — 열린 문제가 없는 성공. 판정(목록의 규칙 · isUncovered)은 종류마다 그 종류의 출처만 보므로 고른 문제의 판정에 닿지 않는다. */
+const NOT_READ_SOURCES: IncidentSources = {
+  monitors: { ok: true, value: { monitors: [], lastRoundAt: null, undelivered: 0 } },
+  latest: { ok: true, value: { servers: [], unreadableServerNameCount: 0, firing: [] } },
+  deployments: { ok: true, value: [] },
+  errorLogs: { ok: true, value: { logs: [], nextBefore: null, from: "", to: "" } },
+};
+
+/** 조치를 위해 고른 문제 하나를 다시 찾는다 — 그 종류를 가르는 목록의 출처 **하나만** 읽는다(근거 · 다른 출처 없음 — 접수 직전의 다시 정하기가 빨라야 한다).
+ * 판정은 목록과 같다(openIncidentsFrom · isUncovered). 자원 임계값이면 그 서버의 서비스(servicesOnServer — 근거의 로그 칸과 같은 규칙)를 함께 낸다. */
+export type IncidentForAction =
+  | { kind: "open"; incident: OpenIncident; serverServices: string[] | null }
+  | { kind: "closed" }
+  | { kind: "unchecked" };
+
+export async function lookupIncidentForAction(options: IncidentsScreenOptions, incidentId: string): Promise<IncidentForAction> {
+  const kind = incidentKindOfId(incidentId);
+  if (kind === null) return { kind: "closed" };
+  const source = SOURCE_OF_KIND[kind];
+  const nowMilliseconds = options.now();
+  const read = await SOURCE_READERS[source](options, nowMilliseconds);
+  if (!read.ok) options.logFailure?.(source, read);
+  const sources = { ...NOT_READ_SOURCES, [source]: read } as IncidentSources;
+  const list = openIncidentsFrom(sources);
+  const incident = list.incidents.find((candidate) => candidate.id === incidentId);
+  if (incident === undefined) return { kind: notListedKind(list, incidentId) };
+  return { kind: "open", incident, serverServices: incident.kind === "resource_threshold" ? servicesOnServer(sources.latest, incident.firing.server) : null };
 }

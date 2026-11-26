@@ -339,8 +339,9 @@ interface LogPlan {
   keep: (line: LogEntryView) => boolean;
 }
 
-/** 그 서버의 컨테이너(latest)가 속한 배포 서비스들(DEPLOY_SERVICES 순서). 서버가 없거나 컨테이너를 모르면 []. */
-function servicesOnServer(latest: UpstreamResult<LatestResources>, server: string): string[] {
+/** 그 서버의 컨테이너(latest)가 속한 배포 서비스들(DEPLOY_SERVICES 순서). 서버가 없거나 컨테이너를 모르면 [].
+ * 조치의 다시 정하기(incidents-screen lookupIncidentForAction)도 같은 규칙으로 자원 임계값의 서비스를 정한다. */
+export function servicesOnServer(latest: UpstreamResult<LatestResources>, server: string): string[] {
   if (!latest.ok) return [];
   const containers = latest.value.servers.find((entry) => entry.server === server)?.containers ?? [];
   return DEPLOY_SERVICES.filter((service) => containers.some((container) => containerBelongsToService(container.seriesName, service)));

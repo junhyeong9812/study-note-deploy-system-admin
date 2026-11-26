@@ -10,7 +10,8 @@
  * 로그: 접수 한 건에 한 줄 `redeploy:<결과> service=… commit=<7자> account=…` — 비밀번호 · 확인 값 · 비밀값 · 해시는 로그 · 응답 · 주소 어디에도 없다.
  * 문제의 조치(명세 ⑫ §24 · §25)는 같은 길이다 — 넓어지는 것은:
  * - 칸 incident · action(둘 다 없거나 둘 다 하나 · isIncidentId · redeploy|rollback)이 확인 값의 서명에 묶여 있어야 한다.
- * - 확인 값 다음 · 비밀번호 전에 **다시 정한다**: 첫 걸음과 같은 판정(resolveIncidentAction — 그 순간의 열린 문제 · 서비스 · 그 서비스의 이력에서 그 조치의 판)이
+ * - 확인 값 다음 · 비밀번호 전에 **다시 정한다**(읽기는 그 종류를 가르는 목록의 출처 하나 + 그 서비스의 이력 · 전체 기한 8초 — 넘으면 409 recheck_timeout):
+ *   첫 걸음과 같은 판정(resolveIncidentAction — 그 순간의 열린 문제 · 서비스 · 그 서비스의 이력에서 그 조치의 판)이
  *   서명한 판과 다르거나 정할 수 없으면 409(비밀번호를 보지 않는다 — 잠금 횟수를 쓰지 않는다 · 접수하지 않는다) · 로그 `redeploy:incident_changed reason=<낱말> …`.
  *   버전 모드(incident 없음)는 다시 정하지 않는다(⑥ 그대로 — 고른 판으로 간다).
  * - requested_by 가 `admin:<계정>:incident:<ID>`(128자를 넘으면 접수하지 않는다) · 303 의 주소에 &incident= · 실패 화면은 문제 화면과 문제의 확인 화면으로 돌아간다.
@@ -28,8 +29,8 @@ import { REDEPLOY_CONFIRMATION_MAX_LENGTH, verifyRedeployConfirmation } from "@/
 import {
   REDEPLOY_ACCEPT_ACTION, parseRedeployPreviewQuery, redeployPreviewHref, type RedeployPreviewQuery,
 } from "@/features/deploy-redeploy/lib/redeploy-preview-query";
-import { REDEPLOY_INCIDENT_TEXT, incidentRedeployPreviewHref } from "@/features/deploy-redeploy/lib/redeploy-preview-query";
-import { resolveIncidentAction } from "@/features/deploy-redeploy/server/redeploy-preview";
+import { INCIDENT_RECHECK_TIMEOUT_MILLISECONDS, REDEPLOY_INCIDENT_TEXT, incidentRedeployPreviewHref } from "@/features/deploy-redeploy/lib/redeploy-preview-query";
+import { resolveIncidentAction, type IncidentActionResolution } from "@/features/deploy-redeploy/server/redeploy-preview";
 import { incidentRequestedByFor, requestedByFor } from "@/features/deploy-redeploy/lib/redeploy-requester";
 import { isIncidentId } from "@/features/incidents/lib/incident-id";
 import { incidentHref } from "@/features/incidents/lib/incidents-query";
@@ -90,6 +91,17 @@ function logOutcome(subject: LogSubject, outcome: string, level: "info" | "warni
   const commit = subject.commitSha === null ? "-" : subject.commitSha.slice(0, COMMIT_PREFIX_LENGTH);
   const incident = subject.incidentId ? ` incident=${subject.incidentId}` : "";
   void log(subject.requestId ?? "redeploy", `redeploy:${outcome} service=${subject.service ?? "-"} commit=${commit} account=${subject.account}${incident}`, level);
+}
+
+/** 다시 정하기에 절대 기한을 건다 — setTimeout 하나(끝나면 지운다). 기한이 먼저면 "timeout" 이고 늦게 끝난 결과는 버린다. */
+async function withinRecheckDeadline(resolution: Promise<IncidentActionResolution>): Promise<IncidentActionResolution | "timeout"> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<"timeout">((resolve) => { timer = setTimeout(() => resolve("timeout"), INCIDENT_RECHECK_TIMEOUT_MILLISECONDS); });
+  try {
+    return await Promise.race([resolution, deadline]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // ---- 본문 ----
@@ -287,9 +299,14 @@ export async function redeployAcceptResponse(request: Request): Promise<Response
   }
   subject.requestId = check.requestId;
   // 6-1 다시 정하기(문제 모드만) — 확인 화면 뒤에 배포 · 문제가 바뀌었으면 서명한 판으로 가지 않는다. 비밀번호를 보기 전에(잠금 횟수를 쓰지 않는다)
+  //     전체에 기한 INCIDENT_RECHECK_TIMEOUT_MILLISECONDS(절대) — 넘으면 409 recheck_timeout, 늦게 끝난 결과는 버린다(접수로 이어지지 않는다)
   const incident = incidentOf(form);
   if (incident !== null) {
-    const resolved = await resolveIncidentAction(config, { service: form.query.service, incidentId: incident.incidentId, action: incident.action });
+    const resolved = await withinRecheckDeadline(resolveIncidentAction(config, { service: form.query.service, incidentId: incident.incidentId, action: incident.action }));
+    if (resolved === "timeout") {
+      logOutcome(subject, "incident_changed reason=recheck_timeout");
+      return failurePage(409, REDEPLOY_INCIDENT_TEXT.changed, REDEPLOY_INCIDENT_TEXT.recheckTimeout, form.query, "", incident);
+    }
     if (!resolved.ok || !isSameCommit(resolved.commitSha, form.query.commitSha)) {
       logOutcome(subject, `incident_changed reason=${resolved.ok ? "target_changed" : resolved.reason}`);
       return failurePage(409, REDEPLOY_INCIDENT_TEXT.changed, resolved.ok ? "확인 화면의 판과 지금 정한 판이 다릅니다." : resolved.text, form.query, "", incident);

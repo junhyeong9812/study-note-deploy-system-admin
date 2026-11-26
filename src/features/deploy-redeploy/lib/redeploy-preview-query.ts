@@ -75,7 +75,6 @@ export const REDEPLOY_INCIDENT_TEXT = {
   closed: "이 문제는 지금 열려 있지 않습니다 — 조치하지 않습니다",
   unchecked: "이 문제가 지금 열려 있는지 확인하지 못했습니다 — 조치하지 않습니다",
   serviceMismatch: "이 문제의 서비스가 아닙니다 — 조치하지 않습니다",
-  evidenceUnavailable: "이 문제의 근거를 모으지 못해 조치할 서비스를 정할 수 없습니다",
   /** 접수 직전에 다시 정한 문제 · 대상이 확인 화면 때와 다르다(명세 ⑫ §25 — 409 의 제목) */
   changed: "그 사이 배포나 문제의 상태가 바뀌었습니다 — 문제 화면에서 다시 확인하세요",
   accountTooLong: "계정 이름이 길어 이 문제의 조치를 접수에 남길 수 없습니다(admin:계정:incident:ID 가 128자를 넘습니다)",

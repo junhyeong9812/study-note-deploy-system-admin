@@ -4,7 +4,7 @@
  * 설정: DEPLOY_MASTER_URL · DEPLOY_SECRET(버전 목록과 같은 것 — readServerConfig, 부를 때마다 읽는다). 둘 중 하나라도 비었거나 주소가 http(s) 가 아니면
  * preview = not_configured(호출 없음). 네트워크는 부를 때의 전역 fetch. src/app 은 이 모듈만 쓴다.
  * 실패한 칸(이력 · 방향 조회)은 앱 로그 1줄(upstreamFailureLogLine — 이유 낱말 · 상태 코드만).
- * 문제의 조치(명세 ⑫ §24 — `?service=&incident=&action=`, commit 없음): 입력 → 그 순간 열린 문제에 그 ID 가 있는가(목록 · 근거 — 알림 · 관측 · master 의 읽기)
+ * 문제의 조치(명세 ⑫ §24 · §26 — `?service=&incident=&action=`, commit 없음): 입력 → 그 순간 열린 문제에 그 ID 가 있는가(그 종류를 가르는 목록의 출처 하나)
  * → 그 문제의 서비스(incidentActionService)가 요청의 서비스와 같은가 → 판은 그 서비스의 이력(⑥ 과 같은 출처 — /deploys?service=&limit=200)에서
  * incidentActionTargets 로 다시 정한다(브라우저가 보낸 판을 믿지 않는다) → 그 판으로 ⑥ 의 확인 화면 그대로 · 확인 값이 문제의 ID 를 묶는다.
  * 어느 단계에서 멈추면 그 까닭(incident.reason)만 — 폼 · git 조회 없음. */
@@ -20,8 +20,8 @@ import { incidentRequestedByFor, requestedByFor } from "@/features/deploy-redepl
 import { DEPLOY_VERSIONS_HISTORY_LIMIT } from "@/features/deploy-versions/lib/deploy-versions-view";
 import { createDeployHistoryClient } from "@/features/deploys/lib/deploy-history-client";
 import { DEPLOY_SERVICES, type DeployService } from "@/features/deploys/lib/deploy-history-query";
-import { INCIDENT_ACTION_TEXT, incidentActionService, incidentActionTargets, type IncidentActionKind } from "@/features/incidents/lib/incident-actions";
-import { lookupIncident } from "@/features/incidents/lib/incidents-screen";
+import { INCIDENT_ACTION_TEXT, incidentActionServiceOf, incidentActionTargets, type IncidentActionKind } from "@/features/incidents/lib/incident-actions";
+import { lookupIncidentForAction } from "@/features/incidents/lib/incidents-screen";
 import { readServerConfig, sessionSigningKey, type ServerConfig } from "@/shared/config/server-config";
 import { log } from "@/shared/lib/logger";
 import { searchParamsInputFromUrl } from "@/shared/lib/query-input";
@@ -81,24 +81,25 @@ export type IncidentActionChangedReason = "target_changed" | "incident_closed" |
 /** 문제의 조치의 판 — 정했으면 그 커밋, 아니면 까닭의 낱말과 화면의 글. */
 export type IncidentActionResolution = { ok: true; commitSha: string } | { ok: false; reason: IncidentActionChangedReason; text: string };
 
-/** 문제의 조치 — 그 순간의 문제 · 서비스 · 이력에서 판을 정한다(확인 화면과 접수 직전이 같은 판정을 쓴다). master 설정이 없으면 history_unavailable. */
+/** 문제의 조치 — 그 순간의 문제 · 서비스 · 이력에서 판을 정한다(확인 화면과 접수 직전이 같은 판정을 쓴다). master 설정이 없으면 history_unavailable.
+ * 읽는 것은 둘뿐이다: 그 종류를 가르는 목록의 출처 하나(lookupIncidentForAction — 감시 대상 /monitors · 배포 실패 /deploys · 오류 로그 /logs · 자원 임계값 /metrics/latest)와
+ * 그 서비스의 이력(/deploys?service=&limit=200). 근거 · 알림 기록 · 다른 출처는 읽지 않는다. */
 export async function resolveIncidentAction(config: ServerConfig, request: Omit<IncidentRequest, "kind">): Promise<IncidentActionResolution> {
   if (!isHttpBaseUrl(config.deployMasterUrl) || config.deploySecret.length === 0) {
     return { ok: false, reason: "history_unavailable", text: INCIDENT_ACTION_TEXT.targetReasons.history_unavailable };
   }
   const fetchUpstream = (input: string, init: RequestInit) => fetch(input, init);
-  const found = await lookupIncident({
+  const found = await lookupIncidentForAction({
     alertUrl: config.alertUrl, alertSecret: config.alertSecret, observeUrl: config.observeUrl, observeSecret: config.observeSecret,
     deployMasterUrl: config.deployMasterUrl, deploySecret: config.deploySecret, fetch: fetchUpstream, now: () => Date.now(),
     logFailure: (cell, failure) => {
       const logLine = upstreamFailureLogLine("deploy-redeploy", `incident:${cell}`, failure);
       if (logLine !== null) void log("screen-deploy-redeploy", logLine, "warning");
     },
-  }, request.incidentId, true);
+  }, request.incidentId);
   if (found.kind === "closed") return { ok: false, reason: "incident_closed", text: REDEPLOY_INCIDENT_TEXT.closed };
   if (found.kind === "unchecked") return { ok: false, reason: "incident_unchecked", text: REDEPLOY_INCIDENT_TEXT.unchecked };
-  if (found.evidence === null) return { ok: false, reason: "service_changed", text: REDEPLOY_INCIDENT_TEXT.evidenceUnavailable };
-  const service = incidentActionService(found.evidence);
+  const service = incidentActionServiceOf(found.incident, found.serverServices);
   if (!service.ok) return { ok: false, reason: "service_changed", text: INCIDENT_ACTION_TEXT.serviceReasons[service.reason] };
   if (service.service !== request.service) return { ok: false, reason: "service_changed", text: REDEPLOY_INCIDENT_TEXT.serviceMismatch };
   const history = await createDeployHistoryClient({ baseUrl: config.deployMasterUrl, secret: config.deploySecret, fetch: fetchUpstream })

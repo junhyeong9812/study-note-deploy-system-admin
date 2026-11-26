@@ -2,6 +2,7 @@
  * 조치는 ⑥ 의 확인 화면으로 넘어갈 뿐이다(새 접수 길 없음) — 판은 화면이 아니라 ⑥ 의 첫 걸음이 그 순간의 이력에서 다시 정한다. */
 import type { AnalysisAction } from "@/features/incident-analysis/lib/analysis-answer";
 import type { IncidentEvidence } from "@/features/incidents/lib/incident-evidence";
+import type { OpenIncident } from "@/features/incidents/lib/incident-list";
 import type { DeploymentSummary } from "@/features/deploys/lib/deploy-history-client";
 import { DEPLOY_SERVICES, type DeployService } from "@/features/deploys/lib/deploy-history-query";
 import type { UpstreamResult } from "@/shared/lib/upstream-result";
@@ -54,19 +55,22 @@ function deployServiceOf(service: string | null): IncidentActionService {
 /** 문제의 근거에서 조치할 서비스 하나(DEPLOY_SERVICES 안) — 하나로 정할 수 없으면 까닭.
  * 자원 임계값은 근거의 로그 칸이 그 서버의 서비스로 찾은 것(12-1 — 컨테이너로 찾은 배포 서비스들)이 정확히 하나일 때만. */
 export function incidentActionService(evidence: IncidentEvidence): IncidentActionService {
-  const { incident } = evidence;
+  const { logs } = evidence;
+  const serverServices = logs.state === "services_not_found" ? [] : logs.state === "value" ? logs.value.services : null;
+  return incidentActionServiceOf(evidence.incident, serverServices);
+}
+
+/** 같은 판정을 근거 없이 — 자원 임계값은 그 서버의 서비스(servicesOnServer 의 결과 · 확인하지 못했으면 null)를 받는다(접수 직전의 다시 정하기가 쓴다). */
+export function incidentActionServiceOf(incident: OpenIncident, serverServices: readonly string[] | null): IncidentActionService {
   switch (incident.kind) {
     case "monitor_down": return deployServiceOf(incident.service);
     case "deploy_failed": return deployServiceOf(incident.deployment.service);
     case "error_logs": return deployServiceOf(incident.service);
     case "resource_threshold": {
-      const { logs } = evidence;
-      if (logs.state === "services_not_found") return { ok: false, reason: "services_not_found" };
-      if (logs.state !== "value" || logs.value.services === null) return { ok: false, reason: "services_unknown" };
-      const { services } = logs.value;
-      if (services.length === 0) return { ok: false, reason: "services_not_found" };
-      if (services.length > 1) return { ok: false, reason: "several_services" };
-      return deployServiceOf(services[0]);
+      if (serverServices === null) return { ok: false, reason: "services_unknown" };
+      if (serverServices.length === 0) return { ok: false, reason: "services_not_found" };
+      if (serverServices.length > 1) return { ok: false, reason: "several_services" };
+      return deployServiceOf(serverServices[0]);
     }
   }
 }
