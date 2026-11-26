@@ -28,6 +28,7 @@ vi.mock("ioredis", async () => {
 });
 
 import IncidentsPage from "@/app/incidents/page";
+import RedeployPreviewPage from "@/app/deploys/redeploy/page";
 import { SESSION_COOKIE_NAME, issueSessionToken } from "@/features/auth/lib/session";
 import { FAKE_ADMIN_ID, FAKE_ORIGIN, FAKE_SIGNING_KEY } from "@/features/auth/lib/test-fakes";
 import { FAKE_CLAUDE_RUNNER_URL } from "@/features/claude-usage/lib/claude-runner-test-fakes";
@@ -52,7 +53,9 @@ const PREVIOUS = SHA("b");
 
 let monitorsResponse: () => Response;
 let deploymentRows: Record<string, unknown>[];
-let deploysResponse: () => Response;
+/** master 의 /deploys — 기본 답은 service 인자로 거르고 limit 만큼 앞에서 자른다(master 와 같다). */
+let deploysResponse: (url: URL) => Response;
+const deploysRequests: URL[] = [];
 
 async function renderIncident(incidentId = INCIDENT): Promise<string> {
   const element = await IncidentsPage({ searchParams: Promise.resolve({ incident: incidentId }) });
@@ -111,12 +114,17 @@ beforeEach(() => {
     deploymentRow({ request_id: "req-front", service: "front", commit_sha: SHA("f"), accepted_at: iso(NOW - 4 * 60 * MINUTE) }),
     deploymentRow({ request_id: "req-before", service: "backend", commit_sha: PREVIOUS, accepted_at: iso(NOW - 5 * 60 * MINUTE) }),
   ];
-  deploysResponse = () => jsonBody(deploymentsBody(deploymentRows));
+  deploysRequests.length = 0;
+  deploysResponse = (url) => {
+    const service = url.searchParams.get("service");
+    const limit = Number(url.searchParams.get("limit") ?? "50");
+    return jsonBody(deploymentsBody(deploymentRows.filter((row) => service === null || row.service === service).slice(0, limit)));
+  };
   vi.stubGlobal("fetch", vi.fn(async (input: string | URL) => {
     const url = new URL(String(input));
     if (url.origin === new URL(FAKE_ALERT_URL).origin) return url.pathname === "/monitors" ? monitorsResponse() : jsonBody(alertRecordsBody([]));
     if (url.origin === new URL(FAKE_DEPLOY_MASTER_URL).origin) {
-      if (url.pathname === "/deploys") return deploysResponse();
+      if (url.pathname === "/deploys") { deploysRequests.push(url); return deploysResponse(url); }
       return jsonBody({ success: true, data: { commits: [], truncated: false, range_complete: true, relation: "ancestor" } });
     }
     if (url.pathname === "/metrics/latest") return jsonBody(latestBody([latestServerRow("s158", [["backend-app-blue", "backend-app"]])], []));
@@ -246,5 +254,81 @@ describe("이 문제에서 접수한 조치 — 배포 이력에서 걸러 보�
     expect(actionsListText(await renderIncident())).toContain(INCIDENT_ACTION_TEXT.noActions);
     deploysResponse = () => textResponse("", 503);
     expect(actionsListText(await renderIncident())).toContain(INCIDENT_ACTION_TEXT.actionsUnavailable);
+  });
+});
+
+/* ---- 명세 ⑫ §25 ① — 문제 화면의 판은 그 서비스의 이력에서(⑥ 의 확인 화면과 같은 출처) ----
+ * 계약: 서비스가 정해지면 조치 구역은 master `/deploys?service=<그 서비스>&limit=200` 을 한 번 더 읽어 판과 "이 문제에서 접수한 조치"를 정한다
+ * (목록이 읽은 모든 서비스의 최근 200건을 쓰지 않는다) · 서비스가 정해지지 않으면 그 호출이 없다 · 그 호출이 실패하면 조치 대신 까닭(화면의 나머지는 그대로) ·
+ * 없을 때의 글은 INCIDENT_ACTION_TEXT.noActions = "최근 200건 안에 이 문제에서 접수한 조치가 없습니다". */
+describe("§25 ① 판과 접수한 조치는 그 서비스의 이력에서", () => {
+  const AAAA = SHA("a");
+  const BBBB = SHA("b");
+  const CCCC = SHA("c");
+  const DDDD = SHA("d");
+  /** 맨 앞에 front 성공 199건 · 그 뒤 backend 성공(aaaa) · 실패(dddd) · 성공(bbbb) · 성공(cccc) · 그 뒤 front 3건 — 전체 206건. 모든 서비스의 최근 200건에는 backend 가 aaaa 하나뿐. */
+  function crowdedHistory(): Record<string, unknown>[] {
+    const front = (index: number) => deploymentRow({ request_id: `req-front-${index}`, service: "front", commit_sha: SHA("f"), accepted_at: iso(NOW - (60 + index) * MINUTE) });
+    return [
+      ...Array.from({ length: 199 }, (_unused, index) => front(index)),
+      deploymentRow({ request_id: "req-backend-a", service: "backend", commit_sha: AAAA, accepted_at: iso(NOW - 300 * MINUTE) }),
+      deploymentRow({ request_id: "req-backend-d", service: "backend", commit_sha: DDDD, state: "failed", failed_stage: "ci", accepted_at: iso(NOW - 301 * MINUTE) }),
+      deploymentRow({ request_id: "req-backend-b", service: "backend", commit_sha: BBBB, accepted_at: iso(NOW - 302 * MINUTE) }),
+      deploymentRow({ request_id: "req-backend-c", service: "backend", commit_sha: CCCC, accepted_at: iso(NOW - 303 * MINUTE) }),
+      ...Array.from({ length: 3 }, (_unused, index) => front(300 + index)),
+    ];
+  }
+  const serviceRequests = () => deploysRequests.filter((url) => url.searchParams.get("service") !== null);
+
+  it("재현 입력에서 되돌리기 링크가 나오고(bbbb) 그 글의 판이 확인 화면의 판과 같다", async () => {
+    deploymentRows = crowdedHistory();
+    expect(deploymentRows).toHaveLength(206);
+    const links = actionLinks(actionsSection(await renderIncident()));
+    expect(links.map(({ text }) => text)).toEqual([`다시 배포 — ${AAAA.slice(0, 7)}`, `되돌리기 — ${BBBB.slice(0, 7)}`]);
+    const rollback = new URL(links[1].href, FAKE_ORIGIN);
+    const element = await RedeployPreviewPage({ searchParams: Promise.resolve(Object.fromEntries(rollback.searchParams)) });
+    const rendererModuleName = "react-dom/server";
+    const html = ((await import(/* @vite-ignore */ rendererModuleName)) as { renderToStaticMarkup: (node: unknown) => string }).renderToStaticMarkup(element);
+    expect(/name="commit" value="([0-9a-f]{40})"/.exec(html)?.[1], "확인 화면의 판").toBe(BBBB);
+  });
+
+  it("서비스가 정해지면 그 서비스의 이력을 한 번(service=<그 서비스> · limit=200) · 정해지지 않으면 그 호출이 없다", async () => {
+    await renderIncident();
+    expect(serviceRequests().map((url) => [url.searchParams.get("service"), url.searchParams.get("limit")])).toEqual([["backend", "200"]]);
+    deploysRequests.length = 0;
+    monitorsResponse = () => jsonBody(monitorsBody([{ name: "deploy-master", status: "DOWN", down_since: DOWN_SINCE, reason: "x" }]));
+    await renderIncident("monitor:deploy-master");
+    expect(serviceRequests()).toEqual([]);
+  });
+
+  it("그 서비스의 이력을 읽지 못하면 조치 대신 까닭 · 접수한 조치도 까닭 · 화면의 나머지(목록 · 근거)는 그대로", async () => {
+    deploysResponse = (url) => {
+      if (url.searchParams.get("service") !== null) return textResponse("", 503);
+      return jsonBody(deploymentsBody(deploymentRows.slice(0, Number(url.searchParams.get("limit") ?? "50"))));
+    };
+    const html = await renderIncident();
+    const section = actionsSection(html);
+    expect(actionLinks(section)).toEqual([]);
+    expect(textOf(section)).toContain(INCIDENT_ACTION_TEXT.targetReasons.history_unavailable);
+    expect(textOf(section)).toContain(INCIDENT_ACTION_TEXT.actionsUnavailable);
+    expect(textOf(html)).toContain("열린 문제");
+    expect(html).toContain(INCIDENT);
+  });
+
+  it("접수한 조치 — 다른 서비스의 배포에 같은 ID 의 꼬리표가 붙어 있어도 섞이지 않는다", async () => {
+    deploymentRows = [
+      ...deploymentRows,
+      deploymentRow({ request_id: "req-mine-backend", service: "backend", commit_sha: PREVIOUS, requested_by: `admin:${FAKE_ADMIN_ID}:incident:${INCIDENT}` }),
+      deploymentRow({ request_id: "req-tag-on-front", service: "front", commit_sha: SHA("f"), requested_by: `admin:${FAKE_ADMIN_ID}:incident:${INCIDENT}` }),
+    ];
+    const section = actionsSection(await renderIncident());
+    const hrefs = [...section.matchAll(/href="([^"]*)"/g)].map((match) => match[1].replace(/&amp;/g, "&")).filter((href) => href.startsWith("/deploys?"));
+    expect(hrefs).toEqual(["/deploys?service=backend&selected=req-mine-backend&selectedService=backend"]);
+    expect(textOf(section)).not.toContain("req-tag-on-front");
+  });
+
+  it("없을 때의 글에 \"최근 200건 안에\"", async () => {
+    expect(INCIDENT_ACTION_TEXT.noActions).toBe("최근 200건 안에 이 문제에서 접수한 조치가 없습니다");
+    expect(textOf(actionsSection(await renderIncident()))).toContain(INCIDENT_ACTION_TEXT.noActions);
   });
 });

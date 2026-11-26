@@ -191,11 +191,13 @@ describe("첫 걸음 — 문제의 조치로 연 확인 화면", () => {
     const forms = formsOf(html);
     expect(forms).toHaveLength(1);
     const fields = hiddenFields(forms[0]);
-    expect(Object.keys(fields).sort()).toEqual(["commit", "confirmation", "incident", "service"]);
+    expect(Object.keys(fields).sort()).toEqual(["action", "commit", "confirmation", "incident", "service"]);
+    expect(fields.action).toBe("rollback");
     expect(fields).toMatchObject({ service: "backend", commit: main[3].sha, incident: INCIDENT });
-    const withIncident = verifyRedeployConfirmation(fields.confirmation, FAKE_SIGNING_KEY, { service: "backend", commitSha: main[3].sha, account: FAKE_ADMIN_ID, incidentId: INCIDENT }, Date.now());
+    const withIncident = verifyRedeployConfirmation(fields.confirmation, FAKE_SIGNING_KEY, { service: "backend", commitSha: main[3].sha, account: FAKE_ADMIN_ID, incidentId: INCIDENT, action: "rollback" }, Date.now());
     expect(withIncident.ok).toBe(true);
     expect(verifyRedeployConfirmation(fields.confirmation, FAKE_SIGNING_KEY, { service: "backend", commitSha: main[3].sha, account: FAKE_ADMIN_ID }, Date.now()).ok).toBe(false);
+    expect(verifyRedeployConfirmation(fields.confirmation, FAKE_SIGNING_KEY, { service: "backend", commitSha: main[3].sha, account: FAKE_ADMIN_ID, incidentId: INCIDENT, action: "redeploy" }, Date.now()).ok).toBe(false);
     const text = textOf(mainOf(html));
     expect(text).toContain(`${REDEPLOY_INCIDENT_TEXT.headingPrefix}${INCIDENT}${REDEPLOY_INCIDENT_TEXT.headingSuffix}`);
     expect(REDEPLOY_INCIDENT_TEXT.headingPrefix + INCIDENT + REDEPLOY_INCIDENT_TEXT.headingSuffix).toBe("문제 monitor:backend 의 조치");
@@ -344,5 +346,181 @@ describe("배포 이력 화면 — 문제에서 온 접수의 결과", () => {
     const html = await render(DeploysPage, { service: "backend", incident: "monitor:<script>" });
     expect(html).not.toContain("/incidents?incident=");
     expect(html).not.toContain("<script");
+  });
+});
+
+/* ---- 명세 ⑫ §25 — 리뷰의 반영 ----
+ * 계약(정함):
+ * - 문제에서 온 접수의 폼은 숨은 칸 action(redeploy|rollback)을 싣는다 — incident 와 함께만(하나만 있으면 · 둘이면 · 값이 아니면 400 꼴의 거절).
+ *   확인 값은 ID 가 있을 때 아홉째 줄 `action:<종류>` 도 묶는다 — 조치를 바꿔 보내면 400(확인 값 불일치).
+ * - 차례: 출처 → 세션 → 속도 제한 → 꼴 → (계정) → 확인 값 → **다시 정하기** → 비밀번호 → (이력 재확인) → 접수.
+ *   다시 정하기 = 첫 걸음과 같은 판정(그 순간의 열린 문제 · 그 문제의 서비스 · 그 서비스의 이력에서 그 조치의 판)이 서명한 판과 같은가.
+ *   다르면 409 · 제목 REDEPLOY_INCIDENT_TEXT.changed · 문제 화면 링크 · 비밀번호를 보지 않는다(잠금 호출 0) · master 접수 0 ·
+ *   로그 `redeploy:incident_changed reason=<낱말> service=… commit=<7자> account=… incident=<ID>` — 낱말:
+ *   target_changed(판이 다르거나 정할 수 없음) · incident_closed · incident_unchecked · service_changed(서비스를 정할 수 없거나 달라짐 · 근거 없음) · history_unavailable.
+ *   확인 값을 써 버리지 않는다 — 상태가 그대로면 같은 확인 값으로 다시 보내도 409.
+ * - 버전 모드(incident 없음)는 다시 정하지 않는다(⑥ 그대로 — 알림 서버를 부르지 않고 고른 판으로 간다).
+ * - 문제에서 온 접수의 결과 로그 줄(접수 · 실패 모두)은 끝에 ` incident=<ID>` — 버전 모드의 줄은 지금과 글자까지 같다.
+ * - 실패 화면의 "확인 화면으로 돌아가기"는 문제 모드에서 문제의 확인 화면(service + incident + action)으로. */
+const INCIDENT_CHANGED_TITLE = "그 사이 배포나 문제의 상태가 바뀌었습니다 — 문제 화면에서 다시 확인하세요";
+const alertCalls = () => vi.mocked(fetch).mock.calls.filter(([input]) => new URL(String(input)).origin === new URL(FAKE_ALERT_URL).origin);
+const outcomeLines = () => consoleLines.filter((line) => line.includes(":redeploy:"));
+
+describe("§25 ② 조치의 종류도 확인 값에 묶인다", () => {
+  it("조치를 바꿔 보내면 400 — 비밀번호를 보지 않고 접수하지 않는다", async () => {
+    const fields = await incidentFormFields("rollback");
+    const response = await POST(acceptRequest({ ...fields, action: "redeploy" }));
+    expect(response.status).toBe(400);
+    expect(observeAttempts).toEqual([]);
+    expect(masterAccepts()).toEqual([]);
+  });
+
+  it.each([
+    ["incident 만(조치 없음)", (fields: Record<string, string>) => { const { action, ...rest } = fields; void action; return rest; }],
+    ["조치만(incident 없음)", (fields: Record<string, string>) => { const { incident, ...rest } = fields; void incident; return rest; }],
+    ["조치 칸이 둘", (fields: Record<string, string>) => ({ ...fields, action: [fields.action, fields.action] })],
+    ["조치의 값이 아님", (fields: Record<string, string>) => ({ ...fields, action: "restart" })],
+  ] as const)("%s → 400 · 접수 없음", async (_label, change) => {
+    const response = await POST(acceptRequest(change(await incidentFormFields("rollback")) as Record<string, string | string[]>));
+    expect(response.status).toBe(400);
+    expect(observeAttempts).toEqual([]);
+    expect(masterAccepts()).toEqual([]);
+  });
+
+  it("버전 모드의 폼에는 action 칸이 없다", async () => {
+    const forms = formsOf(await render(RedeployPreviewPage, { service: "backend", commit: main[3].sha }));
+    expect(Object.keys(hiddenFields(forms[0])).sort()).toEqual(["commit", "confirmation", "service"]);
+  });
+});
+
+describe("§25 ② 접수 직전에 다시 정한다 — 그 사이 바뀌었으면 409", () => {
+  const expectChanged = async (response: Response) => {
+    expect(response.status).toBe(409);
+    const html = await response.text();
+    expect(textOf(html)).toContain(INCIDENT_CHANGED_TITLE);
+    expect(hrefsOf(html)).toContain("/incidents?incident=monitor%3Abackend");
+    expect(observeAttempts, "비밀번호를 보지 않는다(잠금 호출 0)").toEqual([]);
+    expect(masterAccepts(), "ci-cd POST /deploy 0").toEqual([]);
+  };
+  const changedLine = (reason: string, commitSha: string) =>
+    `redeploy:incident_changed reason=${reason} service=backend commit=${commitSha.slice(0, 7)} account=${FAKE_ADMIN_ID} incident=${INCIDENT}`;
+
+  it("되돌리기 — 확인 화면을 연 뒤 새 성공 배포가 끼면(지금 판이 바뀜) 409 · 로그 target_changed", async () => {
+    const fields = await incidentFormFields("rollback");
+    expect(fields.commit).toBe(main[3].sha);
+    master.deployments.unshift(deploymentJson("backend", main[2].sha, "succeeded", minutesAfterStart(50)));
+    await expectChanged(await POST(acceptRequest(fields)));
+    expect(outcomeLines().some((line) => line.endsWith(changedLine("target_changed", main[3].sha)))).toBe(true);
+  });
+
+  it("다시 배포 — 그 사이 지금 판이 바뀌면 409", async () => {
+    const fields = await incidentFormFields("redeploy");
+    master.deployments.unshift(deploymentJson("backend", main[2].sha, "succeeded", minutesAfterStart(50)));
+    await expectChanged(await POST(acceptRequest(fields)));
+  });
+
+  it("되돌릴 판이 없어지면(그 서비스의 성공 이력이 하나만 남음) 409 target_changed", async () => {
+    const fields = await incidentFormFields("rollback");
+    master.deployments = [deploymentJson("backend", main[4].sha, "succeeded", minutesAfterStart(40))];
+    await expectChanged(await POST(acceptRequest(fields)));
+    expect(outcomeLines().some((line) => line.endsWith(changedLine("target_changed", main[3].sha)))).toBe(true);
+  });
+
+  it("문제가 더는 열려 있지 않으면 409 incident_closed", async () => {
+    const fields = await incidentFormFields("rollback");
+    monitorsResponse = () => jsonBody(monitorsBody([{ name: "backend", status: "UP", down_since: "", reason: "" }]));
+    await expectChanged(await POST(acceptRequest(fields)));
+    expect(outcomeLines().some((line) => line.endsWith(changedLine("incident_closed", main[3].sha)))).toBe(true);
+  });
+
+  it("열려 있는지 확인하지 못하면 409 incident_unchecked", async () => {
+    const fields = await incidentFormFields("rollback");
+    monitorsResponse = () => textResponse("", 503);
+    await expectChanged(await POST(acceptRequest(fields)));
+    expect(outcomeLines().some((line) => line.endsWith(changedLine("incident_unchecked", main[3].sha)))).toBe(true);
+  });
+
+  it("그 서비스의 이력을 읽지 못하면 409 history_unavailable", async () => {
+    const fields = await incidentFormFields("rollback");
+    (master.override as Record<string, RoutedFetchHandler>)[MASTER_DEPLOYS_PATH] = (url) => {
+      if (url.searchParams.get("service") !== null) return textResponse("", 503);
+      const limit = Number(url.searchParams.get("limit") ?? "50");
+      return jsonBody({ success: true, data: { deployments: master.deployments.slice(0, limit) } });
+    };
+    await expectChanged(await POST(acceptRequest(fields)));
+    expect(outcomeLines().some((line) => line.endsWith(changedLine("history_unavailable", main[3].sha)))).toBe(true);
+  });
+
+  it("차례 — 확인 값이 먼저(틀린 확인 값이면 바뀐 상태여도 400) · 다시 정하기가 비밀번호보다 먼저(틀린 비밀번호여도 409)", async () => {
+    const fields = await incidentFormFields("rollback");
+    master.deployments.unshift(deploymentJson("backend", main[2].sha, "succeeded", minutesAfterStart(50)));
+    const before = alertCalls().length;
+    expect((await POST(acceptRequest({ ...fields, action: "redeploy" }))).status).toBe(400);
+    expect(alertCalls().length, "확인 값이 틀리면 다시 정하지 않는다").toBe(before);
+    await expectChanged(await POST(acceptRequest({ ...fields, password: WRONG_PASSWORD })));
+  });
+
+  it("확인 값을 써 버리지 않는다 — 상태가 그대로면 같은 확인 값으로 다시 보내도 409", async () => {
+    const fields = await incidentFormFields("rollback");
+    master.deployments.unshift(deploymentJson("backend", main[2].sha, "succeeded", minutesAfterStart(50)));
+    await expectChanged(await POST(acceptRequest(fields)));
+    await expectChanged(await POST(acceptRequest(fields)));
+  });
+
+  it("바뀌지 않았으면 303(실패한 배포가 끼어도 성공한 판은 그대로) · 다시 정하려고 알림 서버를 부른다", async () => {
+    const fields = await incidentFormFields("rollback");
+    master.deployments.unshift(deploymentJson("backend", main[2].sha, "failed", minutesAfterStart(50)));
+    const before = alertCalls().length;
+    const response = await POST(acceptRequest(fields));
+    expect(response.status).toBe(303);
+    expect(acceptBodies()[0]).toMatchObject({ commit_sha: main[3].sha, requested_by: `admin:${FAKE_ADMIN_ID}:incident:${INCIDENT}` });
+    expect(alertCalls().length).toBeGreaterThan(before);
+  });
+
+  it("버전 모드는 다시 정하지 않는다 — 그 사이 배포가 껴도 고른 판으로 303 · 알림 서버 호출 0(⑥ 그대로)", async () => {
+    const forms = formsOf(await render(RedeployPreviewPage, { service: "backend", commit: main[3].sha }));
+    master.deployments.unshift(deploymentJson("backend", main[2].sha, "succeeded", minutesAfterStart(50)));
+    monitorsResponse = () => jsonBody(monitorsBody([{ name: "backend", status: "UP", down_since: "", reason: "" }]));
+    const before = alertCalls().length;
+    const response = await POST(acceptRequest({ ...hiddenFields(forms[0]), password: FAKE_PASSWORD }));
+    expect(response.status).toBe(303);
+    expect(acceptBodies()[0]).toMatchObject({ commit_sha: main[3].sha, requested_by: `admin:${FAKE_ADMIN_ID}` });
+    expect(alertCalls().length).toBe(before);
+  });
+});
+
+describe("§25 ③ 결과 로그 줄의 문제 ID · 실패 화면의 돌아가는 길", () => {
+  it("문제에서 온 접수 — 접수됨 줄 끝에 incident=<ID>", async () => {
+    const response = await POST(acceptRequest(await incidentFormFields("rollback")));
+    expect(response.status).toBe(303);
+    const requestId = String(acceptBodies()[0].request_id);
+    const accepted = outcomeLines().filter((line) => line.includes("redeploy:accepted"));
+    expect(accepted).toHaveLength(1);
+    expect(accepted[0].startsWith(`${requestId}:`)).toBe(true);
+    expect(accepted[0].endsWith(`:redeploy:accepted service=backend commit=${main[3].sha.slice(0, 7)} account=${FAKE_ADMIN_ID} incident=${INCIDENT}`)).toBe(true);
+  });
+
+  it("문제에서 온 접수의 실패 줄(비밀번호 틀림)도 끝에 incident=<ID>", async () => {
+    await POST(acceptRequest({ ...(await incidentFormFields("rollback")), password: WRONG_PASSWORD }));
+    const failed = outcomeLines().filter((line) => line.includes("redeploy:password_"));
+    expect(failed).toHaveLength(1);
+    expect(failed[0].endsWith(` incident=${INCIDENT}`)).toBe(true);
+  });
+
+  it("버전 모드의 줄은 지금과 글자까지 같다(incident 없음)", async () => {
+    const forms = formsOf(await render(RedeployPreviewPage, { service: "backend", commit: main[3].sha }));
+    await POST(acceptRequest({ ...hiddenFields(forms[0]), password: FAKE_PASSWORD }));
+    const accepted = outcomeLines().filter((line) => line.includes("redeploy:accepted"));
+    expect(accepted).toHaveLength(1);
+    expect(accepted[0].endsWith(`:redeploy:accepted service=backend commit=${main[3].sha.slice(0, 7)} account=${FAKE_ADMIN_ID}`)).toBe(true);
+    expect(accepted[0]).not.toContain("incident");
+  });
+
+  it("문제 모드의 실패 화면 — \"확인 화면으로 돌아가기\"는 문제의 확인 화면(service + incident + action)으로 · 버전 모드의 주소가 아니다", async () => {
+    const response = await POST(acceptRequest({ ...(await incidentFormFields("rollback")), password: WRONG_PASSWORD }));
+    expect(response.status).toBe(401);
+    const hrefs = hrefsOf(await response.text());
+    expect(hrefs).toContain("/deploys/redeploy?service=backend&incident=monitor%3Abackend&action=rollback");
+    expect(hrefs.filter((href) => href.startsWith("/deploys/redeploy") && href.includes("commit="))).toEqual([]);
   });
 });
