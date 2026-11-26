@@ -54,6 +54,7 @@ interface RangeState {
 export function createTrafficMapHub(options: TrafficMapHubOptions): TrafficMapHub {
   const states = new Map<TrafficMapRange, RangeState>();
   let sequence = 0;
+  let stopped = false;
 
   function stateOf(range: TrafficMapRange): RangeState {
     let state = states.get(range);
@@ -69,15 +70,18 @@ export function createTrafficMapHub(options: TrafficMapHubOptions): TrafficMapHu
   }
 
   function schedule(range: TrafficMapRange, state: RangeState, milliseconds: number) {
-    if (state.timer !== null || state.listeners.size === 0) return;
+    if (stopped || state.timer !== null || state.listeners.size === 0) return;
     state.timer = options.scheduler(() => {
       state.timer = null;
       if (state.listeners.size > 0 && state.inFlight === null) void load(range, state);
     }, milliseconds);
   }
 
-  /** 관측 서버를 한 번 부른다 — 끝나면 그때의 구독 모두에 보내고, 구독이 남아 있으면 30초 뒤 다음을 건다(끝난 뒤에 걸어 겹치지 않는다). */
+  /** 관측 서버를 한 번 부른다 — 시작할 때 걸린 타이머를 거둔다(기간마다 "걸린 타이머 또는 도는 조회"는 늘 하나 — 늦게 터진 옛 타이머가 곧바로 또 부르지 않게).
+   * 끝나면 그때의 구독 모두에 보내고, 구독이 남아 있으면 30초 뒤 다음을 건다(끝난 뒤에 걸어 겹치지 않는다). 멈춘 뒤에 끝나면 보내지도 걸지도 않는다. */
   function load(range: TrafficMapRange, state: RangeState): Promise<TrafficMapEvent> {
+    state.timer?.cancel();
+    state.timer = null;
     const pending = (async () => {
       let map: UpstreamResult<TrafficMapView>;
       try {
@@ -91,6 +95,7 @@ export function createTrafficMapHub(options: TrafficMapHubOptions): TrafficMapHu
       state.last = event;
       state.lastAt = finishedAt;
       state.inFlight = null;
+      if (stopped) return event;
       for (const listener of [...state.listeners]) listener(event);
       schedule(range, state, TRAFFIC_MAP_POLL_MILLISECONDS);
       return event;
@@ -101,6 +106,7 @@ export function createTrafficMapHub(options: TrafficMapHubOptions): TrafficMapHu
 
   return {
     subscribe(range, listener) {
+      if (stopped) return () => {};
       const state = stateOf(range);
       state.listeners.add(listener);
       if (state.inFlight === null) {
@@ -123,6 +129,7 @@ export function createTrafficMapHub(options: TrafficMapHubOptions): TrafficMapHu
       };
     },
     async snapshot(range) {
+      if (stopped) return { sequence, fetchedAt: new Date(options.now()).toISOString(), range, map: upstreamFailure("unavailable") };
       const state = stateOf(range);
       if (state.inFlight !== null) return state.inFlight;
       if (fresh(state)) return state.last!;
@@ -135,7 +142,12 @@ export function createTrafficMapHub(options: TrafficMapHubOptions): TrafficMapHu
       }
     },
     stop() {
-      throw new Error("T8 리뷰 1: 구현 전");
+      stopped = true;
+      for (const state of states.values()) {
+        state.timer?.cancel();
+        state.timer = null;
+        state.listeners.clear();
+      }
     },
   };
 }

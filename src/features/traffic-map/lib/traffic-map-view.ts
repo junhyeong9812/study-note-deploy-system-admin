@@ -43,7 +43,7 @@ export interface TrafficMapView {
   nodes: string[];
   /** behind 인 서버 */
   delayedServers: string[];
-  /** 잃은 순번(sequence_gaps — 확정된 잃음과 기다리는 중을 관측 서버가 가르지 않는다)이 있는 서버 */
+  /** 잃은 순번(sequence_gaps — 그 서버의 누적이라 이 기간의 것인지 모른다 · 확정과 기다리는 중을 관측 서버가 가르지 않는다)이 있는 서버 */
   gapServers: { server: string; sequenceGaps: number }[];
   /** 채우는 중인 선이 하나라도 있다 */
   hasFilling: boolean;

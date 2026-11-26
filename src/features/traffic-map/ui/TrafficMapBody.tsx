@@ -1,7 +1,8 @@
 /** 통신 지도의 본문(상태 → 그림 · 표 · 알림) — 서버에서도 브라우저에서도 그린다(훅 없음). 브라우저 조각(TrafficMapLive)이 닿는 파일이라
  * 서버 모듈 · 클라이언트 · 설정 · fetch 를 값으로 가져오지 않는다. 시각은 KST(formatKoreanLogTime).
  * 모름과 0 을 가른다: 선의 요청 수 · 채움은 formatEdgeCount · completeness 로("아직 모름"은 0건이라 하지 않는다) · 수집이 밀린 서버 · 채우는 중인 선 ·
- * 잃은 순번은 글로(role=note) · 끊기면 "끊김 — 다시 붙는 중"과 "아래 값은 <시각> 의 것입니다" · 깨진 사건의 수.
+ * 읽지 못한 구간이 있는 서버는 글로(role=note) · 잃은 순번(그 서버의 누적 — 이 기간의 것인지 모른다)은 따로 한 줄 · 끊기면 "끊김 — 다시 붙는 중",
+ * 다시 붙은 직후(새 지도 전)는 "다시 붙음 — 새 값을 기다리는 중", 둘 다 "아래 값은 <시각> 의 것입니다" · 깨진 사건의 수.
  * 그림(svg)은 꾸밈(aria-hidden) — 같은 값을 표 둘("통신 선" · "수집 상태")로 읽는다. 마디는 서비스 이름(관측 서버의 선에 서버 칸이 없다). */
 import { formatKoreanLogTime } from "@/features/logs/ui/LogTable";
 import logStyles from "@/features/logs/ui/LogSearchScreen.module.css";
@@ -35,6 +36,8 @@ function ConnectionStatus({ state }: { state: TrafficMapStreamState }) {
       return <p className={`${styles.status} ${styles.statusLive}`} role="status">{at === null ? "실시간" : `실시간 · 마지막 갱신 ${at}`}</p>;
     case "reconnecting":
       return <p className={`${styles.status} ${styles.statusBroken}`} role="status">{at === null ? "끊김 — 다시 붙는 중" : `끊김 — 다시 붙는 중 · 마지막으로 받은 시각 ${at}`}</p>;
+    case "reopened":
+      return <p className={styles.status} role="status">{at === null ? "다시 붙음 — 새 값을 기다리는 중" : `다시 붙음 — 새 값을 기다리는 중 · 마지막으로 받은 시각 ${at}`}</p>;
     case "session_ended":
       return <p className={`${styles.status} ${styles.statusBroken}`} role="status">세션이 끝났습니다 — 다시 로그인하세요 <a href="/login">로그인</a></p>;
   }
@@ -139,6 +142,14 @@ function EdgeTable({ view }: { view: TrafficMapView }) {
   );
 }
 
+/** 읽지 못한 구간 — 없으면 "없음", 셋까지 쉼표로, 넷부터는 앞의 셋 + " 외 n개"(주소 꼴은 view 가 이미 가렸다). */
+const MISSING_SHOWN = 3;
+function missingText(missing: readonly string[]): string {
+  if (missing.length === 0) return "없음";
+  const shown = missing.slice(0, MISSING_SHOWN).join(", ");
+  return missing.length > MISSING_SHOWN ? `${shown} 외 ${missing.length - MISSING_SHOWN}개` : shown;
+}
+
 function ServerTable({ view }: { view: TrafficMapView }) {
   return (
     <div className={logStyles.scroller} tabIndex={0} role="region" aria-label="수집 상태 표">
@@ -149,6 +160,7 @@ function ServerTable({ view }: { view: TrafficMapView }) {
             <th scope="col">읽기 진도</th>
             <th scope="col">수신</th>
             <th scope="col">잃은 순번</th>
+            <th scope="col">읽지 못한 구간</th>
             <th scope="col">버린 요청별 줄</th>
           </tr>
         </thead>
@@ -159,6 +171,7 @@ function ServerTable({ view }: { view: TrafficMapView }) {
               <td>{server.readProgressAt === null ? "아직 없음" : formatKoreanLogTime(server.readProgressAt)}</td>
               <td>{server.receiveDelayed ? "수신 지연" : server.readProgressAt === null ? "진도 없음" : "정상"}</td>
               <td>{`${server.sequenceGaps}개`}</td>
+              <td>{missingText(server.missing)}</td>
               <td>{`${server.requestsDropped + server.requestsRejected}줄`}</td>
             </tr>
           ))}
@@ -169,22 +182,28 @@ function ServerTable({ view }: { view: TrafficMapView }) {
 }
 
 function MapContent({ view }: { view: TrafficMapView }) {
+  const missingServers = view.servers.filter((server) => server.missing.length > 0).map((server) => server.server);
   return (
     <>
       <p className={styles.meta}>{`조회 기간(KST) ${formatKoreanLogTime(view.from)} ~ ${formatKoreanLogTime(view.to)}`}</p>
       {view.delayedServers.length > 0 && (
         <p className={styles.note} role="note">{`수집이 밀린 서버: ${view.delayedServers.join(", ")} — 그 서버가 받은 요청은 지도에 덜 들어왔을 수 있습니다`}</p>
       )}
+      {missingServers.length > 0 && (
+        <p className={styles.note} role="note">{`읽지 못한 구간이 있는 서버: ${missingServers.join(", ")} — 그 구간의 요청은 지도에 덜 들어왔을 수 있습니다`}</p>
+      )}
       {view.hasFilling && <p className={styles.note} role="note">채우는 중인 선이 있습니다 — 그 수는 아직 늘 수 있고 판정(색)에 쓰지 않습니다</p>}
       {view.gapServers.length > 0 && (
         <p className={styles.note} role="note">
-          {`잃은 순번이 있는 서버: ${view.gapServers.map((gap) => `${gap.server} ${gap.sequenceGaps}개`).join(", ")} — 잃은 항목의 요청은 지도에 없습니다(확정된 잃음과 아직 기다리는 중을 가르지 않습니다)`}
+          {`최근에 잃은 항목: ${view.gapServers.map((gap) => `${gap.server} ${gap.sequenceGaps}개`).join(", ")} — 이 기간의 것인지는 알 수 없습니다`}
         </p>
       )}
       {view.edgesTruncated && <p className={styles.note} role="note">{`선이 ${view.edgeTotal}개라 요청이 많은 ${view.edges.length}개만 보입니다`}</p>}
       {view.edges.length === 0 ? (
         <p className={parts.empty}>
-          {view.delayedServers.length > 0 ? "이 기간에 받은 선이 없습니다 — 수집이 밀린 서버가 있어 아직 모를 수 있습니다" : "이 기간에 지나간 요청이 없습니다"}
+          {view.delayedServers.length > 0 ? "이 기간에 받은 선이 없습니다 — 수집이 밀린 서버가 있어 아직 모를 수 있습니다"
+            : missingServers.length > 0 ? "이 기간에 받은 선이 없습니다 — 읽지 못한 구간이 있는 서버가 있어 아직 모를 수 있습니다"
+              : "이 기간에 지나간 요청이 없습니다"}
         </p>
       ) : (
         <>
@@ -206,7 +225,7 @@ function MapContent({ view }: { view: TrafficMapView }) {
 export function TrafficMapBody({ range, state }: TrafficMapBodyProps) {
   const shown = state.shown;
   const shownAt = shown === null ? null : formatKoreanLogTime(shown.fetchedAt);
-  const stale = shown !== null && (state.connection === "reconnecting" || state.connection === "session_ended");
+  const stale = shown !== null && (state.connection === "reconnecting" || state.connection === "reopened" || state.connection === "session_ended");
   return (
     <section className={styles.body} aria-label={`통신 지도 — ${TRAFFIC_MAP_RANGE_LABELS[range]}`}>
       <ConnectionStatus state={state} />
