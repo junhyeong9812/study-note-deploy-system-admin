@@ -33,6 +33,17 @@ export function incidentAnalysisKeys(incidentId: string): { lock: string; histor
   return { lock: `${prefix}:lock`, history: `${prefix}:history`, attempt: (requestId) => `${prefix}:attempt:${requestId}` };
 }
 
+/** 쓴 미리보기의 표시를 남기는 시간 — 미리보기가 통하는 시간(10분)과 같다(명세 ⑫ §21 4). */
+export const ANALYSIS_USED_PREVIEW_MILLISECONDS = 10 * 60 * 1000;
+
+/** 쓴 미리보기의 표시 키 — `incident-analysis:v1:used-preview:<서명 값의 SHA-256 16진 64자>`(글 · 서명 값 그대로 · 비밀값이 키에 들지 않는다). 뼈대. */
+export function usedPreviewKey(token: string): string {
+  void token;
+  throw new Error("usedPreviewKey: 구현 전");
+}
+
+export type PreviewClaimResult = "claimed" | "used" | "store_unavailable";
+
 export type AnalysisFailureReason = AnalysisRunFailureReason | "result_not_stored";
 
 /** 저장되는 한 번의 분석(JSON — 판 1). */
@@ -93,6 +104,8 @@ export interface IncidentAnalysisService {
   start(request: AnalysisStartRequest): Promise<AnalysisStartResult>;
   /** 최근 것부터. currentSince = 지금 열린 그 문제의 since(열려 있지 않거나 모르면 undefined — 옛 분석을 가르지 않는다). */
   history(incidentId: string, currentSince?: string | null): Promise<AnalysisHistoryResult>;
+  /** 미리보기(서명 값)를 한 번만 쓰게 — 표시를 SET NX PX 10분(값 "1"). 처음이면 claimed · 이미 있으면 used · Redis 에 닿지 못하면 store_unavailable. */
+  claimPreview(token: string): Promise<PreviewClaimResult>;
   /** 이 프로세스에서 뒤에서 도는 분석의 수. */
   runningCount(): number;
   /** 뒤에서 도는 일이 모두 끝날 때까지(테스트 · 종료용). */
@@ -249,6 +262,10 @@ export function createIncidentAnalysisService(options: IncidentAnalysisServiceOp
       return { ok: true, entries };
     },
 
+    async claimPreview(token) {
+      void token;
+      throw new Error("claimPreview: 구현 전");   // 뼈대: 구현 워커가 채운다
+    },
     runningCount() {
       return running.size;
     },

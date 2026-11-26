@@ -32,6 +32,10 @@ export const INCIDENT_ANALYSIS_TEXT = {
   remedy: "대처법",
   recommendedAction: "권하는 조치(표시일 뿐 — 실행하지 않습니다)",
   toIncident: "문제 화면으로",
+  /** POST — 미리볼 때와 그 문제의 "언제부터"가 다르다(닫혔다 다시 열림 — 명세 ⑫ §21 3) */
+  reopened: "문제가 다시 열렸습니다 — 미리보기를 다시 여세요",
+  /** POST — 이미 한 번 보낸 미리보기(명세 ⑫ §21 4) */
+  previewUsed: "이미 보낸 미리보기입니다 — 분석 화면에서 결과를 보세요",
 } as const;
 
 /** 실패의 까닭마다 고정 글(실행 자리의 글 · 주소를 내지 않는다). */

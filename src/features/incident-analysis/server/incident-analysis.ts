@@ -147,7 +147,7 @@ async function previewFor(config: ServerConfig, found: Extract<IncidentLookup, {
       : "자료와 겹치지 않는 경계 표지를 뽑지 못했습니다 — 미리보기를 다시 열어 주세요" };
   }
   const token = issueAnalysisPreviewToken(sessionSigningKey(), {
-    incidentId, promptDigest: analysisPromptDigest(built.prompt), issuedAt: Date.now(), account: config.adminUser,
+    incidentId, promptDigest: analysisPromptDigest(built.prompt), issuedAt: Date.now(), account: config.adminUser, incidentSince: found.incident.since,
   });
   return { kind: "ready", view: { prompt: built.prompt, token, characters: built.characters, bytes: built.bytes, reductions: built.reductions, maskCounts: built.maskCounts } };
 }

@@ -17,9 +17,11 @@ export interface AnalysisPreviewTokenFields {
   promptDigest: string;
   issuedAt: number;
   account: string;
+  /** 미리볼 때 그 문제의 "언제부터"(없으면 null) — 명세 ⑫ §21 3. 뼈대: 아직 서명에 들어가지 않는다(구현 워커가 ap2 로). */
+  incidentSince: string | null;
 }
 
-export type AnalysisPreviewTokenCheck = { ok: true } | { ok: false; reason: "malformed" | "mismatch" | "expired" };
+export type AnalysisPreviewTokenCheck = { ok: true; incidentSince: string | null } | { ok: false; reason: "malformed" | "mismatch" | "expired" };
 
 const ISSUED_AT_PATTERN = /^\d{1,16}$/;
 const SIGNATURE_PATTERN = /^[A-Za-z0-9_-]{43}$/;
@@ -37,7 +39,7 @@ export function issueAnalysisPreviewToken(signingKey: string, fields: AnalysisPr
 }
 
 export function verifyAnalysisPreviewToken(
-  token: unknown, signingKey: string, expected: Omit<AnalysisPreviewTokenFields, "issuedAt">, now: number,
+  token: unknown, signingKey: string, expected: Omit<AnalysisPreviewTokenFields, "issuedAt" | "incidentSince">, now: number,
 ): AnalysisPreviewTokenCheck {
   if (typeof token !== "string" || token.length === 0 || token.length > ANALYSIS_PREVIEW_TOKEN_MAX_LENGTH) return { ok: false, reason: "malformed" };
   const parts = token.split(".");
@@ -46,11 +48,11 @@ export function verifyAnalysisPreviewToken(
   if (version !== ANALYSIS_PREVIEW_TOKEN_VERSION || !ISSUED_AT_PATTERN.test(issuedAtText) || !SIGNATURE_PATTERN.test(signature)) return { ok: false, reason: "malformed" };
   if (signingKey.trim().length === 0) return { ok: false, reason: "mismatch" };
   const issuedAt = Number(issuedAtText);
-  const expectedSignature = Buffer.from(sign(signingKey, { ...expected, issuedAt }));
+  const expectedSignature = Buffer.from(sign(signingKey, { ...expected, issuedAt, incidentSince: null }));
   const actualSignature = Buffer.from(signature);
   // 인코딩된 글자끼리 비교한다 — base64url 마지막 글자의 남는 비트만 바꾼 변조도 거절된다(rc1 과 같은 방식)
   if (expectedSignature.length !== actualSignature.length || !timingSafeEqual(expectedSignature, actualSignature)) return { ok: false, reason: "mismatch" };
   if (issuedAt > now) return { ok: false, reason: "mismatch" };   // 시계가 거꾸로 — 통하는 창 밖
   if (now - issuedAt >= ANALYSIS_PREVIEW_LIFETIME_MILLISECONDS) return { ok: false, reason: "expired" };
-  return { ok: true };
+  return { ok: true, incidentSince: null };   // 뼈대: 서명이 묶은 since 를 돌려주는 것은 구현 워커가(ap2)
 }

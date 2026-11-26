@@ -39,7 +39,8 @@ import IncidentAnalysisPage from "@/app/incidents/analysis/page";
 import IncidentsPage from "@/app/incidents/page";
 import * as analysisRoute from "@/app/api/incidents/analysis/route";
 import { SESSION_COOKIE_NAME, issueSessionToken } from "@/features/auth/lib/session";
-import { FAKE_ADMIN_ID, FAKE_ORIGIN, FAKE_SIGNING_KEY } from "@/features/auth/lib/test-fakes";
+import { FAKE_ADMIN_ID, FAKE_ORIGIN, FAKE_PASSWORD_HASH, FAKE_SIGNING_KEY } from "@/features/auth/lib/test-fakes";
+import { register } from "@/instrumentation";
 import { logQueueOnShutdown } from "@/features/auth/server/shutdown-logging";
 import { FAKE_CLAUDE_RUNNER_URL } from "@/features/claude-usage/lib/claude-runner-test-fakes";
 import {
@@ -48,7 +49,9 @@ import {
 } from "@/features/incident-analysis/lib/analysis-test-fakes";
 import { ANALYSIS_FAILURE_TEXTS, INCIDENT_ANALYSIS_TEXT } from "@/features/incident-analysis/lib/incident-analysis-screen";
 import { ANALYSIS_RUNNING_LIMIT_MILLISECONDS, incidentAnalysisKeys, type StoredAnalysisAttempt } from "@/features/incident-analysis/lib/incident-analysis-service";
-import { existingIncidentAnalysisService, resetIncidentAnalysisService } from "@/features/incident-analysis/server/incident-analysis";
+import {
+  INCIDENT_ANALYSIS_BODY_MAX_BYTES, existingIncidentAnalysisService, resetIncidentAnalysisService,
+} from "@/features/incident-analysis/server/incident-analysis";
 import { deployIncidentId, monitorIncidentId } from "@/features/incidents/lib/incident-id";
 import {
   MINUTE, NOW, alertRecordRow, alertRecordsBody, deploymentRow, deploymentsBody, emptySeriesBody, firingRow, iso, latestBody, latestServerRow, logRow, logsBody,
@@ -79,6 +82,8 @@ let overrides: Record<string, Handler> = {};
 let runnerResponder: () => Response | Promise<Response> = () => jsonBody(runnerSuccessBody(validRunnerAnswer({ cause: `원인 ${ANSWER_MARK}` })));
 const runnerCalls: { body: Record<string, unknown>; headers: Headers }[] = [];
 const consoleLines: string[] = [];
+/** 사례가 붙잡아 둔 실행 자리의 답 — 단언이 먼저 실패해도 afterEach 가 풀어 준다. */
+const pendingReleases: (() => void)[] = [];
 
 const ROUTES: Record<string, Handler> = {
   [`${FAKE_ALERT_URL}/monitors`]: () => jsonBody(monitorsBody([
@@ -206,6 +211,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  for (const release of pendingReleases.splice(0)) release();
   await existingIncidentAnalysisService()?.whenIdle();
   vi.useRealTimers();
   vi.unstubAllGlobals();
@@ -227,7 +233,7 @@ describe("첫 걸음 — 화면은 저장된 것만, 미리보기는 보낼 글 
     const html = await renderPage({ incident: FRONT, preview: "1" });
     const fields = formFields(html);
     expect(fields.incident).toBe(FRONT);
-    expect(fields.preview).toMatch(/^ap1\.\d+\.[A-Za-z0-9_-]{43}$/);
+    expect(fields.preview).toMatch(/^ap2\.\d+\.(-|s[A-Za-z0-9_-]*)\.[A-Za-z0-9_-]{43}$/);
     expect(fields.prompt).toContain(LOG_MARK);
     expect(fields.prompt).toContain("DB_PASSWORD=[가림:secret_field]");
     expect(fields.prompt).not.toContain(LOG_SECRET);
@@ -287,12 +293,29 @@ describe("둘째 걸음 — 미리본 글 그대로를 보낸다", () => {
     expect(runnerCalls).toHaveLength(1);
   });
 
-  it("두 탭 · 두 번 누름 — 둘 다 303, 실행 자리는 한 번", async () => {
+  it("두 번 누름(같은 폼을 동시에 두 번) — 하나는 303, 하나는 409 이미 보낸 미리보기 · 실행 자리는 한 번", async () => {
     const fields = await previewFields();
     let release: () => void = () => undefined;
+    pendingReleases.push(() => release());   // 단언이 먼저 실패해도 afterEach 가 뒤에서 도는 분석을 풀어 준다
     runnerResponder = () => new Promise((resolve) => { release = () => resolve(jsonBody(runnerSuccessBody())); });
-    const [first, second] = await Promise.all([analysisRoute.POST(postRequest(fields)), analysisRoute.POST(postRequest(fields))]);
-    expect([first.status, second.status]).toEqual([303, 303]);
+    const responses = await Promise.all([analysisRoute.POST(postRequest(fields)), analysisRoute.POST(postRequest(fields))]);
+    expect(responses.map((response) => response.status).sort()).toEqual([303, 409]);
+    expect(textOf(await responses.find((response) => response.status === 409)!.text())).toContain(INCIDENT_ANALYSIS_TEXT.previewUsed);
+    await vi.waitFor(() => expect(runnerCalls).toHaveLength(1));
+    release();
+    await existingIncidentAnalysisService()?.whenIdle();
+    expect(runnerCalls).toHaveLength(1);
+  });
+
+  it("두 탭(미리보기를 따로 연 두 폼) — 둘 다 303(진행 중이면 새로 부르지 않는다), 실행 자리는 한 번", async () => {
+    const first = await previewFields();
+    const second = await previewFields();
+    expect(second.preview).not.toBe(first.preview);
+    let release: () => void = () => undefined;
+    pendingReleases.push(() => release());   // 단언이 먼저 실패해도 afterEach 가 뒤에서 도는 분석을 풀어 준다
+    runnerResponder = () => new Promise((resolve) => { release = () => resolve(jsonBody(runnerSuccessBody())); });
+    const responses = await Promise.all([analysisRoute.POST(postRequest(first)), analysisRoute.POST(postRequest(second))]);
+    expect(responses.map((response) => response.status)).toEqual([303, 303]);
     await vi.waitFor(() => expect(runnerCalls).toHaveLength(1));
     const running = await renderPage({ incident: FRONT });
     expect(running).toContain('<meta http-equiv="refresh" content="5"/>');
@@ -357,6 +380,152 @@ describe("둘째 걸음 — 미리본 글 그대로를 보낸다", () => {
   it("GET 으로는 시작되지 않는다 — 경로에 GET 이 없다", () => {
     expect((analysisRoute as Record<string, unknown>).GET).toBeUndefined();
     expect(typeof analysisRoute.POST).toBe("function");
+  });
+});
+
+describe("미리보기는 한 번만 쓴다(명세 ⑫ §21 4)", () => {
+  function usedPreviewEntries(): [string, string][] {
+    return [...SHARED_FAKE_REDIS_STATE.strings].filter(([key]) => key.includes(":used-preview:")).map(([key, entry]) => [key, entry.value]);
+  }
+
+  it("앞 분석이 끝난 뒤 같은 폼을 다시 보내면 409 — 실행 자리는 한 번 · 표시는 키 하나(서명의 해시) · 값 \"1\"", async () => {
+    const fields = await previewFields();
+    expect((await post(fields)).status).toBe(303);
+    const again = await post(fields);
+    expect(again.status).toBe(409);
+    expect(textOf(await again.text())).toContain(INCIDENT_ANALYSIS_TEXT.previewUsed);
+    expect(runnerCalls).toHaveLength(1);
+    const entries = usedPreviewEntries();
+    expect(entries).toHaveLength(1);
+    expect(entries[0][0]).toMatch(/^incident-analysis:v1:used-preview:[0-9a-f]{64}$/);
+    expect(entries[0][1]).toBe("1");
+    for (const part of [fields.preview, fields.preview.split(".").at(-1)!, LOG_MARK, FRONT]) expect(entries[0][0]).not.toContain(part);
+  });
+
+  it("앞 분석이 도는 중에 같은 폼을 다시 보내도 409 · 실행 자리는 한 번", async () => {
+    const fields = await previewFields();
+    let release: () => void = () => undefined;
+    pendingReleases.push(() => release());   // 단언이 먼저 실패해도 afterEach 가 뒤에서 도는 분석을 풀어 준다
+    runnerResponder = () => new Promise((resolve) => { release = () => resolve(jsonBody(runnerSuccessBody())); });
+    expect((await analysisRoute.POST(postRequest(fields))).status).toBe(303);
+    await vi.waitFor(() => expect(runnerCalls).toHaveLength(1));
+    expect((await analysisRoute.POST(postRequest(fields))).status).toBe(409);
+    release();
+    await existingIncidentAnalysisService()?.whenIdle();
+    expect(runnerCalls).toHaveLength(1);
+  });
+
+  it("Redis 에 닿지 못하면(표시를 남기지 못함) 503 — 시작하지 않는다", async () => {
+    const fields = await previewFields();
+    SHARED_FAKE_REDIS_STATE.down = true;
+    const response = await post(fields);
+    expect(response.status).toBe(503);
+    expect(runnerCalls).toEqual([]);
+  });
+});
+
+describe("서명에 \"언제부터\"를 묶는다(명세 ⑫ §21 3)", () => {
+  const downAt = (since: string) => () => jsonBody(monitorsBody([{ name: "front", status: "DOWN", down_since: since, reason: "status 502" }]));
+
+  it("미리본 뒤 같은 식별자가 다른 since 로 다시 열렸으면 409 — 부르지 않고 쓰지 않는다", async () => {
+    const fields = await previewFields();
+    overrides[`${FAKE_ALERT_URL}/monitors`] = downAt(iso(NOW - 2 * MINUTE));
+    const response = await post(fields);
+    expect(response.status).toBe(409);
+    expect(textOf(await response.text())).toContain(INCIDENT_ANALYSIS_TEXT.reopened);
+    expect(runnerCalls).toEqual([]);
+    expect(redisWrites()).toEqual([]);
+  });
+
+  it("since 가 같으면 그대로 303", async () => {
+    const fields = await previewFields();
+    overrides[`${FAKE_ALERT_URL}/monitors`] = downAt(iso(DOWN_AT));
+    expect((await post(fields)).status).toBe(303);
+    expect(runnerCalls).toHaveLength(1);
+  });
+
+  it("since 가 없는 문제(DOWN 시각 모름) — 없음끼리는 303 · 그 뒤 since 가 생겼으면 409", async () => {
+    overrides[`${FAKE_ALERT_URL}/monitors`] = downAt("");
+    const fields = await previewFields();
+    expect(fields.preview).toMatch(/^ap2\.\d+\.-\./);
+    overrides[`${FAKE_ALERT_URL}/monitors`] = downAt(iso(NOW - MINUTE));
+    expect((await post(fields)).status).toBe(409);
+    overrides[`${FAKE_ALERT_URL}/monitors`] = downAt("");
+    expect((await post(fields)).status).toBe(303);
+    expect(runnerCalls).toHaveLength(1);
+  });
+});
+
+describe("브라우저가 폼의 줄바꿈을 CRLF 로 바꿔 보낸다(명세 ⑫ §21 6)", () => {
+  it("CRLF 로 바꾼 글 → 303 · 실행 자리가 받은 글은 미리본 글 그대로(CR 없음)", async () => {
+    const fields = await previewFields();
+    expect(fields.prompt).toContain("\n");
+    expect(fields.prompt).not.toContain("\r");
+    expect((await post({ ...fields, prompt: fields.prompt.replaceAll("\n", "\r\n") })).status).toBe(303);
+    expect(runnerCalls).toHaveLength(1);
+    expect(runnerCalls[0].body.prompt).toBe(fields.prompt);
+    expect(String(runnerCalls[0].body.prompt)).not.toContain("\r");
+    expect(storedAttempts()[0].prompt).toBe(fields.prompt);
+  });
+
+  it.each([["홀로 선 CR", "\r"], ["CR CR LF", "\r\r\n"]])("%s 로 바꾼 글은 409 — 부르지 않는다", async (_label, lineEnd) => {
+    const fields = await previewFields();
+    expect((await post({ ...fields, prompt: fields.prompt.replaceAll("\n", lineEnd) })).status).toBe(409);
+    expect(runnerCalls).toEqual([]);
+  });
+});
+
+describe("가리기 전에 글자를 정리한다(명세 ⑫ §21 1) — 미리보기 · 보낸 글 · 저장된 글", () => {
+  const ESC = "\u001b";
+  const DIRTY_SECRET = "Zq81PageColorSecret5";
+  const DIRTY = `${ESC}[36mpassword${ESC}[0m=${ESC}[35m${DIRTY_SECRET}${ESC}[0m \u202e뒤집힘\u2066 \u0085다음\u2028줄 ${ESC}]0;title\u0007 끝\r끝2 token\u000b: Zq81VtSecret6`;
+
+  it("미리보기의 글 · 실행 자리가 받은 글 · 저장된 \"보낸 글\"에 비밀값도 제어 · 방향 · ESC 글자도 없다(셋이 같은 바이트)", async () => {
+    overrides[`${FAKE_OBSERVE_URL}/logs`] = (url) => {
+      const parameters = url.searchParams;
+      const rows = parameters.get("service") === "front" && parameters.get("level") === "error"
+        ? [logRow({ id: `${DOWN_AT + MINUTE}-0`, at: iso(DOWN_AT + MINUTE), level: "error", service: "front", message: DIRTY })] : [];
+      return jsonBody(logsBody(rows, parameters.get("from")!, parameters.get("to")!));
+    };
+    const html = await renderPage({ incident: FRONT, preview: "1" });
+    const fields = formFields(html);
+    const forbidden = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/;
+    for (const text of [fields.prompt, unescapeHtml(/<pre[^>]*>([\s\S]*?)<\/pre>/.exec(html)![1])]) {
+      expect(text).not.toContain(DIRTY_SECRET);
+      expect(text).not.toContain("Zq81VtSecret6");
+      expect(text).not.toMatch(forbidden);
+      expect(text).not.toContain("\r");
+    }
+    expect(fields.prompt).toContain("\uFFFD뒤집힘\uFFFD");
+    expect((await post(fields)).status).toBe(303);
+    expect(runnerCalls[0].body.prompt).toBe(fields.prompt);
+    expect(storedAttempts()[0].prompt).toBe(fields.prompt);
+  });
+});
+
+describe("nginx 가 분석 요청의 본문을 받는다(명세 ⑫ §21 2)", () => {
+  const config = readFileSync(fileURLToPath(new URL("../../../deploy/nginx/nginx.conf", import.meta.url)), "utf8");
+  const block = () => /location = \/api\/incidents\/analysis \{([^}]*)\}/.exec(config)?.[1];
+
+  it("location = /api/incidents/analysis — client_max_body_size 1m · proxy_pass 같은 뒤쪽", () => {
+    expect(block(), "분석 요청의 location 이 없다").toBeDefined();
+    expect(block()).toMatch(/client_max_body_size\s+1m;/);
+    expect(block()).toMatch(/proxy_pass\s+http:\/\/\$deploy_upstream;/);
+  });
+
+  it("그 location 안에서 proxy_set_header · add_header 를 다시 쓰지 않는다(위 단계의 것을 물려받게)", () => {
+    expect(block() ?? "").not.toMatch(/proxy_set_header|add_header/);
+  });
+
+  it("1m 은 앱의 본문 상한(INCIDENT_ANALYSIS_BODY_MAX_BYTES)과 같은 수", () => {
+    expect(INCIDENT_ANALYSIS_BODY_MAX_BYTES).toBe(1024 * 1024);
+  });
+
+  it("다른 경로는 그대로 — server 의 16k · 로그인의 8k · location / 는 상한을 다시 쓰지 않는다", () => {
+    expect(config).toMatch(/listen 18000;[\s\S]*?client_max_body_size 16k;/);
+    expect(/location = \/api\/auth\/login \{([^}]*)\}/.exec(config)![1]).toMatch(/client_max_body_size\s+8k;/);
+    expect(/location \/ \{([^}]*)\}/.exec(config)![1]).not.toMatch(/client_max_body_size/);
+    expect(config.match(/client_max_body_size/g)).toHaveLength(3);
   });
 });
 
@@ -491,6 +660,53 @@ describe("멈출 때 · 끊김", () => {
     vi.setSystemTime(NOW + ANALYSIS_RUNNING_LIMIT_MILLISECONDS);
     expect(textOf(await renderPage({ incident: FRONT }))).toContain(INCIDENT_ANALYSIS_TEXT.interrupted);
     resetIncidentAnalysisService();
+  });
+});
+
+describe("멈출 때 — 등록과 처리기의 차례(명세 ⑫ §21 5)", () => {
+  it("instrumentation 이 SIGTERM 처리기를 하나만 물리고(두 번 불려도), 그 처리기는 두 줄(login · incident-analysis)을 한 번씩 남긴 뒤에야 끝낸다", async () => {
+    vi.stubEnv("NEXT_RUNTIME", "nodejs");
+    vi.stubEnv("ADMIN_PASSWORD_HASH", FAKE_PASSWORD_HASH);
+    const handlers = new Map<string, ((...args: unknown[]) => void)[]>();
+    const capture = (event: string | symbol, handler: (...args: unknown[]) => void) => {
+      handlers.set(String(event), [...(handlers.get(String(event)) ?? []), handler]);
+      return process;
+    };
+    vi.spyOn(process, "on").mockImplementation(capture as typeof process.on);
+    vi.spyOn(process, "once").mockImplementation(capture as typeof process.once);
+    vi.spyOn(process, "addListener").mockImplementation(capture as typeof process.addListener);
+    const order: string[] = [];
+    const exit = vi.spyOn(process, "exit").mockImplementation(((code?: number) => { order.push(`exit ${code ?? 0}`); }) as typeof process.exit);
+    for (const method of ["log", "warn", "error", "info"] as const) {
+      vi.spyOn(console, method).mockImplementation((...parts: unknown[]) => { const line = parts.map(String).join(" "); consoleLines.push(line); order.push(line); });
+    }
+    await register();
+    await register();   // 두 번 불려도(개발 모드의 다시 읽기 등) 처리기는 하나 — 줄이 두 번 나오지 않게
+    expect(exit, "시작 검사가 끝내려 했다 — 설정을 확인").not.toHaveBeenCalled();
+    const sigterm = handlers.get("SIGTERM") ?? [];
+    expect(sigterm).toHaveLength(1);
+
+    runnerResponder = () => new Promise(() => undefined);
+    expect((await analysisRoute.POST(postRequest(await previewFields()))).status).toBe(303);
+    await vi.waitFor(() => expect(runnerCalls).toHaveLength(1));
+    order.length = 0;
+    vi.stubEnv("NEXT_MANUAL_SIG_HANDLE", "1");
+    sigterm[0]("SIGTERM");
+    const loginLines = order.filter((line) => line.includes("login:shutdown"));
+    const analysisLines = order.filter((line) => line.includes("incident-analysis:shutdown running=1"));
+    expect(loginLines).toHaveLength(1);
+    expect(analysisLines).toHaveLength(1);
+    expect(order.filter((line) => line.startsWith("exit "))).toEqual(["exit 0"]);
+    expect(order.indexOf("exit 0")).toBeGreaterThan(order.indexOf(analysisLines[0]));
+    expect(order.indexOf("exit 0")).toBeGreaterThan(order.indexOf(loginLines[0]));
+    resetIncidentAnalysisService();
+  });
+
+  it("NEXT_MANUAL_SIG_HANDLE 이 없으면 처리기는 끝내지 않는다(Next 의 처리기가 연결을 정리한 뒤 끝낸다) — 줄은 그대로", () => {
+    const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as typeof process.exit);
+    logQueueOnShutdown();
+    expect(exit).not.toHaveBeenCalled();
+    expect(consoleLines.filter((line) => line.includes("login:shutdown"))).toHaveLength(1);
   });
 });
 

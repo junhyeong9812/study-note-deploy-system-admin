@@ -643,3 +643,9 @@ export function maskForAnalysis(text: string): MaskedText {
   for (const kind of ANALYSIS_MASK_KINDS) if (counts[kind] !== undefined) ordered[kind] = counts[kind];
   return { text: lines.join("\n"), counts: ordered };
 }
+
+/** 가리기 전의 글자 정리(명세 ⑫ §21 1) — 뼈대: 구현 워커가 채우고 maskForAnalysis 가 가리기 전에 부르게 한다. 계약: analysis-cleaning.test.ts 머리 주석. */
+export function cleanForAnalysis(text: string): string {
+  void text;
+  throw new Error("cleanForAnalysis: 구현 전");
+}

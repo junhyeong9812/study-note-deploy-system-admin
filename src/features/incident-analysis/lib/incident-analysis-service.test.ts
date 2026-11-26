@@ -9,9 +9,11 @@
  * - history: 최근 것부터 · running 이 5분을 넘으면 interrupted(그 뒤엔 다시 시작할 수 있다) · 읽을 수 없는 기록은 unreadable(다른 것은 보인다) ·
  *   보낼 때의 since 가 지금 열린 문제의 since 와 다르면 fromEarlierOpening. Redis 에 닿지 못하면 { ok: false }.
  * - 로그: 한 번에 한 줄 `incident-analysis:<결과> key=value…`(요청 ID 는 로그의 요청 ID 자리) — 보낸 글 · 답의 내용은 싣지 않는다. */
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
-  ANALYSIS_HISTORY_LIMIT, ANALYSIS_RETENTION_MILLISECONDS, ANALYSIS_RUNNING_LIMIT_MILLISECONDS, createIncidentAnalysisService, incidentAnalysisKeys,
+  ANALYSIS_HISTORY_LIMIT, ANALYSIS_RETENTION_MILLISECONDS, ANALYSIS_RUNNING_LIMIT_MILLISECONDS, ANALYSIS_USED_PREVIEW_MILLISECONDS, createIncidentAnalysisService,
+  incidentAnalysisKeys, usedPreviewKey,
   type AnalysisStartRequest, type IncidentAnalysisService, type StoredAnalysisAttempt,
 } from "@/features/incident-analysis/lib/incident-analysis-service";
 import type { AnalysisRunResult } from "@/features/incident-analysis/lib/analysis-runner-client";
@@ -318,5 +320,49 @@ describe("로그 — 요청 ID · 문제 식별자 · 결과 · 걸린 시간 ·
     await target.service.whenIdle();
     expect(target.logs.map((entry) => entry.message)).toContain(
       `incident-analysis:failed reason=limit_reached incident=monitor:front duration_ms=0 bytes=${new TextEncoder().encode(`자료 ${PROMPT_MARK}`).length}`);
+  });
+});
+
+describe("미리보기는 한 번만 쓴다(명세 ⑫ §21 4 — claimPreview)", () => {
+  const TOKEN = `ap2.${START}.-.${"S".repeat(43)}`;
+  const OTHER = `ap2.${START}.-.${"T".repeat(43)}`;
+
+  it("표시의 키 — 서명 값의 SHA-256(16진 64자) · 글 · 서명 값 그대로가 키에 없다", () => {
+    const digest = createHash("sha256").update(TOKEN, "utf8").digest("hex");
+    expect(usedPreviewKey(TOKEN)).toBe(`incident-analysis:v1:used-preview:${digest}`);
+    expect(usedPreviewKey(TOKEN)).not.toContain("S".repeat(10));
+    expect(usedPreviewKey(OTHER)).not.toBe(usedPreviewKey(TOKEN));
+  });
+
+  it("처음이면 claimed — SET NX PX 10분, 값 \"1\" · 두 번째는 used", async () => {
+    const { service, state } = harness();
+    expect(await service.claimPreview(TOKEN)).toBe("claimed");
+    expect(ANALYSIS_USED_PREVIEW_MILLISECONDS).toBe(600_000);
+    expect(state.strings.get(usedPreviewKey(TOKEN))).toEqual({ value: "1", expiresAt: START + 600_000 });
+    expect(await service.claimPreview(TOKEN)).toBe("used");
+    expect(await service.claimPreview(OTHER)).toBe("claimed");
+  });
+
+  it("10분이 지나면 표시가 사라진다(그때는 서명도 지났다)", async () => {
+    const { service, clock } = harness();
+    await service.claimPreview(TOKEN);
+    clock.now = START + ANALYSIS_USED_PREVIEW_MILLISECONDS;
+    expect(await service.claimPreview(TOKEN)).toBe("claimed");
+  });
+
+  it("두 자리가 동시에 — 원자적으로 하나만 claimed", async () => {
+    const clock = { now: START };
+    const state = createFakeRedisState(() => clock.now);
+    const blue = harness({ state, clock });
+    const green = harness({ state, clock });
+    const results = await Promise.all([blue.service.claimPreview(TOKEN), green.service.claimPreview(TOKEN), blue.service.claimPreview(TOKEN)]);
+    expect(results.filter((result) => result === "claimed")).toHaveLength(1);
+    expect(results.filter((result) => result === "used")).toHaveLength(2);
+  });
+
+  it("Redis 에 닿지 못하면 store_unavailable — 표시를 남기지 못했다", async () => {
+    const { service, state } = harness();
+    state.down = true;
+    expect(await service.claimPreview(TOKEN)).toBe("store_unavailable");
   });
 });
