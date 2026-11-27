@@ -3,11 +3,14 @@
  * 모름과 0 을 가른다: 선의 요청 수 · 채움은 formatEdgeCount · completeness 로("아직 모름"은 0건이라 하지 않는다) · 수집이 밀린 서버 · 채우는 중인 선 ·
  * 읽지 못한 구간이 있는 서버는 글로(role=note) · 잃은 순번(그 서버의 누적 — 이 기간의 것인지 모른다)은 따로 한 줄 · 끊기면 "끊김 — 다시 붙는 중",
  * 다시 붙은 직후(새 지도 전)는 "다시 붙음 — 새 값을 기다리는 중", 둘 다 "아래 값은 <시각> 의 것입니다" · 깨진 사건의 수.
- * 그림(svg)은 꾸밈(aria-hidden) — 같은 값을 표 둘("통신 선" · "수집 상태")로 읽는다. 마디는 서비스 이름(관측 서버의 선에 서버 칸이 없다). */
+ * 그림(svg)은 꾸밈(aria-hidden) — 같은 값을 표 둘("통신 선" · "수집 상태")로 읽는다. 마디는 서비스 이름(관측 서버의 선에 서버 칸이 없다).
+ * 의존의 선(⑬ T9d): 그림 아래 줄에 의존의 마디(이름마다 하나) · 서비스 → 의존의 가는 짧은 점선(2 3 — 통신의 "덜 채워짐" 6 4 와 다르다) ·
+ * 표 "의존 연결"(서비스 · 의존 · 상태 · 걸린 시간 · 까닭 · 확인한 때). 지금의 상태다 — 고른 기간과 무관. 서비스가 준 detail 은 그리지 않는다(흐름에 없다). */
 import { formatKoreanLogTime } from "@/features/logs/ui/LogTable";
 import logStyles from "@/features/logs/ui/LogSearchScreen.module.css";
 import { TRAFFIC_MAP_RANGE_LABELS, type TrafficMapRange } from "@/features/traffic-map/lib/traffic-map-query";
-import type { TrafficDependencyStreamState } from "@/features/traffic-map/lib/traffic-dependency-stream";
+import { DEPENDENCY_NAMES, type DependencyLine, type DependencyState, type DependencyUnknownReason } from "@/features/traffic-map/lib/dependency-lines";
+import { isDependencyStale, type TrafficDependencyStreamState } from "@/features/traffic-map/lib/traffic-dependency-stream";
 import type { TrafficMapStreamState } from "@/features/traffic-map/lib/traffic-map-stream-state";
 import {
   formatEdgeCount, formatErrorRate, formatMilliseconds, formatQuantile, type EdgeCompleteness, type TrafficMapEdgeView, type TrafficMapView,
@@ -19,7 +22,7 @@ import type { UpstreamFailure } from "@/shared/lib/upstream-result";
 export interface TrafficMapBodyProps {
   range: TrafficMapRange;
   state: TrafficMapStreamState;
-  /** 의존의 선(⑬ T9d) — 없으면 "의존 연결은 아직 확인하지 않았습니다". 뼈대: 테스트 설계가 더한 칸 — 구현 워커가 그린다. */
+  /** 의존의 선(⑬ T9d) — 없거나 값이 없으면 "의존 연결은 아직 확인하지 않았습니다". */
   dependencies?: TrafficDependencyStreamState;
   /** 낡음을 가르는 지금(밀리초) — 없으면 시각으로는 낡음을 가르지 않는다(연결 상태로만) */
   now?: number;
@@ -56,17 +59,32 @@ function TrafficName({ name, known }: { name: string; known: boolean }) {
 const FIGURE_SIZE = 480;
 const FIGURE_RADIUS = 180;
 const NODE_RADIUS = 34;
+/** 의존의 마디 줄 — 원 아래에 둔다(높이 · 마디의 크기). */
+const DEPENDENCY_ROW_HEIGHT = 90;
+const DEPENDENCY_NODE_WIDTH = 86;
+const DEPENDENCY_NODE_HEIGHT = 24;
 
-/** 마디를 원 위에 고르게 놓고, 선은 부른 쪽 → 받는 쪽의 굽은 선(같은 두 마디의 갈래는 굽은 정도로 가른다). 덜 채워진 선은 점선. */
-function TrafficFigure({ view }: { view: TrafficMapView }) {
+const DEPENDENCY_LINE_CLASSES: Readonly<Record<DependencyState, string>> = {
+  up: styles.dependencyLineUp, down: styles.dependencyLineDown, unknown: styles.dependencyLineUnknown,
+};
+
+/** 마디를 원 위에 고르게 놓고, 선은 부른 쪽 → 받는 쪽의 굽은 선(같은 두 마디의 갈래는 굽은 정도로 가른다). 덜 채워진 선은 점선.
+ * 의존의 선이 있으면 원 아래 줄에 의존의 마디를 놓고 서비스의 마디에서 곧은 짧은 점선으로 잇는다.
+ * 단순화: 통신의 선이 없는 서비스(그 기간에 마디가 없음)의 의존의 선은 그림에 그리지 않는다 — 표 "의존 연결"에는 늘 있다. 그림에 늘 보여야 하면 마디를 더한다. */
+function TrafficFigure({ view, dependencyLines }: { view: TrafficMapView; dependencyLines: readonly DependencyLine[] }) {
   const center = FIGURE_SIZE / 2;
+  const dependencyNames = DEPENDENCY_NAMES.filter((name) => dependencyLines.some((line) => line.dependency === name));
+  const height = FIGURE_SIZE + (dependencyNames.length > 0 ? DEPENDENCY_ROW_HEIGHT : 0);
+  const dependencyPositions = new Map(dependencyNames.map((name, index) => [
+    name, { x: (FIGURE_SIZE * (index + 0.5)) / dependencyNames.length, y: FIGURE_SIZE + DEPENDENCY_ROW_HEIGHT / 2 },
+  ] as const));
   const positions = new Map(view.nodes.map((name, index) => {
     const angle = (2 * Math.PI * index) / view.nodes.length - Math.PI / 2;
     return [name, { x: center + FIGURE_RADIUS * Math.cos(angle), y: center + FIGURE_RADIUS * Math.sin(angle) }] as const;
   }));
   const pairCounts = new Map<string, number>();
   return (
-    <svg className={styles.figure} viewBox={`0 0 ${FIGURE_SIZE} ${FIGURE_SIZE}`} aria-hidden="true" focusable="false">
+    <svg className={styles.figure} viewBox={`0 0 ${FIGURE_SIZE} ${height}`} aria-hidden="true" focusable="false">
       <defs>
         <marker id="traffic-arrow" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
           <path className={styles.arrow} d="M 0 0 L 10 5 L 0 10 z" />
@@ -94,6 +112,27 @@ function TrafficFigure({ view }: { view: TrafficMapView }) {
             className={`${styles.edge} ${incomplete ? styles.edgeIncomplete : ""}`} {...(incomplete ? { strokeDasharray: "6 4" } : {})}
             d={`M ${start.x.toFixed(1)} ${start.y.toFixed(1)} Q ${control.x.toFixed(1)} ${control.y.toFixed(1)} ${end.x.toFixed(1)} ${end.y.toFixed(1)}`}
             markerEnd="url(#traffic-arrow)" />
+        );
+      })}
+      {dependencyLines.map((line) => {
+        const from = positions.get(line.service);
+        const to = dependencyPositions.get(line.dependency)!;
+        if (from === undefined) return null;
+        const key = `${line.service}→${line.dependency}`;
+        return (
+          <line key={key} data-dependency-line={key} data-dependency-state={line.state}
+            className={`${styles.dependencyLine} ${DEPENDENCY_LINE_CLASSES[line.state]}`} strokeDasharray="2 3"
+            x1={from.x.toFixed(1)} y1={(from.y + NODE_RADIUS).toFixed(1)} x2={to.x.toFixed(1)} y2={(to.y - DEPENDENCY_NODE_HEIGHT / 2).toFixed(1)} />
+        );
+      })}
+      {dependencyNames.map((name) => {
+        const { x, y } = dependencyPositions.get(name)!;
+        return (
+          <g key={name} data-dependency-node={name}>
+            <rect className={styles.dependencyNode} x={(x - DEPENDENCY_NODE_WIDTH / 2).toFixed(1)} y={(y - DEPENDENCY_NODE_HEIGHT / 2).toFixed(1)}
+              width={DEPENDENCY_NODE_WIDTH} height={DEPENDENCY_NODE_HEIGHT} rx={6} />
+            <text className={styles.nodeName} x={x.toFixed(1)} y={y.toFixed(1)}>{name}</text>
+          </g>
         );
       })}
       {view.nodes.map((name) => {
@@ -186,7 +225,66 @@ function ServerTable({ view }: { view: TrafficMapView }) {
   );
 }
 
-function MapContent({ view }: { view: TrafficMapView }) {
+const DEPENDENCY_STATE_LABELS: Readonly<Record<DependencyState, string>> = { up: "연결됨", down: "끊김", unknown: "모름" };
+const DEPENDENCY_REASON_LABELS: Readonly<Record<DependencyUnknownReason, string>> = {
+  not_configured: "설정 없음", unreachable: "닿지 않음", timeout: "닿지 않음(4초 초과)", unparseable: "읽을 수 없는 답(옛 판일 수 있음)", not_reported: "알리지 않음",
+};
+
+function DependencyTable({ lines, checkedAt }: { lines: readonly DependencyLine[]; checkedAt: string }) {
+  const at = formatKoreanLogTime(checkedAt);
+  return (
+    <div className={logStyles.scroller} tabIndex={0} role="region" aria-label="의존 연결 표">
+      <table className={`${logStyles.table} ${styles.table}`} aria-label="의존 연결">
+        <thead>
+          <tr>
+            <th scope="col">서비스</th>
+            <th scope="col">의존</th>
+            <th scope="col">상태</th>
+            <th scope="col">걸린 시간</th>
+            <th scope="col">까닭</th>
+            <th scope="col">확인한 때</th>
+          </tr>
+        </thead>
+        <tbody>
+          {lines.map((line) => (
+            <tr key={`${line.service}→${line.dependency}`}>
+              <th scope="row">{line.service}</th>
+              <td>{line.dependency}</td>
+              <td>{DEPENDENCY_STATE_LABELS[line.state]}</td>
+              <td>{formatMilliseconds(line.tookMs)}</td>
+              <td>{line.reason === null ? "—" : DEPENDENCY_REASON_LABELS[line.reason]}</td>
+              <td>{at}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/** 의존 연결 — 지금의 상태(고른 기간과 무관). 값이 없으면 "아직 확인하지 않았습니다" · 낡으면 확인한 시각과 함께. */
+function DependencySection({ dependencies, connection, now }: {
+  dependencies: TrafficDependencyStreamState | undefined; connection: TrafficMapStreamState["connection"]; now: number | undefined;
+}) {
+  const shown = dependencies?.shown ?? null;
+  return (
+    <>
+      <h2 className={styles.sectionTitle}>의존 연결</h2>
+      {shown === null ? <p className={parts.empty}>의존 연결은 아직 확인하지 않았습니다</p> : (
+        <>
+          <p className={styles.meta}>의존 연결은 지금의 상태입니다 — 고른 기간과 무관합니다</p>
+          {isDependencyStale(dependencies!, connection, now ?? Date.parse(shown.checkedAt)) && (
+            <p className={styles.note} role="note">{`의존 연결은 ${formatKoreanLogTime(shown.checkedAt)} 에 확인한 값입니다 — 지금 값이 아닐 수 있습니다`}</p>
+          )}
+          <DependencyTable lines={shown.lines} checkedAt={shown.checkedAt} />
+        </>
+      )}
+      {dependencies !== undefined && dependencies.brokenEvents > 0 && <p className={styles.note} role="note">{`깨진 의존 갱신 ${dependencies.brokenEvents}건을 버렸습니다`}</p>}
+    </>
+  );
+}
+
+function MapContent({ view, dependencyLines }: { view: TrafficMapView; dependencyLines: readonly DependencyLine[] }) {
   const missingServers = view.servers.filter((server) => server.missing.length > 0).map((server) => server.server);
   return (
     <>
@@ -212,7 +310,7 @@ function MapContent({ view }: { view: TrafficMapView }) {
         </p>
       ) : (
         <>
-          <TrafficFigure view={view} />
+          <TrafficFigure view={view} dependencyLines={dependencyLines} />
           <h2 className={styles.sectionTitle}>통신 선</h2>
           <EdgeTable view={view} />
         </>
@@ -227,8 +325,9 @@ function MapContent({ view }: { view: TrafficMapView }) {
   );
 }
 
-export function TrafficMapBody({ range, state }: TrafficMapBodyProps) {
+export function TrafficMapBody({ range, state, dependencies, now }: TrafficMapBodyProps) {
   const shown = state.shown;
+  const dependencyLines = dependencies?.shown?.lines ?? [];
   const shownAt = shown === null ? null : formatKoreanLogTime(shown.fetchedAt);
   const stale = shown !== null && (state.connection === "reconnecting" || state.connection === "reopened" || state.connection === "session_ended");
   return (
@@ -248,7 +347,8 @@ export function TrafficMapBody({ range, state }: TrafficMapBodyProps) {
       {state.brokenEvents > 0 && <p className={styles.note} role="note">{`깨진 갱신 ${state.brokenEvents}건을 버렸습니다`}</p>}
       {shown === null
         ? state.failure === null && <p className={parts.empty}>아직 받은 지도가 없습니다</p>
-        : shown.map.ok && <MapContent view={shown.map.value} />}
+        : shown.map.ok && <MapContent view={shown.map.value} dependencyLines={dependencyLines} />}
+      <DependencySection dependencies={dependencies} connection={state.connection} now={now} />
     </section>
   );
 }

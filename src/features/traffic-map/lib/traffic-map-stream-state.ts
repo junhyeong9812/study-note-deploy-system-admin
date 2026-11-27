@@ -1,5 +1,5 @@
 /** 통신 지도의 브라우저 쪽 상태(순수 — 브라우저 조각이 쓴다: 서버 모듈 · 설정 · 클라이언트 · fetch 없음).
- * EventSource 의 사건(open · map · error · session)을 화면 상태로 접는다 + EventSource 를 잇고 끊는 함수(EventSource 는 주입).
+ * EventSource 의 사건(open · map · error · session — 의존의 사건 dependencies 는 dispatchDependencies 로)을 화면 상태로 접는다 + EventSource 를 잇고 끊는 함수(EventSource 는 주입).
  * - map: 깨진 사건(JSON 아님 · 칸 빠짐 · 형이 다름)은 버리고 brokenEvents 를 센다(앞의 값을 그대로) · sequence 가 마지막 것보다 작거나 같으면 버린다
  *   (같은 사건 두 번 · 늦게 온 옛 사건) · 성공한 지도는 shown 을 갈고 failure 를 지운다 · 실패는 failure 에만(shown 은 그대로 — 낡은 값으로 표시).
  *   진도 · 채움의 값은 사건에 실린 그대로 쓴다(앞의 사건보다 덜 채워져도 — 진도는 뒤로 갈 수 있다).
@@ -192,7 +192,7 @@ export interface TrafficMapStreamConnectOptions {
   url: string;
   createEventSource: (url: string) => EventSourceLike;
   dispatch: (action: TrafficMapStreamAction) => void;
-  /** 의존의 선(⑬ T9d) — `open` 마다 {type:"open"}, `dependencies` 사건마다 {type:"dependencies", data}(살아 있는 연결의 것만). 뼈대: 구현 워커가 잇는다. */
+  /** 의존의 선(⑬ T9d) — `open` 마다 {type:"open"}, `dependencies` 사건마다 {type:"dependencies", data}(살아 있는 연결의 것만). */
   dispatchDependencies?: (action: TrafficDependencyStreamAction) => void;
   scheduler: Scheduler;
 }
@@ -209,7 +209,14 @@ export function connectTrafficMapStream(options: TrafficMapStreamConnectOptions)
     const source = options.createEventSource(options.url);
     current = source;
     const live = () => !stopped && current === source;
-    source.addEventListener("open", () => { if (live()) options.dispatch({ type: "open" }); });
+    source.addEventListener("open", () => {
+      if (!live()) return;
+      options.dispatch({ type: "open" });
+      options.dispatchDependencies?.({ type: "open" });
+    });
+    source.addEventListener("dependencies", (event) => {
+      if (live()) options.dispatchDependencies?.({ type: "dependencies", data: typeof event.data === "string" ? event.data : "" });
+    });
     source.addEventListener("map", (event) => {
       if (live()) options.dispatch({ type: "map", data: typeof event.data === "string" ? event.data : "" });
     });

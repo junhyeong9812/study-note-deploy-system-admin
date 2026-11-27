@@ -25,7 +25,7 @@ export function TrafficMapScreen({ screen }: { screen: TrafficMapScreenData }) {
           ))}
         </ul>
       </nav>
-      <TrafficMapLive key={screen.range} range={screen.range} initial={screen.initial} />
+      <TrafficMapLive key={screen.range} range={screen.range} initial={screen.initial} initialDependencies={screen.initialDependencies} />
     </main>
   );
 }

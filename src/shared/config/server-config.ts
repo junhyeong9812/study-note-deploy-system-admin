@@ -21,6 +21,8 @@ export interface ServerConfig {
   logRedisUrl: string;
   /** GitHub REST API 토큰(배포 상세 task 07) — **선택**: 비어 있어도 뜬다(익명 한도). 값은 로그 · 응답 · 오류 문구에 내지 않는다. */
   githubToken: string;
+  /** llm 래퍼의 주소(통신 지도의 의존의 선 — GET /health) — **선택**: 비면 llm 의 선은 "설정 없음"(부르지 않는다). */
+  llmUrl: string;
   serverName: string;
 }
 
@@ -46,6 +48,7 @@ export function readServerConfig(): ServerConfig {
     backendUrl: environmentValue("BACKEND_URL"),
     logRedisUrl: environmentValue("LOG_REDIS_URL"),
     githubToken: environmentValue("GITHUB_TOKEN"),
+    llmUrl: environmentValue("LLM_URL"),
     serverName: environmentValue("SERVER_NAME") || "admin",
   };
 }

@@ -1,6 +1,5 @@
 /** 의존의 선(⑬ T9d — 명세 "T9d — 지도에 의존의 선을 그린다") — 세 서비스의 의존 상태 본문 → 선의 목록(순수 — 브라우저 조각도 이 파일을 쓴다:
  * 서버 모듈 · 설정 · fetch 를 값으로 가져오지 않는다).
- * 뼈대: 테스트 설계 워커가 계약(이름 · 꼴 · 상수)만 고정했다. 함수의 몸은 구현 워커가 채운다.
  *
  * - 서비스 · 의존은 닫힌 표(DEPENDENCY_SOURCES)의 짝만 선이 된다 — 서비스 이름은 통신 지도의 마디 이름(llm 은 `llm-wrapper`).
  *   선의 차례는 표의 차례(backend 의 넷 → llm-wrapper 의 하나 → observe 의 둘).
@@ -41,12 +40,32 @@ export interface DependencyLine {
   reason: DependencyUnknownReason | null;
 }
 
+const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+
+function sourceOf(service: DependencyServiceName): (typeof DEPENDENCY_SOURCES)[number] {
+  return DEPENDENCY_SOURCES.find((source) => source.service === service)!;
+}
+
+/** 의존 하나의 칸 → 선(꼴이 틀리면 unparseable 모름). detail · 모르는 칸은 읽지 않는다. */
+function lineOf(service: DependencyServiceName, dependency: DependencyName, value: unknown): DependencyLine {
+  if (!isRecord(value) || (value.status !== "UP" && value.status !== "DOWN")) return { service, dependency, state: "unknown", tookMs: null, reason: "unparseable" };
+  const took = value.took_ms;
+  if (took !== undefined && took !== null && !(typeof took === "number" && Number.isInteger(took) && took >= 0)) {
+    return { service, dependency, state: "unknown", tookMs: null, reason: "unparseable" };
+  }
+  return { service, dependency, state: value.status === "UP" ? "up" : "down", tookMs: typeof took === "number" ? took : null, reason: null };
+}
+
 /** 그 서비스의 본문(JSON 을 푼 값 — 풀지 못했으면 undefined) → 그 서비스의 선(표의 차례). */
-export function dependencyLinesFromBody(_service: DependencyServiceName, _body: unknown): DependencyLine[] {
-  throw new Error("not implemented: dependencyLinesFromBody");
+export function dependencyLinesFromBody(service: DependencyServiceName, body: unknown): DependencyLine[] {
+  if (!isRecord(body) || !isRecord(body.components)) return unknownDependencyLines(service, "unparseable");
+  const components = body.components;
+  return sourceOf(service).dependencies.map((dependency): DependencyLine => (Object.hasOwn(components, dependency)
+    ? lineOf(service, dependency, components[dependency])
+    : { service, dependency, state: "unknown", tookMs: null, reason: "not_reported" }));
 }
 
 /** 그 서비스의 선 모두를 모름으로(까닭 하나). */
-export function unknownDependencyLines(_service: DependencyServiceName, _reason: DependencyUnknownReason): DependencyLine[] {
-  throw new Error("not implemented: unknownDependencyLines");
+export function unknownDependencyLines(service: DependencyServiceName, reason: DependencyUnknownReason): DependencyLine[] {
+  return sourceOf(service).dependencies.map((dependency) => ({ service, dependency, state: "unknown", tookMs: null, reason }));
 }

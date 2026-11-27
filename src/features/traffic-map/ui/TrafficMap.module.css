@@ -22,3 +22,10 @@
 .nodeOutside { stroke-dasharray: 3 2; }
 .nodeName { fill: var(--fg); font-size: 12px; text-anchor: middle; dominant-baseline: middle; }
 .arrow { fill: var(--muted); }
+
+/* 의존의 선(⑬ T9d — 지금의 상태) — 통신의 선과 다른 모양: 가는 짧은 점선(stroke-dasharray 2 3) · 화살표 없음. 끊김은 위험색 · 모름은 옅게(같은 값은 표 "의존 연결"에). */
+.dependencyLine { fill: none; stroke-width: 1; }
+.dependencyLineUp { stroke: var(--success-fg); }
+.dependencyLineDown { stroke: var(--danger); }
+.dependencyLineUnknown { stroke: var(--muted); opacity: 0.45; }
+.dependencyNode { fill: var(--bg); stroke: var(--muted); stroke-width: 1; }
