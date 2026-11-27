@@ -10,6 +10,8 @@ import { SESSION_LIFETIME_MILLISECONDS } from "@/features/auth/lib/session";
 import { unrefScheduler, type Scheduler, type ScheduledTask } from "@/features/auth/lib/replay-scheduler";
 import { requireApiSession, requireSession } from "@/features/auth/server/require-session";
 import { createTrafficMapClient } from "@/features/traffic-map/lib/traffic-map-client";
+import type { DependencyLine } from "@/features/traffic-map/lib/dependency-lines";
+import type { TrafficDependencyEvent, TrafficDependencyHub } from "@/features/traffic-map/lib/traffic-dependency-hub";
 import { createTrafficMapHub, type TrafficMapEvent, type TrafficMapHub } from "@/features/traffic-map/lib/traffic-map-hub";
 import { createTrafficStreamRegistry, type TrafficStreamRegistry } from "@/features/traffic-map/lib/traffic-stream-registry";
 import { parseTrafficMapRange, trafficMapWindow, type TrafficMapRange } from "@/features/traffic-map/lib/traffic-map-query";
@@ -31,10 +33,14 @@ export interface TrafficMapScreen {
   range: TrafficMapRange;
   /** 첫 그림 — 허브의 snapshot */
   initial: TrafficMapEvent;
+  /** 의존의 선의 첫 그림 — 의존 허브의 snapshot(마지막 확인 · 없으면 null — 기다리지 않는다). 뼈대: ⑬ T9d 테스트 설계가 더한 칸 — 구현 워커가 채운다. */
+  initialDependencies?: TrafficDependencyEvent | null;
 }
 
 export interface TrafficStreamOptions {
   hub?: TrafficMapHub;
+  /** 의존의 선의 허브 — 기본 defaultTrafficDependencyHub()(⑬ T9d). 흐름은 그 사건마다 `event: dependencies` · `data: <사건 JSON 한 줄>`(id 줄 없음). */
+  dependencyHub?: TrafficDependencyHub;
   /** 열린 흐름의 목록 — 기본 defaultTrafficStreamRegistry()(T8 리뷰 1) */
   streams?: TrafficStreamRegistry;
   /** 연결마다의 타이머(주석 줄 · 세션 끝) — 기본 unrefScheduler */
@@ -72,6 +78,18 @@ export function defaultTrafficMapHub(): TrafficMapHub {
   return holder[GLOBAL_KEY];
 }
 
+/** 프로세스에 하나인 의존의 선의 허브(⑬ T9d) — 조회는 그때마다 BACKEND_URL · LLM_URL · OBSERVE_URL 을 읽어 세 경로를 부른다(createDependencyClient) ·
+ * 실패한 서비스마다 앱 로그 1줄 `screen:traffic cell=dependencies:<서비스> upstream=<까닭>`(주소 · 비밀값 · detail 없음). 뼈대: 구현 워커가 채운다. */
+export function defaultTrafficDependencyHub(): TrafficDependencyHub {
+  throw new Error("not implemented: defaultTrafficDependencyHub");
+}
+
+/** 의존 허브의 조회 한 번 — 설정을 그때 읽는다(BACKEND_URL · LLM_URL · OBSERVE_URL — 비었거나 http(s) 가 아니면 그 서비스는 not_configured · 부르지 않는다).
+ * 모름인 서비스마다 앱 로그 1줄 `screen:traffic cell=dependencies:<서비스> upstream=<까닭>`(log("screen-traffic", …, "warning")) — 끊김(DOWN)은 로그가 아니다. 뼈대. */
+export async function loadTrafficDependencies(): Promise<DependencyLine[]> {
+  throw new Error("not implemented: loadTrafficDependencies");
+}
+
 /** 멈춤 신호를 물리는 이음매 — 기본은 process.once(signal, handler). 테스트는 가짜를 준다. */
 export type ShutdownSignal = "SIGTERM" | "SIGINT";
 export type ShutdownSignalRegistrar = (signal: ShutdownSignal, handler: () => void) => void;
@@ -84,7 +102,9 @@ export function defaultTrafficStreamRegistry(): TrafficStreamRegistry {
 }
 
 /** 멈춘다 — 허브를 멈추고(타이머 · 조회) 열린 흐름을 모두 닫는다(닫기 전에 사건을 보내지 않는다). 그 뒤의 새 흐름은 503. 두 번 불러도 같다. */
-export function shutdownTrafficMap(hub: TrafficMapHub = defaultTrafficMapHub(), streams: TrafficStreamRegistry = defaultTrafficStreamRegistry()): void {
+/* 뼈대(⑬ T9d): 셋째 인자 — 의존의 허브도 멈춘다(기본 defaultTrafficDependencyHub()). 구현 워커가 잇는다. */
+export function shutdownTrafficMap(hub: TrafficMapHub = defaultTrafficMapHub(), streams: TrafficStreamRegistry = defaultTrafficStreamRegistry(),
+                                   _dependencyHub?: TrafficDependencyHub): void {
   hub.stop();
   streams.closeAll();
 }
@@ -99,7 +119,9 @@ export function registerTrafficMapShutdown(registrar: ShutdownSignalRegistrar = 
 }
 
 /** 화면용 — 세션이 없으면 /login(관측 서버를 부르지 않는다). range 가 틀리면 기본값. */
-export async function loadTrafficMapScreen(searchParams: SearchParamsInput, hub: TrafficMapHub = defaultTrafficMapHub()): Promise<TrafficMapScreen> {
+/* 뼈대(⑬ T9d): 셋째 인자 — initialDependencies = 의존 허브의 snapshot()(기다리지 않는다). 구현 워커가 잇는다. */
+export async function loadTrafficMapScreen(searchParams: SearchParamsInput, hub: TrafficMapHub = defaultTrafficMapHub(),
+                                           _dependencyHub?: TrafficDependencyHub): Promise<TrafficMapScreen> {
   await requireSession();
   const range = parseTrafficMapRange(searchParams);
   return { range, initial: await hub.snapshot(range) };

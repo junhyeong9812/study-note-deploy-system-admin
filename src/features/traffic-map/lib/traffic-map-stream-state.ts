@@ -9,6 +9,7 @@
  * - error: "reconnecting"(세션이 끝난 뒤는 그대로). session: "session_ended"(다시 붙지 않는다). */
 import type { Scheduler, ScheduledTask } from "@/features/auth/lib/replay-scheduler";
 import type { TrafficQuantile, TrafficStatusCounts } from "@/features/traffic-map/lib/traffic-map-client";
+import type { TrafficDependencyStreamAction } from "@/features/traffic-map/lib/traffic-dependency-stream";
 import type { TrafficMapEvent } from "@/features/traffic-map/lib/traffic-map-hub";
 import { TRAFFIC_MAP_RANGES, type TrafficMapRange } from "@/features/traffic-map/lib/traffic-map-query";
 import {
@@ -191,6 +192,8 @@ export interface TrafficMapStreamConnectOptions {
   url: string;
   createEventSource: (url: string) => EventSourceLike;
   dispatch: (action: TrafficMapStreamAction) => void;
+  /** 의존의 선(⑬ T9d) — `open` 마다 {type:"open"}, `dependencies` 사건마다 {type:"dependencies", data}(살아 있는 연결의 것만). 뼈대: 구현 워커가 잇는다. */
+  dispatchDependencies?: (action: TrafficDependencyStreamAction) => void;
   scheduler: Scheduler;
 }
 

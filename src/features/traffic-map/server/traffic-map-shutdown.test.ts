@@ -20,6 +20,7 @@ vi.mock("next/navigation", () => ({ redirect: (location: string) => { throw new 
 
 import { SESSION_COOKIE_NAME, issueSessionToken } from "@/features/auth/lib/session";
 import { FAKE_ADMIN_ID, FAKE_ORIGIN, FAKE_PASSWORD_HASH, FAKE_SIGNING_KEY, createFakeScheduler } from "@/features/auth/lib/test-fakes";
+import type { TrafficDependencyHub } from "@/features/traffic-map/lib/traffic-dependency-hub";
 import type { TrafficMapHub, TrafficMapListener } from "@/features/traffic-map/lib/traffic-map-hub";
 import type { TrafficMapRange } from "@/features/traffic-map/lib/traffic-map-query";
 import { chatMapEdges, trafficMapEventOf } from "@/features/traffic-map/lib/traffic-map-test-fakes";
@@ -30,6 +31,11 @@ import {
 import { register } from "@/instrumentation";
 import { FAKE_OBSERVE_SECRET, FAKE_OBSERVE_URL } from "@/shared/lib/upstream-test-fakes";
 
+
+/** 의존의 선(⑬ T9d)의 조용한 허브 — 이 파일은 통신 지도의 흐름만 본다(의존의 사건은 traffic-map-dependencies.test 가 본다). */
+function quietDependencyHub(): TrafficDependencyHub {
+  return { subscribe: () => () => {}, snapshot: () => null, stop: () => {} };
+}
 const consoleLines: string[] = [];
 
 function recordingHub() {
@@ -109,8 +115,8 @@ describe("멈추면 — shutdownTrafficMap(hub, streams)", () => {
     const { hub, unsubscribeCalls } = recordingHub();
     const streams = createTrafficStreamRegistry();
     const scheduler = createFakeScheduler();
-    const first = await openStream(await trafficStreamResponse(streamRequest(), { hub, streams, scheduler: scheduler.scheduler }));
-    const second = await openStream(await trafficStreamResponse(streamRequest("?range=24h"), { hub, streams, scheduler: scheduler.scheduler }));
+    const first = await openStream(await trafficStreamResponse(streamRequest(), { dependencyHub: quietDependencyHub(), hub, streams, scheduler: scheduler.scheduler }));
+    const second = await openStream(await trafficStreamResponse(streamRequest("?range=24h"), { dependencyHub: quietDependencyHub(), hub, streams, scheduler: scheduler.scheduler }));
     expect(streams.size()).toBe(2);
     expect(scheduler.pendingCount()).toBe(4);                 // 흐름마다 주석 줄 · 세션 끝
     shutdownTrafficMap(hub, streams);
@@ -130,7 +136,7 @@ describe("멈추면 — shutdownTrafficMap(hub, streams)", () => {
     const { hub } = recordingHub();
     const streams = createTrafficStreamRegistry();
     shutdownTrafficMap(hub, streams);
-    const response = await trafficStreamResponse(streamRequest(), { hub, streams, scheduler: createFakeScheduler().scheduler });
+    const response = await trafficStreamResponse(streamRequest(), { dependencyHub: quietDependencyHub(), hub, streams, scheduler: createFakeScheduler().scheduler });
     expect(response.status).toBe(503);
     expect(response.headers.get("retry-after")).toBe("5");
     expect(response.headers.get("cache-control") ?? "").toContain("no-store");
@@ -149,7 +155,7 @@ describe("멈추면 — shutdownTrafficMap(hub, streams)", () => {
     const { hub } = recordingHub();
     const streams = createTrafficStreamRegistry();
     const request = streamRequest();
-    await openStream(await trafficStreamResponse(request, { hub, streams, scheduler: createFakeScheduler().scheduler }));
+    await openStream(await trafficStreamResponse(request, { dependencyHub: quietDependencyHub(), hub, streams, scheduler: createFakeScheduler().scheduler }));
     expect(streams.size()).toBe(1);
     controllers.at(-1)!.abort();
     await vi.waitFor(() => expect(streams.size()).toBe(0));
@@ -164,7 +170,7 @@ describe("멈추면 — shutdownTrafficMap(hub, streams)", () => {
     const onWarning = (warning: Error) => { warnings.push(warning.name); };
     process.prependListener("warning", onWarning);
     try {
-      for (let index = 0; index < 100; index += 1) await trafficStreamResponse(streamRequest(), { hub, streams, scheduler: createFakeScheduler().scheduler });
+      for (let index = 0; index < 100; index += 1) await trafficStreamResponse(streamRequest(), { dependencyHub: quietDependencyHub(), hub, streams, scheduler: createFakeScheduler().scheduler });
       for (const spy of added) expect(spy.mock.calls.filter(([event]) => event === "SIGTERM" || event === "SIGINT")).toEqual([]);
       expect(["SIGTERM", "SIGINT"].map((signal) => process.listenerCount(signal))).toEqual(before);
       expect(warnings).not.toContain("MaxListenersExceededWarning");

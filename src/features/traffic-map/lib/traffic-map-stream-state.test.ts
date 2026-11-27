@@ -209,10 +209,10 @@ describe("connectTrafficMapStream — 가짜 EventSource", () => {
     return { scheduler, actions, close, source: () => FakeEventSource.instances.at(-1)! };
   }
 
-  it("주소 그대로 하나를 열고 open · map · error · session 을 듣는다", () => {
+  it("주소 그대로 하나를 열고 open · map · error · session · dependencies 를 듣는다", () => {
     const { source } = connect();
     expect(FakeEventSource.instances.map((instance) => instance.url)).toEqual(["/api/traffic/stream?range=1h"]);
-    expect(source().listenerTypes()).toEqual(["error", "map", "open", "session"]);
+    expect(source().listenerTypes()).toEqual(["dependencies", "error", "map", "open", "session"]);   // ⑬ T9d — 의존의 사건도 듣는다
   });
 
   it("사건을 상태의 행동으로 — map 의 data 는 글 그대로(글이 아니면 빈 글 → 깨진 사건)", () => {

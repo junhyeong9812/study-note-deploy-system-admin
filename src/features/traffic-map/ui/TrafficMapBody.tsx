@@ -7,6 +7,7 @@
 import { formatKoreanLogTime } from "@/features/logs/ui/LogTable";
 import logStyles from "@/features/logs/ui/LogSearchScreen.module.css";
 import { TRAFFIC_MAP_RANGE_LABELS, type TrafficMapRange } from "@/features/traffic-map/lib/traffic-map-query";
+import type { TrafficDependencyStreamState } from "@/features/traffic-map/lib/traffic-dependency-stream";
 import type { TrafficMapStreamState } from "@/features/traffic-map/lib/traffic-map-stream-state";
 import {
   formatEdgeCount, formatErrorRate, formatMilliseconds, formatQuantile, type EdgeCompleteness, type TrafficMapEdgeView, type TrafficMapView,
@@ -18,6 +19,10 @@ import type { UpstreamFailure } from "@/shared/lib/upstream-result";
 export interface TrafficMapBodyProps {
   range: TrafficMapRange;
   state: TrafficMapStreamState;
+  /** 의존의 선(⑬ T9d) — 없으면 "의존 연결은 아직 확인하지 않았습니다". 뼈대: 테스트 설계가 더한 칸 — 구현 워커가 그린다. */
+  dependencies?: TrafficDependencyStreamState;
+  /** 낡음을 가르는 지금(밀리초) — 없으면 시각으로는 낡음을 가르지 않는다(연결 상태로만) */
+  now?: number;
 }
 
 const CLASS_LABELS: Readonly<Record<TrafficMapEdgeView["trafficClass"], string>> = { request: "요청", health: "헬스", stream: "스트림" };
