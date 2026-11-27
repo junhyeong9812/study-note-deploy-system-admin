@@ -11,6 +11,8 @@ import { searchParamsInputFromUrl } from "@/shared/lib/query-input";
 import { invalidInputOf, screenDataResponse, upstreamFailureLogLine } from "@/shared/lib/screen-responses";
 import { isHttpBaseUrl } from "@/shared/lib/upstream-fetch";
 import { upstreamFailure, type SearchParamsInput, type UpstreamResult } from "@/shared/lib/upstream-result";
+import { currentRequestId } from "@/shared/lib/request-scope";
+import { inRequestScope } from "@/shared/lib/request-id";
 
 export interface DeployHistoryView {
   /** 입력이 틀렸으면 null(그때 deployments 는 invalid_input, master 를 부르지 않는다). */
@@ -33,21 +35,25 @@ async function buildDeployHistoryView(searchParams: SearchParamsInput): Promise<
     deployments = await client.listDeployments(parsed.query);
   }
   const logLine = upstreamFailureLogLine("deploys", "deployments", deployments);
-  if (logLine !== null) void log("screen-deploys", logLine, "warning");
+  if (logLine !== null) void log(currentRequestId(), logLine, "warning");
   return { query: parsed.query, deployments };
 }
 
 /** 화면용 — 세션이 없으면 requireSession 이 /login 으로 보낸다(다른 서버를 한 번도 부르지 않는다). */
 export async function loadDeployHistory(searchParams: SearchParamsInput): Promise<DeployHistoryView> {
-  await requireSession();
-  return buildDeployHistoryView(searchParams);
+  return inRequestScope(async () => {
+    await requireSession();
+    return buildDeployHistoryView(searchParams);
+  });
 }
 
 /** 데이터 경로용(Route Handler 의 GET 이 그대로 돌려준다) — 세션이 없으면 401(requireApiSession).
  * 입력이 틀리면 422 `{success:false,error:{code:"invalid_input",field}}`, 그 밖은 200 `{success:true,data:DeployHistoryView}`. 언제나 no-store. */
 export async function deployHistoryResponse(request: Request): Promise<Response> {
-  const session = await requireApiSession();
-  if (session instanceof Response) return session;
-  const view = await buildDeployHistoryView(searchParamsInputFromUrl(new URL(request.url)));
-  return screenDataResponse(view, invalidInputOf(view.deployments));
+  return inRequestScope(async () => {
+    const session = await requireApiSession();
+    if (session instanceof Response) return session;
+    const view = await buildDeployHistoryView(searchParamsInputFromUrl(new URL(request.url)));
+    return screenDataResponse(view, invalidInputOf(view.deployments));
+  });
 }

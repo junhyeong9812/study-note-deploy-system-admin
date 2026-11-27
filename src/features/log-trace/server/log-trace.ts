@@ -21,6 +21,8 @@ import { errorResponse } from "@/shared/lib/responses";
 import { screenDataResponse, upstreamFailureLogLine } from "@/shared/lib/screen-responses";
 import { isHttpBaseUrl } from "@/shared/lib/upstream-fetch";
 import type { SearchParamsInput } from "@/shared/lib/upstream-result";
+import { currentRequestId } from "@/shared/lib/request-scope";
+import { inRequestScope } from "@/shared/lib/request-id";
 
 /** 설정의 주소 · 비밀값 쌍이 쓸 만한가(비었거나 http(s) 가 아니면 그 출처는 null). */
 function configured(baseUrl: string, secret: string): boolean {
@@ -50,7 +52,7 @@ export function logFailedCells(outcome: LogTraceOutcome) {
   for (const [cell, result] of cells) {
     if (result === null) continue;
     const logLine = upstreamFailureLogLine("log-trace", cell, result);
-    if (logLine !== null) void log("screen-log-trace", logLine, "warning");
+    if (logLine !== null) void log(currentRequestId(), logLine, "warning");
   }
 }
 
@@ -63,20 +65,24 @@ async function buildOutcome(query: LogTraceQuery): Promise<LogTraceOutcome> {
 
 /** 화면용 — 세션이 없으면 requireSession 이 /login 으로 보낸다(다른 서버를 한 번도 부르지 않는다). 입력 거절은 { kind: "invalid_input", field }. */
 export async function loadLogTrace(searchParams: SearchParamsInput): Promise<LogTraceOutcome> {
-  await requireSession();
-  const parsed = parseLogTraceQuery(searchParams);
-  if (!parsed.ok) return { kind: "invalid_input", field: parsed.field ?? "" };
-  return buildOutcome(parsed.query);
+  return inRequestScope(async () => {
+    await requireSession();
+    const parsed = parseLogTraceQuery(searchParams);
+    if (!parsed.ok) return { kind: "invalid_input", field: parsed.field ?? "" };
+    return buildOutcome(parsed.query);
+  });
 }
 
 /** 데이터 경로용(Route Handler 의 GET 이 그대로 돌려준다). */
 export async function logTraceResponse(request: Request): Promise<Response> {
-  const session = await requireApiSession();
-  if (session instanceof Response) return session;
-  const parsed = parseLogTraceQuery(searchParamsInputFromUrl(new URL(request.url)));
-  if (!parsed.ok) return screenDataResponse(null, parsed);
-  const outcome = await buildOutcome(parsed.query);
-  if (outcome.kind === "not_found") return errorResponse(404, "not_found");
-  if (outcome.kind === "invalid_input") return errorResponse(422, "invalid_input", { field: outcome.field });
-  return screenDataResponse(outcome.view, null);
+  return inRequestScope(async () => {
+    const session = await requireApiSession();
+    if (session instanceof Response) return session;
+    const parsed = parseLogTraceQuery(searchParamsInputFromUrl(new URL(request.url)));
+    if (!parsed.ok) return screenDataResponse(null, parsed);
+    const outcome = await buildOutcome(parsed.query);
+    if (outcome.kind === "not_found") return errorResponse(404, "not_found");
+    if (outcome.kind === "invalid_input") return errorResponse(422, "invalid_input", { field: outcome.field });
+    return screenDataResponse(outcome.view, null);
+  });
 }

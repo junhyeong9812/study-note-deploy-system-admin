@@ -18,6 +18,8 @@ import { searchParamsInputFromUrl } from "@/shared/lib/query-input";
 import { errorResponse } from "@/shared/lib/responses";
 import { screenDataResponse, upstreamFailureLogLine } from "@/shared/lib/screen-responses";
 import type { SearchParamsInput, UpstreamResult } from "@/shared/lib/upstream-result";
+import { currentRequestId } from "@/shared/lib/request-scope";
+import { inRequestScope } from "@/shared/lib/request-id";
 
 export interface LogTraceWithResources {
   outcome: LogTraceOutcome;
@@ -32,7 +34,7 @@ function logFailedResources(resources: TraceResourcesView) {
   for (const [cell, result] of cells) {
     if (result === null) continue;
     const logLine = upstreamFailureLogLine("log-trace", cell, result);
-    if (logLine !== null) void log("screen-log-trace", logLine, "warning");
+    if (logLine !== null) void log(currentRequestId(), logLine, "warning");
   }
 }
 
@@ -54,19 +56,23 @@ async function buildWithResources(query: LogTraceQuery): Promise<LogTraceWithRes
 }
 
 export async function loadLogTraceWithResources(searchParams: SearchParamsInput): Promise<LogTraceWithResources> {
-  await requireSession();
-  const parsed = parseLogTraceQuery(searchParams);
-  if (!parsed.ok) return { outcome: { kind: "invalid_input", field: parsed.field ?? "" }, resources: null };
-  return buildWithResources(parsed.query);
+  return inRequestScope(async () => {
+    await requireSession();
+    const parsed = parseLogTraceQuery(searchParams);
+    if (!parsed.ok) return { outcome: { kind: "invalid_input", field: parsed.field ?? "" }, resources: null };
+    return buildWithResources(parsed.query);
+  });
 }
 
 export async function logTraceWithResourcesResponse(request: Request): Promise<Response> {
-  const session = await requireApiSession();
-  if (session instanceof Response) return session;
-  const parsed = parseLogTraceQuery(searchParamsInputFromUrl(new URL(request.url)));
-  if (!parsed.ok) return screenDataResponse(null, parsed);
-  const { outcome, resources } = await buildWithResources(parsed.query);
-  if (outcome.kind === "not_found") return errorResponse(404, "not_found");
-  if (outcome.kind === "invalid_input") return errorResponse(422, "invalid_input", { field: outcome.field });
-  return screenDataResponse({ trace: outcome.view, resources }, null);
+  return inRequestScope(async () => {
+    const session = await requireApiSession();
+    if (session instanceof Response) return session;
+    const parsed = parseLogTraceQuery(searchParamsInputFromUrl(new URL(request.url)));
+    if (!parsed.ok) return screenDataResponse(null, parsed);
+    const { outcome, resources } = await buildWithResources(parsed.query);
+    if (outcome.kind === "not_found") return errorResponse(404, "not_found");
+    if (outcome.kind === "invalid_input") return errorResponse(422, "invalid_input", { field: outcome.field });
+    return screenDataResponse({ trace: outcome.view, resources }, null);
+  });
 }
