@@ -117,7 +117,8 @@ export function createGitHubClient(options: GitHubClientOptions): GitHubClient {
   if (options.token !== null && options.token.length > 0) headers.Authorization = `Bearer ${options.token}`;
 
   async function get<Value>(path: string, parse: (json: unknown) => Value): Promise<UpstreamResult<Value>> {
-    const response = await getUpstream(upstreamUrl(options.baseUrl, path), { fetch: options.fetch, timeoutSignal: options.timeoutSignal, headers });
+    // GitHub 은 바깥이다 — 호출자 머리글을 싣지 않는다
+    const response = await getUpstream(upstreamUrl(options.baseUrl, path), { fetch: options.fetch, timeoutSignal: options.timeoutSignal, headers, ourService: false });
     if (!response.ok) return response;
     if (response.status < 200 || response.status >= 300) return failureForGitHubResponse(response);
     if (!response.parsed) return upstreamFailure("unparseable");

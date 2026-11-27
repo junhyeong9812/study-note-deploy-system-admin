@@ -2,6 +2,7 @@
  * 본문 {source:"admin", kind:"login_locked", severity:"warning", key(locked_until 포함), title, detail}.
  * detail 에 IP · ID 를 넣지 않는다. 실패(연결·시간 초과·2xx 아님)는 false — 예외를 밖으로 내지 않는다. */
 import type { FetchLike, TimeoutSignalFactory } from "@/features/auth/lib/types";
+import { withCallerService } from "@/shared/lib/caller-service";
 
 export const ALERT_TIMEOUT_MILLISECONDS = 5_000;
 
@@ -33,7 +34,7 @@ export function createAlertClient(options: AlertClientOptions): AlertClient {
       try {
         const response = await options.fetch(`${baseUrl}/events`, {
           method: "POST",
-          headers: { "Content-Type": "application/json", "X-Alert-Secret": options.secret },
+          headers: withCallerService({ "Content-Type": "application/json", "X-Alert-Secret": options.secret }),
           body: JSON.stringify(body),
           signal: timeoutSignal(ALERT_TIMEOUT_MILLISECONDS),
           redirect: "manual",
