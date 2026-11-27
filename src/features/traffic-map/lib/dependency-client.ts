@@ -13,6 +13,9 @@ import { isHttpBaseUrl, upstreamUrl } from "@/shared/lib/upstream-fetch";
 /** 경로마다 한 값(셋 모두) — backend 가 의존 하나가 멈췄을 때 전체 예산 3초를 다 쓰고 답하는 것을 받는다(메인 11-30). */
 export const DEPENDENCY_CHECK_TIMEOUT_MILLISECONDS = 4_000;
 export const DEPENDENCY_CALLER_SERVICE = "admin";
+/** 본문의 크기 상한(T9d 리뷰 R1) — 바이트로 센다. 꼭 이만큼은 읽고, 넘으면 다 받지 않고 끊는다(읽기를 취소) · 그 서비스의 선은 모두 unparseable.
+ * Content-Length 가 없거나 거짓이어도 지킨다. 뼈대: 테스트 설계가 더한 상수 — 구현 워커가 쓴다. */
+export const DEPENDENCY_BODY_MAX_BYTES = 65_536;
 
 export interface DependencyClientOptions {
   backendUrl: string;

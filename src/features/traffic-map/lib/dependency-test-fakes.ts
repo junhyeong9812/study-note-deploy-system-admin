@@ -81,4 +81,35 @@ export function createFakeDependencyServices() {
   return { responders, requests, fetch };
 }
 
+/** 흘려 보내는 본문 — 읽는 쪽이 당길 때마다 chunkBytes 씩(마지막은 남은 만큼) totalBytes 까지. 보낸 바이트 수 · 취소 여부를 센다.
+ * headers 로 Content-Length 를 거짓으로 말하게 할 수 있다. 내용은 JSON 이 되지 않는 공백 · 글자(끝까지 받아도 해석되지 않는다). */
+export function streamingBody(options: { totalBytes: number; chunkBytes?: number; status?: number; headers?: Record<string, string> }) {
+  const chunkBytes = options.chunkBytes ?? 16_384;
+  const counter = { sentBytes: 0, cancelled: false };
+  const stream = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      const remaining = options.totalBytes - counter.sentBytes;
+      if (remaining <= 0) { controller.close(); return; }
+      const size = Math.min(chunkBytes, remaining);
+      counter.sentBytes += size;
+      controller.enqueue(new Uint8Array(size).fill(0x20));
+    },
+    cancel() { counter.cancelled = true; },
+  }, { highWaterMark: 0 });
+  const response = new Response(stream, { status: options.status ?? 200, headers: { "Content-Type": "application/json", ...(options.headers ?? {}) } });
+  return { response, counter };
+}
+
+/** UTF-8 로 꼭 byteLength 바이트인 llm 본문(JSON — components.ollama UP) — 여러 바이트 글자("가" 3바이트)로 채운다. */
+export function llmBodyOfBytes(byteLength: number): string {
+  const base = JSON.stringify({ ...llmBody(), padding: "" });
+  let remaining = byteLength - Buffer.byteLength(base, "utf8");
+  if (remaining < 0) throw new Error("byteLength too small");
+  const threeByte = Math.floor(remaining / 3);
+  remaining -= threeByte * 3;
+  const text = JSON.stringify({ ...llmBody(), padding: "가".repeat(threeByte) + "a".repeat(remaining) });
+  if (Buffer.byteLength(text, "utf8") !== byteLength) throw new Error("byte length mismatch");
+  return text;
+}
+
 export { jsonBody, textResponse };

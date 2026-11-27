@@ -102,40 +102,239 @@ const NO_DATA_TEXT = "의존 연결은 아직 확인하지 않았습니다";
 const CURRENT_TEXT = "의존 연결은 지금의 상태입니다 — 고른 기간과 무관합니다";
 const staleText = (checkedAt: number) => `의존 연결은 ${formatKoreanLogTime(new Date(checkedAt).toISOString())} 에 확인한 값입니다 — 지금 값이 아닐 수 있습니다`;
 
-describe("5 그림 — 의존의 노드와 선", () => {
-  it("의존의 노드는 닫힌 표의 이름 · 같은 이름(redis · postgres)은 하나 · '(목록 밖)' 이 붙지 않는다", async () => {
-    const svg = svgOf(await renderBody());
-    const nodes = [...svg.matchAll(/data-dependency-node="([^"]+)"/g)].map((match) => match[1]);
-    expect(nodes).toEqual(["elasticsearch", "embedding", "redis", "postgres", "ollama"]);
-    for (const name of nodes) expect(svg).toContain(`>${name}</text>`);
-    expect(textOf(svg)).not.toContain("목록 밖");
+// ---- T9d 리뷰 R2: 의존의 그림은 통신의 원에서 떼어 "의존 연결" 절 안에 따로(두 줄 — 윗줄 서비스 셋 · 아랫줄 의존 다섯 · 선 일곱) ----
+
+const DEPENDENCY_NAMES_IN_ORDER = ["elasticsearch", "embedding", "redis", "postgres", "ollama"];
+const SERVICE_NAMES = ["backend", "llm-wrapper", "observe"];
+const LINE_KEYS = ["backend→elasticsearch", "backend→embedding", "backend→redis", "backend→postgres", "llm-wrapper→ollama", "observe→redis", "observe→postgres"];
+/** 두 줄 그림에서 선의 엇갈림이 가장 적은 수 — 줄의 차례 3! × 5! = 720 가지를 모두 세면 1(backend · observe 가 redis · postgres 둘을 함께 가져 K2,2 — 한 번은 반드시 엇갈린다). */
+const MINIMUM_CROSSINGS = 1;
+
+/** 의존의 그림 — "의존 연결" 절 안의 svg(data-dependency-figure). */
+function dependencyFigureOf(html: string): string {
+  const match = /<svg[^>]*data-dependency-figure[^>]*>[\s\S]*?<\/svg>/.exec(html);
+  expect(match, "의존의 그림(svg data-dependency-figure)이 없다").not.toBeNull();
+  return match![0];
+}
+
+/** 통신의 그림 — 첫 svg 가 아니라 data-dependency-figure 가 없는 svg. */
+function trafficFigureOf(html: string): string {
+  const figure = [...html.matchAll(/<svg[\s\S]*?<\/svg>/g)].map((match) => match[0]).find((svg) => !/^<svg[^>]*data-dependency-figure/.test(svg));
+  expect(figure, "통신의 그림이 없다").toBeDefined();
+  return figure!;
+}
+
+interface Box { name: string; kind: "service" | "dependency"; left: number; top: number; right: number; bottom: number }
+interface Segment { key: string; x1: number; y1: number; x2: number; y2: number; tag: string }
+
+const numberAttribute = (tag: string, name: string): number => {
+  const value = new RegExp(`\\s${name}="([^"]+)"`).exec(tag)?.[1];
+  expect(value, `${name} 가 없다: ${tag}`).toBeDefined();
+  return Number(value);
+};
+
+function boxesOf(svg: string): Box[] {
+  return [...svg.matchAll(/<g[^>]*data-dependency-(service|node)="([^"]+)"[^>]*>([\s\S]*?)<\/g>/g)].map((match) => {
+    const rect = /<rect[^>]*>/.exec(match[3])?.[0];
+    expect(rect, `${match[2]} 의 상자(rect)가 없다`).toBeDefined();
+    const left = numberAttribute(rect!, "x");
+    const top = numberAttribute(rect!, "y");
+    return { name: match[2], kind: match[1] === "service" ? "service" : "dependency", left, top, right: left + numberAttribute(rect!, "width"), bottom: top + numberAttribute(rect!, "height") };
+  });
+}
+
+function segmentsOf(svg: string): Segment[] {
+  return [...svg.matchAll(/<line[^>]*data-dependency-line="([^"]+)"[^>]*>/g)].map((match) => ({
+    key: decode(match[1]), tag: match[0], x1: numberAttribute(match[0], "x1"), y1: numberAttribute(match[0], "y1"), x2: numberAttribute(match[0], "x2"), y2: numberAttribute(match[0], "y2"),
+  }));
+}
+
+/** 선분이 상자의 안쪽(가장자리에서 0.5 안으로 들인 것)을 지나는가 — Liang–Barsky 자르기. */
+function segmentEntersBox(segment: Segment, box: Box): boolean {
+  const inset = 0.5;
+  const [left, right, top, bottom] = [box.left + inset, box.right - inset, box.top + inset, box.bottom - inset];
+  const dx = segment.x2 - segment.x1;
+  const dy = segment.y2 - segment.y1;
+  let low = 0;
+  let high = 1;
+  for (const [p, q] of [[-dx, segment.x1 - left], [dx, right - segment.x1], [-dy, segment.y1 - top], [dy, bottom - segment.y1]]) {
+    if (p === 0) { if (q < 0) return false; continue; }
+    const t = q / p;
+    if (p < 0) low = Math.max(low, t); else high = Math.min(high, t);
+    if (low > high) return false;
+  }
+  return high - low > 1e-9;
+}
+
+/** 두 선분이 끝점이 아닌 곳에서 엇갈리는가(같은 끝점을 나누는 선은 세지 않는다). */
+function segmentsCross(first: Segment, second: Segment): boolean {
+  const orientation = (ax: number, ay: number, bx: number, by: number, cx: number, cy: number) => Math.sign((bx - ax) * (cy - ay) - (by - ay) * (cx - ax));
+  const d1 = orientation(first.x1, first.y1, first.x2, first.y2, second.x1, second.y1);
+  const d2 = orientation(first.x1, first.y1, first.x2, first.y2, second.x2, second.y2);
+  const d3 = orientation(second.x1, second.y1, second.x2, second.y2, first.x1, first.y1);
+  const d4 = orientation(second.x1, second.y1, second.x2, second.y2, first.x2, first.y2);
+  return d1 * d2 < 0 && d3 * d4 < 0;
+}
+
+const endpointsOf = (key: string) => key.split("→");
+
+describe("R2 통신의 그림에는 의존이 없다(앞 판 22200cc 의 꼴)", () => {
+  it("통신의 svg 에 의존의 노드 · 선 · 클래스 · 2 3 · 의존의 이름이 0 · viewBox 는 의존 때문에 늘지 않는다(0 0 480 480)", async () => {
+    const svg = trafficFigureOf(await renderBody());
+    expect(svg).not.toMatch(/data-dependency/);
+    expect(svg).not.toMatch(/_dependency/);
+    expect(svg).not.toContain('stroke-dasharray="2 3"');
+    for (const name of DEPENDENCY_NAMES_IN_ORDER) expect(svg).not.toContain(`>${name}</text>`);
+    expect(/viewBox="([^"]+)"/.exec(svg)?.[1]).toBe("0 0 480 480");
+    expect(trafficFigureOf(await renderBody({ dependencies: null }))).toBe(svg);   // 의존이 있든 없든 같은 그림
   });
 
-  it("선은 서비스마다 따로 — 일곱 · 서비스 → 의존", async () => {
-    const svg = svgOf(await renderBody());
-    expect([...svg.matchAll(/data-dependency-line="([^"]+)"/g)].map((match) => decode(match[1]))).toEqual([
-      "backend→elasticsearch", "backend→embedding", "backend→redis", "backend→postgres", "llm-wrapper→ollama", "observe→redis", "observe→postgres",
-    ]);
+  it("통신의 선은 지금과 같다 — data-edge 다섯 · 덜 채워진 것만 6 4", async () => {
+    const svg = trafficFigureOf(await renderBody());
+    const edges = [...svg.matchAll(/<[a-z]+[^>]*data-edge="([^"]+)"[^>]*>/g)];
+    expect(edges.map((match) => decode(match[1])).sort()).toEqual([
+      "front→backend:request", "edge→front:request", "backend→llm-wrapper:request", "backend→llm-wrapper:stream", "alert→observe:health",
+    ].sort());
+    expect(edges.find((match) => decode(match[1]) === "edge→front:request")![0]).not.toContain("stroke-dasharray");
+    expect(edges.find((match) => decode(match[1]) === "front→backend:request")![0]).toContain('stroke-dasharray="6 4"');
+  });
+});
+
+describe("R2 의존의 그림 — '의존 연결' 절 안 · 두 줄", () => {
+  it("자리 — 제목 '의존 연결' 뒤 · 표 앞 · aria-hidden(표가 같은 값을 준다)", async () => {
+    const html = await renderBody();
+    const figure = dependencyFigureOf(html);
+    const headingAt = html.search(/<h2[^>]*>의존 연결<\/h2>/);
+    const figureAt = html.indexOf(figure);
+    const tableAt = html.indexOf('aria-label="의존 연결"');
+    expect(headingAt).toBeGreaterThan(-1);
+    expect(headingAt).toBeLessThan(figureAt);
+    expect(figureAt).toBeLessThan(tableAt);
+    expect(figure).toMatch(/^<svg[^>]*aria-hidden="true"/);
+    expect([...html.matchAll(/data-dependency-figure/g)]).toHaveLength(1);
   });
 
-  it("'덜 채워짐'의 점선(6 4 · edgeIncomplete)과 다른 표시 — stroke-dasharray=\"2 3\" · dependencyLine 클래스 · 상태마다 다른 클래스", async () => {
-    const svg = svgOf(await renderBody());
-    const lines = [...svg.matchAll(/<[a-z]+[^>]*data-dependency-line="([^"]+)"[^>]*>/g)].map((match) => ({ key: decode(match[1]), tag: match[0] }));
-    expect(lines).toHaveLength(7);
-    for (const { key, tag } of lines) {
+  it("윗줄 = 서비스 셋 · 아랫줄 = 의존 다섯(이름마다 하나 · '(목록 밖)' 없음) · 선 일곱(서비스 → 의존)", async () => {
+    const figure = dependencyFigureOf(await renderBody());
+    const boxes = boxesOf(figure);
+    expect(boxes.filter((box) => box.kind === "service").map((box) => box.name).sort()).toEqual([...SERVICE_NAMES].sort());
+    expect(boxes.filter((box) => box.kind === "dependency").map((box) => box.name).sort()).toEqual([...DEPENDENCY_NAMES_IN_ORDER].sort());
+    for (const name of [...SERVICE_NAMES, ...DEPENDENCY_NAMES_IN_ORDER]) expect(figure).toContain(`>${name}</text>`);
+    expect(textOf(figure)).not.toContain("목록 밖");
+    expect(segmentsOf(figure).map((segment) => segment.key).sort()).toEqual([...LINE_KEYS].sort());
+    const serviceBottom = Math.max(...boxes.filter((box) => box.kind === "service").map((box) => box.bottom));
+    const dependencyTop = Math.min(...boxes.filter((box) => box.kind === "dependency").map((box) => box.top));
+    expect(serviceBottom, "서비스는 윗줄 · 의존은 아랫줄").toBeLessThan(dependencyTop);
+  });
+
+  it.each([
+    ["통신의 선이 0 인 지도", () => [{ type: "map" as const, data: JSON.stringify(trafficMapEventOf(2, [])) }].reduce(reduceTrafficMapStream, initialTrafficMapStreamState(null))],
+    ["통신의 지도를 읽지 못함", () => [{ type: "map" as const, data: JSON.stringify({ sequence: 1, fetchedAt: new Date(CHECKED_AT).toISOString(), range: "5m", map: upstreamFailure("unreachable") }) }].reduce(reduceTrafficMapStream, initialTrafficMapStreamState(null))],
+    ["통신의 지도가 아직 없음", () => initialTrafficMapStreamState(null)],
+  ] as [string, () => TrafficMapStreamState][])("%s 에서도 서비스 셋 · 선 일곱이 늘 그려진다(그 기간의 통신과 무관)", async (_label, makeMap) => {
+    const figure = dependencyFigureOf(await renderBody({ map: makeMap() }));
+    expect(boxesOf(figure).filter((box) => box.kind === "service").map((box) => box.name).sort()).toEqual([...SERVICE_NAMES].sort());
+    expect(segmentsOf(figure)).toHaveLength(7);
+  });
+
+  it("선의 표시 — stroke-dasharray=\"2 3\" · dependencyLine + 상태의 클래스 · data-dependency-state · 통신의 클래스 없음", async () => {
+    const segments = segmentsOf(dependencyFigureOf(await renderBody()));
+    for (const { key, tag } of segments) {
       expect(tag, key).toMatch(/stroke-dasharray="2 3"/);
-      expect(tag, key).not.toMatch(/stroke-dasharray="6 4"/);
       expect(tag, key).toMatch(/class="[^"]*_dependencyLine_/);
-      expect(tag, key).not.toMatch(/_edge_|_edgeIncomplete_/);
-      expect(tag, key).not.toMatch(/data-edge=/);
+      expect(tag, key).not.toMatch(/_edge_|_edgeIncomplete_|data-edge=/);
     }
-    const stateClass = (key: string) => {
-      const tag = lines.find((line) => line.key === key)!.tag;
+    const stateOf = (key: string) => {
+      const tag = segments.find((segment) => segment.key === key)!.tag;
       return { up: /_dependencyLineUp_/.test(tag), down: /_dependencyLineDown_/.test(tag), unknown: /_dependencyLineUnknown_/.test(tag), state: /data-dependency-state="([^"]+)"/.exec(tag)?.[1] };
     };
-    expect(stateClass("backend→elasticsearch")).toEqual({ up: true, down: false, unknown: false, state: "up" });
-    expect(stateClass("backend→embedding")).toEqual({ up: false, down: true, unknown: false, state: "down" });
-    expect(stateClass("llm-wrapper→ollama")).toEqual({ up: false, down: false, unknown: true, state: "unknown" });
+    expect(stateOf("backend→elasticsearch")).toEqual({ up: true, down: false, unknown: false, state: "up" });
+    expect(stateOf("backend→embedding")).toEqual({ up: false, down: true, unknown: false, state: "down" });
+    expect(stateOf("llm-wrapper→ollama")).toEqual({ up: false, down: false, unknown: true, state: "unknown" });
+    expect(stateOf("observe→postgres")).toEqual({ up: false, down: false, unknown: true, state: "unknown" });
+  });
+
+  it("모두 설정 없음(not_configured)이어도 그림은 그대로 — 선 일곱 모두 모름의 클래스", async () => {
+    const lines: DependencyLine[] = ALL_LINES.map((line) => ({ ...line, state: "unknown", tookMs: null, reason: "not_configured" }));
+    const segments = segmentsOf(dependencyFigureOf(await renderBody({ dependencies: dependencyEvent(lines) })));
+    expect(segments).toHaveLength(7);
+    expect(segments.every((segment) => /_dependencyLineUnknown_/.test(segment.tag) && !/_dependencyLineUp_|_dependencyLineDown_/.test(segment.tag))).toBe(true);
+  });
+
+  it("의존의 사건이 아직 없으면 의존의 그림이 없다('아직 확인하지 않았습니다')", async () => {
+    const html = await renderBody({ dependencies: null });
+    expect(html).not.toMatch(/data-dependency-figure/);
+    expect(textOf(html)).toContain(NO_DATA_TEXT);
+  });
+});
+
+describe("R2 읽힘을 수로 — 좌표를 뽑아 센다", () => {
+  it("① 어느 선도 자기 두 끝이 아닌 노드의 상자를 지나지 않는다", async () => {
+    const figure = dependencyFigureOf(await renderBody());
+    const boxes = boxesOf(figure);
+    for (const segment of segmentsOf(figure)) {
+      const [service, dependency] = endpointsOf(segment.key);
+      for (const box of boxes) {
+        if ((box.kind === "service" && box.name === service) || (box.kind === "dependency" && box.name === dependency)) continue;
+        expect(segmentEntersBox(segment, box), `${segment.key} 가 ${box.name} 를 지난다`).toBe(false);
+      }
+    }
+  });
+
+  it("선의 두 끝은 제 노드의 상자에 닿는다(서비스의 상자 아래 · 의존의 상자 위 — 가장자리에서 2 안)", async () => {
+    const figure = dependencyFigureOf(await renderBody());
+    const boxes = boxesOf(figure);
+    for (const segment of segmentsOf(figure)) {
+      const [service, dependency] = endpointsOf(segment.key);
+      const from = boxes.find((box) => box.kind === "service" && box.name === service)!;
+      const to = boxes.find((box) => box.kind === "dependency" && box.name === dependency)!;
+      expect(segment.x1 >= from.left - 2 && segment.x1 <= from.right + 2 && Math.abs(segment.y1 - from.bottom) <= 2, `${segment.key} 의 시작`).toBe(true);
+      expect(segment.x2 >= to.left - 2 && segment.x2 <= to.right + 2 && Math.abs(segment.y2 - to.top) <= 2, `${segment.key} 의 끝`).toBe(true);
+    }
+  });
+
+  it("② 노드의 상자끼리 겹치지 않는다", async () => {
+    const boxes = boxesOf(dependencyFigureOf(await renderBody()));
+    expect(boxes).toHaveLength(8);
+    for (let first = 0; first < boxes.length; first += 1) {
+      for (let second = first + 1; second < boxes.length; second += 1) {
+        const [a, b] = [boxes[first], boxes[second]];
+        const overlaps = a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+        expect(overlaps, `${a.name} 와 ${b.name} 가 겹친다`).toBe(false);
+      }
+    }
+  });
+
+  it(`③ 선끼리의 엇갈림은 ${MINIMUM_CROSSINGS}번 이하(가능한 가장 적은 수)`, async () => {
+    const segments = segmentsOf(dependencyFigureOf(await renderBody()));
+    let crossings = 0;
+    for (let first = 0; first < segments.length; first += 1) {
+      for (let second = first + 1; second < segments.length; second += 1) {
+        const [a, b] = [endpointsOf(segments[first].key), endpointsOf(segments[second].key)];
+        if (a[0] === b[0] || a[1] === b[1]) continue;
+        if (segmentsCross(segments[first], segments[second])) crossings += 1;
+      }
+    }
+    expect(crossings).toBeLessThanOrEqual(MINIMUM_CROSSINGS);
+  });
+
+  it("④ 모바일 폭(390px)에서 넘치지 않는다 — viewBox 가 있고 px 너비를 박지 않는다 · 모든 상자와 선이 viewBox 안 · css 가 너비 100% · 높이 auto", async () => {
+    const figure = dependencyFigureOf(await renderBody());
+    const viewBox = /viewBox="([^"]+)"/.exec(figure)?.[1]?.split(/\s+/).map(Number);
+    expect(viewBox, "viewBox 가 없다").toHaveLength(4);
+    const [minX, minY, width, height] = viewBox!;
+    expect(/^<svg[^>]*\swidth="\d+(px)?"/.test(figure), "px 너비를 박았다").toBe(false);
+    for (const box of boxesOf(figure)) {
+      expect(box.left >= minX && box.top >= minY && box.right <= minX + width && box.bottom <= minY + height, `${box.name} 가 viewBox 밖`).toBe(true);
+    }
+    for (const segment of segmentsOf(figure)) {
+      for (const [x, y] of [[segment.x1, segment.y1], [segment.x2, segment.y2]]) expect(x >= minX && x <= minX + width && y >= minY && y <= minY + height, segment.key).toBe(true);
+    }
+    const css = readFileSync(new URL("../../features/traffic-map/ui/TrafficMap.module.css", import.meta.url), "utf8");
+    const rule = new RegExp(`\\.dependencyFigure\\s*\\{([^}]*)\\}`).exec(css)?.[1] ?? "";
+    expect(rule).toMatch(/width:\s*100%/);
+    expect(rule).toMatch(/height:\s*auto/);
+    expect(figure).toMatch(/class="[^"]*_dependencyFigure_/);
   });
 
   it("스타일 — 의존의 선은 가는 짧은 점선 · 끊김은 위험색 · 모름은 옅게(TrafficMap.module.css 의 규칙)", () => {
@@ -145,16 +344,6 @@ describe("5 그림 — 의존의 노드와 선", () => {
     expect(rule("dependencyLineDown")).toContain("var(--danger)");
     expect(rule("dependencyLineUnknown")).toMatch(/opacity:\s*0?\.\d+/);
     expect(rule("dependencyLineUp")).not.toBe("");
-  });
-
-  it("통신의 선은 지금과 같다 — data-edge 다섯 · 덜 채워진 것만 6 4", async () => {
-    const svg = svgOf(await renderBody());
-    const edges = [...svg.matchAll(/<[a-z]+[^>]*data-edge="([^"]+)"[^>]*>/g)];
-    expect(edges.map((match) => decode(match[1])).sort()).toEqual([
-      "front→backend:request", "edge→front:request", "backend→llm-wrapper:request", "backend→llm-wrapper:stream", "alert→observe:health",
-    ].sort());
-    expect(edges.find((match) => decode(match[1]) === "edge→front:request")![0]).not.toContain("stroke-dasharray");
-    expect(edges.find((match) => decode(match[1]) === "front→backend:request")![0]).toContain('stroke-dasharray="6 4"');
   });
 });
 
