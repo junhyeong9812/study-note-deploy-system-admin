@@ -1,8 +1,8 @@
 /** master 배포 이력 클라이언트 — `GET <DEPLOY_MASTER_URL>/deploys?service=&limit=`, 헤더 `X-Deploy-Secret`, 5초 기한, GET 만.
  * 응답 봉투 `{success:true,data:{deployments:[Deployment]}}`(ci-cd internal/master/master.go:351, internal/shared/envelope.go:11).
  * Deployment JSON 칸(internal/master/store.go:22-33): request_id · service · commit_sha · state · failed_stage(omitempty) · detail(omitempty)
- * · accepted_at · finished_at(omitempty) · ci_ms · cd_ms.
- * 화면에 넘기는 칸 = 요청 ID(목록 key · 앞부분 표시 — 판정 11-22 4번) · 상태 · 서비스 · 커밋 · 실패 단계 · 접수/종료 시각 · 걸린 시간(ci_ms · cd_ms)뿐
+ * · accepted_at · finished_at(omitempty) · ci_ms · cd_ms · requested_by(누가 일으켰나 — 옛 master 에는 없다).
+ * 화면에 넘기는 칸 = 요청 ID(목록 key · 앞부분 표시 — 판정 11-22 4번) · 상태 · 서비스 · 커밋 · 실패 단계 · 접수/종료 시각 · 걸린 시간(ci_ms · cd_ms) · 요청한 사람뿐
  * — detail(빌드 출력 끝부분) · 원본 봉투는 넘기지 않는다.
  * 비밀값을 실은 요청은 리다이렉트를 따라가지 않는다(redirect:"manual" — 3xx 는 bad_status).
  * 응답의 한 항목이라도 꼴이 다르면 전체를 unparseable 로(원문을 넘기지 않는다). */
@@ -31,6 +31,8 @@ export interface DeploymentSummary {
   integrationMilliseconds: number;
   /** cd_ms */
   deliveryMilliseconds: number;
+  /** requested_by(누가 일으켰나 — 명세 ⑫ §24) — 없거나(옛 master) 빈 글자면 null. 파서는 늘 채운다(선택 칸인 것은 손으로 만든 줄과 맞추려고) */
+  requestedBy?: string | null;
 }
 
 export interface DeployHistoryClientOptions {
@@ -60,10 +62,11 @@ function parseDeployment(row: unknown): DeploymentSummary | null {
   if (!isNonNegativeInteger(integrationMilliseconds) || !isNonNegativeInteger(deliveryMilliseconds)) return null;
   const failedStage = optionalText(row.failed_stage);
   const finishedAt = optionalText(row.finished_at);
-  if (failedStage === undefined || finishedAt === undefined) return null;
+  const requestedBy = optionalText(row.requested_by);
+  if (failedStage === undefined || finishedAt === undefined || requestedBy === undefined) return null;
   return {
     requestId, state: state as DeployState, service, commitSha, failedStage, acceptedAt, finishedAt,
-    integrationMilliseconds, deliveryMilliseconds,
+    integrationMilliseconds, deliveryMilliseconds, requestedBy,
   };
 }
 

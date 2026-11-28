@@ -1,13 +1,16 @@
 /** 배포 이력 화면의 본문(서버 컴포넌트) — 서비스 선택 · 건수 · 표 · 빈 목록 · 다른 서버 실패 · 잘못된 입력 · 배포 상세(§10.2).
  * 받은 값(진입 함수가 칸을 고른 결과)만 그린다 — 다른 서버를 부르지 않고, 서버 모듈 · 클라이언트 · 설정을 임포트하지 않는다.
  * 서비스 선택 · 줄 고르기 · 커밋 고르기 · 닫기는 링크(GET)라 브라우저 스크립트 없이 동작한다.
- * 상세를 열면 넓은 화면(1100px 이상)은 왼쪽 목록 | 오른쪽 상세로 나누고, 좁은 화면은 상세가 화면 전체를 덮는다. */
+ * 상세를 열면 넓은 화면(1100px 이상)은 왼쪽 목록 | 오른쪽 상세로 나누고, 좁은 화면은 상세가 화면 전체를 덮는다.
+ * 문제의 조치에서 온 접수의 결과로 열렸으면(주소의 incident — 문제의 ID 꼴일 때만) 그 문제 화면으로 가는 링크를 머리에 단다(명세 ⑫ §24). */
 import type { DeployDetailOutcome } from "@/features/deploy-detail/lib/deploy-detail-view";
 import { DeployDetailPanel } from "@/features/deploy-detail/ui/DeployDetailPanel";
+import { deployVersionsHref } from "@/features/deploy-versions/ui/DeployVersionsScreen";
 import type { DeployHistoryView } from "@/features/deploys/server/deploy-history";
 import { DEPLOY_HISTORY_DEFAULT_LIMIT, DEPLOY_SERVICES, type DeployService } from "@/features/deploys/lib/deploy-history-query";
 import { DeployHistoryTable } from "@/features/deploys/ui/DeployHistoryTable";
 import { deploysHref, type DeployListAddress } from "@/features/deploys/ui/deploys-address";
+import { incidentHref } from "@/features/incidents/lib/incidents-query";
 import styles from "@/features/deploys/ui/DeployHistoryScreen.module.css";
 import parts from "@/shared/ui/screen-parts.module.css";
 
@@ -41,9 +44,11 @@ export interface DeployHistoryScreenProps {
   detail: DeployDetailOutcome | null;
   /** 목록에서 강조할 요청 ID */
   selectedRequestId: string | null;
+  /** 문제에서 온 접수의 결과면 그 문제의 ID(꼴을 본 것) — 없으면 null */
+  incidentId?: string | null;
 }
 
-export function DeployHistoryScreen({ view, detail, selectedRequestId }: DeployHistoryScreenProps) {
+export function DeployHistoryScreen({ view, detail, selectedRequestId, incidentId = null }: DeployHistoryScreenProps) {
   const selected = view.query?.service ?? null;
   const limit = view.query?.limit ?? DEPLOY_HISTORY_DEFAULT_LIMIT;
   const { deployments } = view;
@@ -97,6 +102,8 @@ export function DeployHistoryScreen({ view, detail, selectedRequestId }: DeployH
             <span className={parts.countNote}>(최신순, 최대 {limit}건)</span>
           </p>
         )}
+        <p className={parts.count}><a href={deployVersionsHref(selected)}>{selected === null ? "버전 목록" : `${selected} 의 버전 목록`}</a></p>
+        {incidentId !== null && <p className={parts.count}><a href={incidentHref(incidentId)}>{`문제 ${incidentId} 화면으로`}</a></p>}
       </div>
       <ServiceFilter selected={selected} limit={limit} />
       {detail === null ? listContent : (
