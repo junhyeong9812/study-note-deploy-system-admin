@@ -70,6 +70,7 @@ describe("서비스 ↔ 컨테이너", () => {
   it("값을 보일 컨테이너 — 표(각 저장소 compose 의 앱 컨테이너), 표에 없으면 <서비스>-app", () => {
     expect(SERVICE_CONTAINER_NAMES).toEqual({
       front: "front-app", backend: "backend-app", llm: "llm-wrapper", alert: "alert-app", observe: "observe-app", admin: "admin-app",
+      claude: "claude-runner",
     });
     expect(serviceContainerName("llm")).toBe("llm-wrapper");
     expect(serviceContainerName("front")).toBe("front-app");
