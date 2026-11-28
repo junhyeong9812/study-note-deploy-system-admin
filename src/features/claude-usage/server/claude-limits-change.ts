@@ -16,9 +16,9 @@
  * 응답(HTML · no-store · 스크립트 없음): 바뀜 200(실행 자리가 돌려준 값) · 실행 자리의 거절 422(code) · 실행 자리가 설정 비밀값 거절 502 ·
  *   바뀌지 않음 502(연결을 맺지 못했을 때만) · 모름 504(5xx 포함)("다시 읽어 확인"). 로그: 한 번에 한 줄 `claude-limits:<결과> account=<계정> raise=<true|false|->`
  *   (올림인지 아직 모르는 단계의 거절은 `-`) — 넓히는 바꿈의 PUT 결과 줄에만 ` from=<앞 값의 글> to=<새 값의 글>`(claudeLimitsCanonical — 누가 무엇을 얼마로).
- *   비밀번호 · 확인 값 · 비밀값 · 실행 자리의 주소는 로그 · 응답에 싣지 않는다. */
+ *   비밀번호 · 확인 값 · 비밀값 · 실행 자리의 주소는 로그 · 응답에 싣지 않는다.
+ * 그 요청의 추적 ID 범위에서 돈다(⑬ T2g) — 로그 줄의 ID 자리와 비밀번호 확인(로그인 흐름 — 관측 서버 · 알림 서버)의 호출이 그 값. 실행 자리의 호출에는 싣지 않는다. */
 import "server-only";
-import { randomUUID } from "node:crypto";
 import { clientIpOrUnknown } from "@/features/auth/lib/client-ip";
 import { isAllowedOrigin } from "@/features/auth/lib/origin";
 import { loginService } from "@/features/auth/server/login-service";
@@ -36,6 +36,8 @@ import { escapeHtml, readBoundedBody } from "@/features/deploy-redeploy/server/r
 import { formatKoreanTime } from "@/features/deploys/lib/deploy-format";
 import { readServerConfig, sessionSigningKey } from "@/shared/config/server-config";
 import { log } from "@/shared/lib/logger";
+import { inRequestScope } from "@/shared/lib/request-id";
+import { currentRequestId } from "@/shared/lib/request-scope";
 import { NO_STORE_HEADERS, errorResponse } from "@/shared/lib/responses";
 import { isHttpBaseUrl } from "@/shared/lib/upstream-fetch";
 
@@ -145,100 +147,102 @@ function responseForReplace(result: ClaudeLimitsReplaceResult, subject: LogSubje
 }
 
 export async function claudeLimitsChangeResponse(request: Request): Promise<Response> {
-  const config = readServerConfig();
-  const changedBy = requestedByFor(config.adminUser);
-  const subject: LogSubject = { requestId: randomUUID(), account: changedBy !== null ? config.adminUser : "(not_allowed)", raise: null, values: null };
+  return inRequestScope(async () => {
+    const config = readServerConfig();
+    const changedBy = requestedByFor(config.adminUser);
+    const subject: LogSubject = { requestId: currentRequestId(), account: changedBy !== null ? config.adminUser : "(not_allowed)", raise: null, values: null };
 
-  // 1 출처 — 로그인 · 재배포 접수와 같은 검사
-  if (!isAllowedOrigin(request.headers.get("origin"), config.adminOrigin)) {
-    logOutcome(subject, "origin_rejected");
-    return errorResponse(403, "origin_rejected");
-  }
-  // 2 세션
-  const session = await requireApiSession();
-  if (session instanceof Response) {
-    logOutcome(subject, "unauthenticated");
-    return session;
-  }
-  // 3 본문의 꼴 — 칸의 목록은 지금 상한을 읽은 뒤에 가른다
-  const fields = await readLimitsFields(request);
-  if (fields === null) {
-    logOutcome(subject, "malformed");
-    return resultPage(400, "요청의 꼴이 맞지 않습니다", "Claude 사용량 화면의 폼으로만 바꿀 수 있습니다. 화면을 다시 열어 주세요.");
-  }
-  // 4 계정 이름 — changed_by 로 쓸 수 없으면 실행 자리를 부르지 않는다
-  if (changedBy === null) {
-    logOutcome(subject, "account_not_allowed");
-    return resultPage(422, "이 계정 이름으로는 상한을 바꿀 수 없습니다", "바꾼 사람으로 남기는 이름(admin:계정)은 영문 · 숫자 · . _ - 만 받습니다. 계정 이름(ADMIN_USER)을 바꾼 뒤 다시 시도하세요.");
-  }
-  // 5 설정
-  if (!isHttpBaseUrl(config.claudeRunnerUrl) || config.claudeRunnerSettingsSecret.length === 0) {
-    logOutcome(subject, "not_configured");
-    return resultPage(503, "실행 자리 설정이 없습니다", "어드민 서버에 Claude 실행 자리의 주소와 설정용 비밀값이 없어 바꿀 수 없습니다.");
-  }
-  // 6 지금 상한을 서버가 다시 읽는다 — 읽지 못하면 바꾸지 않는다
-  const client = createClaudeRunnerClient({
-    baseUrl: config.claudeRunnerUrl, settingsSecret: config.claudeRunnerSettingsSecret, fetch: (input, init) => fetch(input, init),
-  });
-  const current = await client.readLimits();
-  if (!current.ok) {
-    logOutcome(subject, `limits_unreadable upstream=${current.reason}`);
-    return resultPage(503, "지금 상한을 읽지 못해 바꿀 수 없습니다", `실행 자리: ${current.message}. 바꾸지 않았습니다.`);
-  }
-  // 7 폼의 칸 — 닫힌 목록은 지금 상한의 용도에서
-  const form = parseClaudeLimitsForm(fields, Object.keys(current.value.purposes));
-  if (!form.ok) {
-    logOutcome(subject, form.reason === "invalid_value" ? `invalid_value field=${form.field}` : "malformed");
-    if (form.reason === "invalid_value") {
-      return resultPage(422, "상한 값이 맞지 않습니다", `${form.field} — 상한은 ${CLAUDE_LIMIT_MINIMUM}~${CLAUDE_LIMIT_MAXIMUM} 의 정수입니다.`);
+    // 1 출처 — 로그인 · 재배포 접수와 같은 검사
+    if (!isAllowedOrigin(request.headers.get("origin"), config.adminOrigin)) {
+      logOutcome(subject, "origin_rejected");
+      return errorResponse(403, "origin_rejected");
     }
-    return resultPage(400, "요청의 꼴이 맞지 않습니다", "화면을 연 뒤 실행 자리의 용도가 바뀌었을 수 있습니다. 화면을 다시 열어 주세요.");
-  }
-  // 8 넓힘의 판정 — 실행 자리가 지금 쥔 값(방금 다시 읽은 것)에 견준다. 좁히는 바꿈은 확인 값 · 비밀번호를 보지 않는다.
-  subject.raise = isRaisingChange(current.value, form.change);
-  if (subject.raise) {
-    const before = current.value;
-    const signingKey = sessionSigningKey();
-    const expected = { account: config.adminUser, beforeChangedAt: before.changedAt, before, after: form.change };
-    const freshConfirmation = () => confirmationHtml(before, form.change,
-      issueClaudeLimitsConfirmation(signingKey, { ...expected, issuedAt: Date.now() }));
-    // 8-1 첫 걸음 — 확인 값이 없으면 확인 화면만(비밀번호가 함께 와도 보지 않는다)
-    if (form.confirmation.length === 0) {
-      logOutcome(subject, "confirmation_required", "info");
-      return resultPage(200, "상한을 넓히는 바꿈입니다 — 비밀번호를 다시 확인합니다",
-        "아래 값으로 바꿉니다. 로그인 비밀번호를 넣으면 바꿉니다(5분 안에).", freshConfirmation());
+    // 2 세션
+    const session = await requireApiSession();
+    if (session instanceof Response) {
+      logOutcome(subject, "unauthenticated");
+      return session;
     }
-    // 8-2 확인 값 — 틀리면 비밀번호를 보지 않는다(잠금 횟수가 늘지 않는다)
-    const check = verifyClaudeLimitsConfirmation(form.confirmation, signingKey, expected, Date.now());
-    if (!check.ok) {
-      logOutcome(subject, `confirmation_${check.reason}`);
-      if (check.reason === "malformed") return resultPage(400, "요청의 꼴이 맞지 않습니다", "확인 값이 맞지 않습니다. 화면을 다시 열어 주세요.");
-      if (check.reason === "expired") return resultPage(410, "확인한 지 5분이 지났습니다 — 다시 확인하세요", "아래 값으로 다시 확인합니다.", freshConfirmation());
-      return resultPage(409, "확인한 뒤 값이 달라졌습니다 — 다시 확인하세요", "확인한 뒤 바꿀 값이나 지금 상한이 달라졌습니다. 아래의 지금 값으로 다시 확인합니다.", freshConfirmation());
+    // 3 본문의 꼴 — 칸의 목록은 지금 상한을 읽은 뒤에 가른다
+    const fields = await readLimitsFields(request);
+    if (fields === null) {
+      logOutcome(subject, "malformed");
+      return resultPage(400, "요청의 꼴이 맞지 않습니다", "Claude 사용량 화면의 폼으로만 바꿀 수 있습니다. 화면을 다시 열어 주세요.");
     }
-    const sameForm = confirmationFormHtml(form.change, form.confirmation);
-    // 8-3 비밀번호 — 로그인 흐름 그대로(잠금 판정 · 시도 기록 · 임시 제한). 흐름이 만든 세션 토큰은 쓰지 않는다(쿠키를 놓지 않는다).
-    if (form.password.length === 0) {
-      logOutcome(subject, "password_required");
-      return resultPage(401, "비밀번호를 다시 넣어야 합니다", "상한을 올리거나 꺼 둔 것을 켤 때는 로그인 비밀번호를 다시 확인합니다.", sameForm);
+    // 4 계정 이름 — changed_by 로 쓸 수 없으면 실행 자리를 부르지 않는다
+    if (changedBy === null) {
+      logOutcome(subject, "account_not_allowed");
+      return resultPage(422, "이 계정 이름으로는 상한을 바꿀 수 없습니다", "바꾼 사람으로 남기는 이름(admin:계정)은 영문 · 숫자 · . _ - 만 받습니다. 계정 이름(ADMIN_USER)을 바꾼 뒤 다시 시도하세요.");
     }
-    const { flow } = loginService();
-    if (flow === null) {
-      logOutcome(subject, "password_unavailable");
-      return resultPage(401, "비밀번호를 확인할 수 없습니다", "로그인 설정이 없어 비밀번호를 확인하지 못했습니다.");
+    // 5 설정
+    if (!isHttpBaseUrl(config.claudeRunnerUrl) || config.claudeRunnerSettingsSecret.length === 0) {
+      logOutcome(subject, "not_configured");
+      return resultPage(503, "실행 자리 설정이 없습니다", "어드민 서버에 Claude 실행 자리의 주소와 설정용 비밀값이 없어 바꿀 수 없습니다.");
     }
-    const login = await flow.login({
-      id: config.adminUser, password: form.password, ip: clientIpOrUnknown(request.headers),
-      userAgent: request.headers.get("user-agent") ?? "", origin: request.headers.get("origin"), requestId: subject.requestId,
+    // 6 지금 상한을 서버가 다시 읽는다 — 읽지 못하면 바꾸지 않는다
+    const client = createClaudeRunnerClient({
+      baseUrl: config.claudeRunnerUrl, settingsSecret: config.claudeRunnerSettingsSecret, fetch: (input, init) => fetch(input, init),
     });
-    if (login.kind !== "success") {
-      logOutcome(subject, `password_${login.kind}`);
-      if (login.kind === "locked") return resultPage(423, "잠겨 있습니다", "비밀번호를 여러 번 틀려 잠겼습니다. 로그인과 같은 잠금입니다 — 풀린 뒤에 다시 시도하세요.");
-      if (login.kind === "rate_limited") return resultPage(429, "비밀번호 확인이 너무 잦습니다", "잠시 뒤 다시 시도하세요.");
-      return resultPage(401, "비밀번호가 맞지 않습니다", "로그인 비밀번호를 다시 넣어 주세요. 틀린 입력은 로그인의 잠금 횟수에 듭니다.", sameForm);
+    const current = await client.readLimits();
+    if (!current.ok) {
+      logOutcome(subject, `limits_unreadable upstream=${current.reason}`);
+      return resultPage(503, "지금 상한을 읽지 못해 바꿀 수 없습니다", `실행 자리: ${current.message}. 바꾸지 않았습니다.`);
     }
-    subject.values = { from: claudeLimitsCanonical(before), to: claudeLimitsCanonical(form.change) };
-  }
-  // 9 실행 자리 PUT 한 번(다시 보내지 않는다)
-  return responseForReplace(await client.replaceLimits(form.change, changedBy), subject);
+    // 7 폼의 칸 — 닫힌 목록은 지금 상한의 용도에서
+    const form = parseClaudeLimitsForm(fields, Object.keys(current.value.purposes));
+    if (!form.ok) {
+      logOutcome(subject, form.reason === "invalid_value" ? `invalid_value field=${form.field}` : "malformed");
+      if (form.reason === "invalid_value") {
+        return resultPage(422, "상한 값이 맞지 않습니다", `${form.field} — 상한은 ${CLAUDE_LIMIT_MINIMUM}~${CLAUDE_LIMIT_MAXIMUM} 의 정수입니다.`);
+      }
+      return resultPage(400, "요청의 꼴이 맞지 않습니다", "화면을 연 뒤 실행 자리의 용도가 바뀌었을 수 있습니다. 화면을 다시 열어 주세요.");
+    }
+    // 8 넓힘의 판정 — 실행 자리가 지금 쥔 값(방금 다시 읽은 것)에 견준다. 좁히는 바꿈은 확인 값 · 비밀번호를 보지 않는다.
+    subject.raise = isRaisingChange(current.value, form.change);
+    if (subject.raise) {
+      const before = current.value;
+      const signingKey = sessionSigningKey();
+      const expected = { account: config.adminUser, beforeChangedAt: before.changedAt, before, after: form.change };
+      const freshConfirmation = () => confirmationHtml(before, form.change,
+        issueClaudeLimitsConfirmation(signingKey, { ...expected, issuedAt: Date.now() }));
+      // 8-1 첫 걸음 — 확인 값이 없으면 확인 화면만(비밀번호가 함께 와도 보지 않는다)
+      if (form.confirmation.length === 0) {
+        logOutcome(subject, "confirmation_required", "info");
+        return resultPage(200, "상한을 넓히는 바꿈입니다 — 비밀번호를 다시 확인합니다",
+          "아래 값으로 바꿉니다. 로그인 비밀번호를 넣으면 바꿉니다(5분 안에).", freshConfirmation());
+      }
+      // 8-2 확인 값 — 틀리면 비밀번호를 보지 않는다(잠금 횟수가 늘지 않는다)
+      const check = verifyClaudeLimitsConfirmation(form.confirmation, signingKey, expected, Date.now());
+      if (!check.ok) {
+        logOutcome(subject, `confirmation_${check.reason}`);
+        if (check.reason === "malformed") return resultPage(400, "요청의 꼴이 맞지 않습니다", "확인 값이 맞지 않습니다. 화면을 다시 열어 주세요.");
+        if (check.reason === "expired") return resultPage(410, "확인한 지 5분이 지났습니다 — 다시 확인하세요", "아래 값으로 다시 확인합니다.", freshConfirmation());
+        return resultPage(409, "확인한 뒤 값이 달라졌습니다 — 다시 확인하세요", "확인한 뒤 바꿀 값이나 지금 상한이 달라졌습니다. 아래의 지금 값으로 다시 확인합니다.", freshConfirmation());
+      }
+      const sameForm = confirmationFormHtml(form.change, form.confirmation);
+      // 8-3 비밀번호 — 로그인 흐름 그대로(잠금 판정 · 시도 기록 · 임시 제한). 흐름이 만든 세션 토큰은 쓰지 않는다(쿠키를 놓지 않는다).
+      if (form.password.length === 0) {
+        logOutcome(subject, "password_required");
+        return resultPage(401, "비밀번호를 다시 넣어야 합니다", "상한을 올리거나 꺼 둔 것을 켤 때는 로그인 비밀번호를 다시 확인합니다.", sameForm);
+      }
+      const { flow } = loginService();
+      if (flow === null) {
+        logOutcome(subject, "password_unavailable");
+        return resultPage(401, "비밀번호를 확인할 수 없습니다", "로그인 설정이 없어 비밀번호를 확인하지 못했습니다.");
+      }
+      const login = await flow.login({
+        id: config.adminUser, password: form.password, ip: clientIpOrUnknown(request.headers),
+        userAgent: request.headers.get("user-agent") ?? "", origin: request.headers.get("origin"), requestId: subject.requestId,
+      });
+      if (login.kind !== "success") {
+        logOutcome(subject, `password_${login.kind}`);
+        if (login.kind === "locked") return resultPage(423, "잠겨 있습니다", "비밀번호를 여러 번 틀려 잠겼습니다. 로그인과 같은 잠금입니다 — 풀린 뒤에 다시 시도하세요.");
+        if (login.kind === "rate_limited") return resultPage(429, "비밀번호 확인이 너무 잦습니다", "잠시 뒤 다시 시도하세요.");
+        return resultPage(401, "비밀번호가 맞지 않습니다", "로그인 비밀번호를 다시 넣어 주세요. 틀린 입력은 로그인의 잠금 횟수에 듭니다.", sameForm);
+      }
+      subject.values = { from: claudeLimitsCanonical(before), to: claudeLimitsCanonical(form.change) };
+    }
+    // 9 실행 자리 PUT 한 번(다시 보내지 않는다)
+    return responseForReplace(await client.replaceLimits(form.change, changedBy), subject);
+  });
 }

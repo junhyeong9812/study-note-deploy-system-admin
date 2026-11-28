@@ -11,7 +11,9 @@
  *   recent 의 usage 는 null 또는 네 칸(정수가 아니거나 없는 칸은 null).
  *
  * 쓰기 하나 — replaceLimits(): PUT <base>/limits 한 번(다시 보내지 않는다) · 머리글 X-Claude-Runner-Settings-Secret · Content-Type: application/json ·
- *   본문 {"enabled", "total": {"per_day","per_hour"}, "purposes": {<용도>: {…} — change.purposes 그대로}, "changed_by"} · redirect:"manual" · 기한 CLAUDE_LIMITS_PUT_TIMEOUT_MILLISECONDS(본문까지). */
+ *   본문 {"enabled", "total": {"per_day","per_hour"}, "purposes": {<용도>: {…} — change.purposes 그대로}, "changed_by"} · redirect:"manual" · 기한 CLAUDE_LIMITS_PUT_TIMEOUT_MILLISECONDS(본문까지).
+ *
+ * 실행 자리는 통신 규약의 서비스 목록에 없고 앞에 nginx 가 없다 — 읽기 · 쓰기 어느 호출에도 `X-Caller-Service` · `X-Request-Id` 를 싣지 않는다(읽기는 getUpstream 의 ourService: false). */
 import type { FetchLike, TimeoutSignalFactory } from "@/features/auth/lib/types";
 import { isClaudePurposeList, type ClaudeLimitPair, type ClaudeLimits, type ClaudeLimitsChange } from "@/features/claude-usage/lib/claude-limits";
 import { isConnectFailure } from "@/features/deploy-redeploy/lib/redeploy-accept-client";
@@ -214,7 +216,7 @@ function replaceResultFor(status: number, json: unknown): ClaudeLimitsReplaceRes
 export function createClaudeRunnerClient(options: ClaudeRunnerClientOptions): ClaudeRunnerClient {
   const settingsHeaders = { [CLAUDE_RUNNER_SETTINGS_SECRET_HEADER]: options.settingsSecret };
   const read = (path: string, headers: Record<string, string>) =>
-    getUpstream(upstreamUrl(options.baseUrl, path), { fetch: options.fetch, timeoutSignal: options.timeoutSignal, headers });
+    getUpstream(upstreamUrl(options.baseUrl, path), { fetch: options.fetch, timeoutSignal: options.timeoutSignal, headers, ourService: false });
   return {
     async readUsage() {
       return enveloped(await read(CLAUDE_RUNNER_USAGE_PATH, settingsHeaders), usageOf);

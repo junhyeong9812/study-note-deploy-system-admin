@@ -1,9 +1,12 @@
 /** master 접수 클라이언트(순수 — 설정 · 비밀값을 읽지 않는다. 기준 주소 · 비밀값은 부르는 쪽이 준다).
  * `POST <base>/deploy` 한 번(다시 보내지 않는다 — 같은 요청 ID 로 다시 보내는 것은 사람이 정한다) · 본문 JSON `{service, commit_sha, request_id, requested_by}` ·
- * 머리글 `X-Deploy-Secret` · `Content-Type: application/json` · redirect:"manual" · 기한 REDEPLOY_ACCEPT_TIMEOUT_MILLISECONDS(본문까지).
+ * 머리글 `X-Deploy-Secret` · `Content-Type: application/json` · `X-Caller-Service: admin`(⑬ T4b) · 그 요청의 `X-Request-Id`(⑬ T2g — 추적의 ID.
+ * 본문의 `request_id` 는 접수 번호(일의 ID)라 머리글로 올리지 않는다 — 규약 1.2) · redirect:"manual" · 기한 REDEPLOY_ACCEPT_TIMEOUT_MILLISECONDS(본문까지).
  * 오류 봉투의 error.code 는 결과를 가르는 데만 쓰고, 원문 · detail 은 결과에 담지 않는다. */
 import type { FetchLike, TimeoutSignalFactory } from "@/features/auth/lib/types";
 import { REDEPLOY_REQUEST_ID_PATTERN } from "@/features/deploy-redeploy/lib/redeploy-confirmation";
+import { withCallerService } from "@/shared/lib/caller-service";
+import { withRequestId } from "@/shared/lib/request-scope";
 import { isRecord, upstreamUrl } from "@/shared/lib/upstream-fetch";
 
 export const REDEPLOY_ACCEPT_PATH = "/deploy";
@@ -101,7 +104,7 @@ export function createRedeployAcceptClient(options: RedeployAcceptClientOptions)
       try {
         response = await options.fetch(upstreamUrl(options.baseUrl, REDEPLOY_ACCEPT_PATH), {
           method: "POST",
-          headers: { Accept: "application/json", "Content-Type": "application/json", "X-Deploy-Secret": options.secret },
+          headers: withRequestId(withCallerService({ Accept: "application/json", "Content-Type": "application/json", "X-Deploy-Secret": options.secret })),
           body,
           signal,
           redirect: "manual",

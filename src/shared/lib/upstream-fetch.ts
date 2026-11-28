@@ -13,7 +13,7 @@ export interface UpstreamGetOptions {
   /** 이 호출에만 싣는 머리글(비밀 헤더 포함) */
   headers?: Record<string, string>;
   /** 받는 쪽이 우리 서비스인가(⑬ T4b — 기본 true: `X-Caller-Service: admin` 을 싣는다). 바깥(우리 서비스가 아닌 곳)으로 가는 호출은 반드시 false 로 끈다
-   * — GitHub(deploy-detail/lib/github-client) · 다른 브랜치의 Claude 실행 자리 클라이언트 포함. */
+   * — GitHub(deploy-detail/lib/github-client) · Claude 실행 자리(claude-usage/lib/claude-runner-client). */
   ourService?: boolean;
 }
 
