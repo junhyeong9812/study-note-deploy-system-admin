@@ -18,6 +18,12 @@ x-admin: &admin
     BACKEND_URL: ${BACKEND_URL:-}
     LOG_REDIS_URL: ${LOG_REDIS_URL:-}
     GITHUB_TOKEN: ${GITHUB_TOKEN:-}               # 배포 상세(GitHub 읽기) — 선택
+    SITE_ORIGIN: ${SITE_ORIGIN:-}                 # 방문 기록(경로 링크 · 자기 사이트 빼기) — 선택
+    CLAUDE_RUNNER_URL: ${CLAUDE_RUNNER_URL:-}     # Claude 사용량 화면 — 선택
+    CLAUDE_RUNNER_SETTINGS_SECRET: ${CLAUDE_RUNNER_SETTINGS_SECRET:-}
+    CLAUDE_RUNNER_SECRET: ${CLAUDE_RUNNER_SECRET:-}  # 문제 화면의 분석(실행 자리 호출) — 선택
+    OWNER_COOKIE_SECRET: ${OWNER_COOKIE_SECRET:-}    # 주인 표시(backend 와 같은 열쇠) — 선택
+    OWNER_COOKIE_DOMAIN: ${OWNER_COOKIE_DOMAIN:-}
     SERVER_NAME: admin
   healthcheck:
     # localhost 금지 — 컨테이너 안에서 ::1로 풀리는 함정 (규약)
@@ -52,3 +58,8 @@ services:
       # + edge-allow.conf(엣지 IP — 저장소에 적지 않는다, deploy/nginx/edge-allow.conf.example 참고. 없으면 nginx 가 뜨지 않는다).
       - ./deploy/active:/etc/nginx:ro
     restart: unless-stopped
+    logging:   # 접속 기록(통신 규약 v1)이 표준 출력으로 가므로 크기를 묶는다 — 에이전트는 json-file 을 도커 API 로 읽는다
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

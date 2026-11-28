@@ -93,7 +93,7 @@ describe("배포 이력 화면 — 서비스 선택(링크 · GET)", () => {
   it("전체 + 서비스 여섯을 링크로 — 고른 것에 aria-current", async () => {
     const html = await render({ service: "front" });
     expect(html).toContain('href="/deploys"');
-    for (const service of ["front", "backend", "llm", "alert", "observe", "admin"]) expect(html).toContain(`href="/deploys?service=${service}"`);
+    for (const service of ["front", "backend", "llm", "alert", "observe", "admin", "claude"]) expect(html).toContain(`href="/deploys?service=${service}"`);
     expect(html).toMatch(/href="\/deploys\?service=front" aria-current="page"/);
     expect(new URL(masterFetch.mock.calls[0][0]).searchParams.get("service")).toBe("front");
   });

@@ -1,0 +1,31 @@
+/* 분석 — 구역 · 여백 · 색은 문제 화면(IncidentsScreen.module.css)의 값 그대로(globals.css 토큰 — 다크 모드 포함). 제목 줄 · 실패 상자 · 빈 상태는 공통 조각. */
+.main { max-width: var(--content-width); margin: 0 auto; padding: var(--space-6) var(--space-4); display: flex; flex-direction: column; gap: var(--space-4); }
+.meta { font-size: var(--text-sm); color: var(--muted); font-variant-numeric: tabular-nums; }
+.muted { color: var(--muted); font-size: var(--text-sm); }
+.note { font-size: var(--text-sm); padding: var(--space-1) var(--space-2); color: var(--warning-fg); background: var(--warning-bg); border-radius: var(--radius-sm); }
+.failure {
+  padding: var(--space-2) var(--space-3); font-size: var(--text-sm); color: var(--fg);
+  background: var(--warning-bg); border-left: 3px solid var(--warning-fg); border-radius: var(--radius-sm);
+}
+.section {
+  display: flex; flex-direction: column; gap: var(--space-2); min-width: 0;
+  padding: var(--space-4); background: var(--bg); border: 1px solid var(--line); border-radius: var(--radius-md);
+}
+.sectionTitle { font-size: var(--text-md); padding-bottom: var(--space-1); border-bottom: 1px solid var(--line); }
+.summary { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: var(--space-1) var(--space-4); font-size: var(--text-sm); }
+.summary dt { color: var(--muted); }
+.summary dd { min-width: 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+/* 답의 글 — 받은 글자 그대로(줄바꿈 유지 · 마크다운을 풀지 않는다) */
+.answerText { white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--text-sm); }
+.evidenceList { padding-left: var(--space-4); display: flex; flex-direction: column; gap: var(--space-1); }
+.sentText {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: var(--text-xs); line-height: 1.55;
+  white-space: pre-wrap; overflow-wrap: anywhere; max-height: 32rem; overflow-y: auto;
+  padding: var(--space-2) var(--space-3); background: var(--code-bg); border-radius: var(--radius-sm);
+}
+.send { align-self: flex-start; padding: var(--space-2) var(--space-4); font-size: var(--text-sm); }
+.main a:focus-visible, .send:focus-visible, .main summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+@media (max-width: 640px) {
+  .main { padding: var(--space-4) var(--space-3); }
+}
