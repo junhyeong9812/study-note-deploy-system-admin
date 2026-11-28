@@ -127,6 +127,7 @@ describe("createDeployHistoryClient — 응답에서 화면에 필요한 칸만"
     expect(deployments).toStrictEqual([{
       requestId: "request-id-1", state: "failed", service: "backend", commitSha: "0123456789abcdef0123456789abcdef01234567", failedStage: "ci_test",
       acceptedAt: "2026-11-22T01:00:00Z", finishedAt: "2026-11-22T01:05:00Z", integrationMilliseconds: 120000, deliveryMilliseconds: 0,
+      requestedBy: null,
     }]);
     const serialized = JSON.stringify(deployments);
     expect(serialized).not.toContain(UPSTREAM_RAW_MARKER);
@@ -241,5 +242,31 @@ describe("createDeployHistoryClient — 5초 기한(가짜 타이머)", () => {
     await vi.advanceTimersByTimeAsync(5_000);
     expect(pending.settled).toBe(true);
     expectFailure(pending.value!, "timeout");
+  });
+});
+
+describe("createDeployHistoryClient — 요청한 사람(requested_by — 명세 ⑫ §24)", () => {
+  it.each([
+    ["문제에서 온 접수", "admin:jun:incident:monitor:front", "admin:jun:incident:monitor:front"],
+    ["사람의 접수", "admin:jun", "admin:jun"],
+    ["워크플로", "github", "github"],
+    ["빈 글자", "", null],
+    ["null", null, null],
+  ] as const)("%s → %s", async (_label, requestedBy, expected) => {
+    const fetch = createRoutedFetch(() => jsonBody(envelope([deploymentRow({ requested_by: requestedBy })])));
+    const client = createDeployHistoryClient({ baseUrl: FAKE_DEPLOY_MASTER_URL, secret: FAKE_DEPLOY_SECRET, fetch });
+    expect(okValue(await client.listDeployments({ service: null, limit: 50 }))[0].requestedBy).toBe(expected);
+  });
+
+  it("칸이 없으면(옛 master) null", async () => {
+    const fetch = createRoutedFetch(() => jsonBody(envelope([deploymentRow()])));
+    const client = createDeployHistoryClient({ baseUrl: FAKE_DEPLOY_MASTER_URL, secret: FAKE_DEPLOY_SECRET, fetch });
+    expect(okValue(await client.listDeployments({ service: null, limit: 50 }))[0].requestedBy).toBeNull();
+  });
+
+  it("글자가 아니면 해석 불가(원문을 넘기지 않는다)", async () => {
+    const fetch = createRoutedFetch(() => jsonBody(envelope([deploymentRow({ requested_by: 7 })])));
+    const client = createDeployHistoryClient({ baseUrl: FAKE_DEPLOY_MASTER_URL, secret: FAKE_DEPLOY_SECRET, fetch });
+    expectFailure(await client.listDeployments({ service: null, limit: 50 }), "unparseable");
   });
 });

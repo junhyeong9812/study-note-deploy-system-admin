@@ -140,16 +140,17 @@ describe("목록 — 네 호출(기존 클라이언트 그대로)", () => {
 
 describe("문제 하나 — 목록 뒤에 근거 묶음(호출 수 상한 안)", () => {
   it.each([
-    ["감시 대상 DOWN", monitorIncidentId("front"), ["/incidents", "/logs", "/logs", "/metrics/latest", "/metrics/containers", "/metrics/series", "/metrics/series"]],
-    ["배포 실패", deployIncidentId("backend", "req-failed-1"), ["/incidents", "/logs", "/deploys/git/commits", "/metrics/latest", "/metrics/containers", "/metrics/series", "/metrics/series"]],
-    ["자원 임계값", resourceIncidentId("s158", "disk_warning", null), ["/incidents", "/logs", "/logs"]],
-    ["오류 로그", errorLogsIncidentId("llm"), ["/logs", "/metrics/latest", "/metrics/containers", "/metrics/series", "/metrics/series"]],
-  ])("%s — 목록 넷 + 그 종류의 호출만, 합이 상한 안", async (_label, id, evidencePaths) => {
+    // 끝의 "/deploys" = 조치 구역의 그 서비스의 이력(명세 ⑫ §25 — 서비스가 하나로 정해질 때만 하나)
+    ["감시 대상 DOWN", monitorIncidentId("front"), ["/incidents", "/logs", "/logs", "/metrics/latest", "/metrics/containers", "/metrics/series", "/metrics/series", "/deploys"]],
+    ["배포 실패", deployIncidentId("backend", "req-failed-1"), ["/incidents", "/logs", "/deploys/git/commits", "/metrics/latest", "/metrics/containers", "/metrics/series", "/metrics/series", "/deploys"]],
+    ["자원 임계값", resourceIncidentId("s158", "disk_warning", null), ["/incidents", "/logs", "/logs", "/deploys"]],
+    ["오류 로그", errorLogsIncidentId("llm"), ["/logs", "/metrics/latest", "/metrics/containers", "/metrics/series", "/metrics/series", "/deploys"]],
+  ])("%s — 목록 넷 + 그 종류의 호출만 + 조치의 이력 하나, 합이 상한 안", async (_label, id, evidencePaths) => {
     const fetch = fakeServers();
     const data = await collectIncidentsScreen(options(fetch), id);
     const paths = calledPaths(fetch);
     expect(paths.slice(INCIDENT_LIST_CALLS).sort()).toEqual([...evidencePaths].sort());
-    expect(paths.length).toBeLessThanOrEqual(INCIDENT_LIST_CALLS + INCIDENT_EVIDENCE_MAXIMUM_CALLS);
+    expect(paths.length).toBeLessThanOrEqual(INCIDENT_LIST_CALLS + INCIDENT_EVIDENCE_MAXIMUM_CALLS + 1);
     for (const [, init] of fetch.mock.calls) expectReadOnlyRequest(init);
     expect(data.selected?.kind).toBe("evidence");
     if (data.selected?.kind !== "evidence") throw new Error("evidence");
@@ -157,10 +158,13 @@ describe("문제 하나 — 목록 뒤에 근거 묶음(호출 수 상한 안)",
     expectNoForbiddenText(data);
   });
 
-  it("근거 묶음은 목록이 끝난 뒤에 시작한다(목록의 배포 이력 · latest 를 다시 쓴다 — 배포 이력은 한 번만)", async () => {
+  it("근거 묶음은 목록이 끝난 뒤에 시작한다(목록의 배포 이력 · latest 를 다시 쓴다 — 모든 서비스의 배포 이력은 한 번만 · 조치의 그 서비스 이력이 하나 더)", async () => {
     const fetch = fakeServers();
     await collectIncidentsScreen(options(fetch), deployIncidentId("backend", "req-failed-1"));
-    expect(calledPaths(fetch).filter((path) => path === "/deploys")).toHaveLength(1);
+    const deploysUrls = fetch.mock.calls.map(([input]) => new URL(String(input))).filter((url) => url.pathname === "/deploys");
+    expect(deploysUrls.filter((url) => url.searchParams.get("service") === null)).toHaveLength(1);
+    expect(deploysUrls.filter((url) => url.searchParams.get("service") !== null).map((url) => [url.searchParams.get("service"), url.searchParams.get("limit")]))
+      .toEqual([["backend", "200"]]);
     expect(calledPaths(fetch).slice(0, INCIDENT_LIST_CALLS).sort()).toEqual(["/deploys", "/logs", "/metrics/latest", "/monitors"]);
   });
 

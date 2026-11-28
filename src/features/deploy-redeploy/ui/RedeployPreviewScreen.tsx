@@ -3,14 +3,17 @@
  * 받은 값(진입 함수의 결과)만 그린다 — 다른 서버를 부르지 않고, 서버 모듈 · 클라이언트 · 설정을 임포트하지 않는다.
  * 그리기만 한다 — 스크립트가 없다. 접수 폼(비교가 되고 진행 중인 배포가 없을 때만)은 POST /api/deploys/redeploy 하나(숨은 칸 서비스 · 커밋 · 확인 값 + 비밀번호).
  * 두 버전은 표의 줄로 그리지 않는다(표의 줄 = 사이의 커밋).
- * 표 · 낱말 · 색은 배포 이력 화면의 것을 그대로 쓴다. */
+ * 표 · 낱말 · 색은 배포 이력 화면의 것을 그대로 쓴다.
+ * 문제의 조치로 연 것이면(명세 ⑫ §24) 머리 아래에 "문제 <ID> 의 조치" 한 줄과 문제 화면으로 돌아가는 링크 · 폼에 숨은 칸 incident ·
+ * 확인 화면을 낼 수 없으면 그 까닭만(폼 없음). 문제의 조치가 아니면 이 조각 전과 같은 마크업이다. */
 import type { BetweenCommits, RedeployDirection, RedeployPreview } from "@/features/deploy-redeploy/lib/redeploy-preview";
-import { REDEPLOY_ACCEPT_ACTION } from "@/features/deploy-redeploy/lib/redeploy-preview-query";
-import type { RedeployAcceptSubmission, RedeployPreviewView } from "@/features/deploy-redeploy/server/redeploy-preview";
+import { REDEPLOY_ACCEPT_ACTION, REDEPLOY_INCIDENT_TEXT } from "@/features/deploy-redeploy/lib/redeploy-preview-query";
+import type { RedeployAcceptSubmission, RedeployIncidentContext, RedeployPreviewView } from "@/features/deploy-redeploy/server/redeploy-preview";
 import type { DeployVersion } from "@/features/deploy-versions/lib/deploy-versions-view";
 import { deployVersionsHref } from "@/features/deploy-versions/ui/DeployVersionsScreen";
 import { formatKoreanTime, shortPrefix } from "@/features/deploys/lib/deploy-format";
 import { DEPLOY_SERVICES } from "@/features/deploys/lib/deploy-history-query";
+import { incidentHref } from "@/features/incidents/lib/incidents-query";
 import screenStyles from "@/features/deploys/ui/DeployHistoryScreen.module.css";
 import tableStyles from "@/features/deploys/ui/DeployHistoryTable.module.css";
 import formStyles from "@/features/auth/ui/LoginForm.module.css";
@@ -19,7 +22,7 @@ import parts from "@/shared/ui/screen-parts.module.css";
 const COMMIT_PREFIX_LENGTH = 7;
 
 /** 입력 이름 → 화면 글자(잘못된 입력 안내). */
-const FIELD_LABELS: Readonly<Record<string, string>> = { service: "서비스", commit: "커밋" };
+const FIELD_LABELS: Readonly<Record<string, string>> = { service: "서비스", commit: "커밋", incident: "문제의 ID", action: "조치" };
 
 const UNKNOWN_REASON_LABELS = {
   diverged: "갈라진 이력(어느 쪽도 다른 쪽의 조상이 아님)",
@@ -112,12 +115,14 @@ function Direction({ direction }: { direction: RedeployDirection }) {
 
 const PASSWORD_FIELD_ID = "redeploy-password";
 
-function AcceptForm({ service, commitSha, confirmation }: { service: string; commitSha: string; confirmation: string }) {
+function AcceptForm({ service, commitSha, confirmation, incident }: { service: string; commitSha: string; confirmation: string; incident: RedeployIncidentContext | null }) {
   return (
     <form className={formStyles.form} method="post" action={REDEPLOY_ACCEPT_ACTION}>
       <input type="hidden" name="service" value={service} />
       <input type="hidden" name="commit" value={commitSha} />
       <input type="hidden" name="confirmation" value={confirmation} />
+      {incident !== null && <input type="hidden" name="incident" value={incident.incidentId} />}
+      {incident !== null && <input type="hidden" name="action" value={incident.action} />}
       <div className={formStyles.field}>
         <label className={formStyles.label} htmlFor={PASSWORD_FIELD_ID}>비밀번호</label>
         <input className={formStyles.input} id={PASSWORD_FIELD_ID} type="password" name="password" autoComplete="current-password" required />
@@ -127,8 +132,17 @@ function AcceptForm({ service, commitSha, confirmation }: { service: string; com
   );
 }
 
-/** commitSha = 확인 값에 서명한 커밋(주소의 commit — 소문자 40자). */
-function Submission({ preview, submission, commitSha }: { preview: Extract<RedeployPreview, { kind: "comparison" }>; submission: RedeployAcceptSubmission; commitSha: string }) {
+/** commitSha = 확인 값에 서명한 커밋(주소의 commit 또는 문제의 조치에서 서버가 정한 판 — 소문자 40자). */
+function Submission({ preview, submission, commitSha, incident }: {
+  preview: Extract<RedeployPreview, { kind: "comparison" }>; submission: RedeployAcceptSubmission; commitSha: string; incident: RedeployIncidentContext | null;
+}) {
+  if (submission.kind === "incident_account_too_long") {
+    return (
+      <div className={parts.problem} role="alert">
+        <p className={parts.problemTitle}>{REDEPLOY_INCIDENT_TEXT.accountTooLong}</p>
+      </div>
+    );
+  }
   if (submission.kind === "account_not_allowed") {
     return (
       <div className={parts.problem} role="alert">
@@ -143,12 +157,12 @@ function Submission({ preview, submission, commitSha }: { preview: Extract<Redep
         <p className={parts.count}>그래도 올리려면 두 커밋을 따로 확인한 뒤 비밀번호를 넣어 접수하세요.</p>
       )}
       <p className={parts.count}>접수하면 배포 서버가 이 커밋을 다시 빌드해 올립니다. 비밀번호를 다시 확인합니다(이 확인 화면은 5분 동안만 쓸 수 있습니다).</p>
-      <AcceptForm service={preview.service} commitSha={commitSha} confirmation={submission.confirmation} />
+      <AcceptForm service={preview.service} commitSha={commitSha} confirmation={submission.confirmation} incident={incident} />
     </>
   );
 }
 
-function Preview({ preview, submission, commitSha }: { preview: RedeployPreview; submission: RedeployAcceptSubmission | null; commitSha: string }) {
+function Preview({ preview, submission, commitSha, incident }: { preview: RedeployPreview; submission: RedeployAcceptSubmission | null; commitSha: string; incident: RedeployIncidentContext | null }) {
   if (preview.kind === "not_deployable") {
     return (
       <div className={parts.problem} role="alert">
@@ -173,13 +187,15 @@ function Preview({ preview, submission, commitSha }: { preview: RedeployPreview;
       <VersionLine label="지금 버전" version={preview.current} />
       <VersionLine label="고른 버전" version={preview.chosen} />
       <Direction direction={preview.direction} />
-      {submission !== null && <Submission preview={preview} submission={submission} commitSha={commitSha} />}
+      {submission !== null && <Submission preview={preview} submission={submission} commitSha={commitSha} incident={incident} />}
     </>
   );
 }
 
 export function RedeployPreviewScreen({ view }: { view: RedeployPreviewView }) {
-  const { preview, service, submission } = view;
+  const { preview, service, submission, incident } = view;
+  // 문제의 조치에서 확인 화면을 낼 수 없으면 그 까닭만 보인다(조회 실패 상자를 그리지 않는다)
+  const showPreview = incident === undefined || incident.reason === null;
   return (
     <main className={screenStyles.main}>
       <div className={parts.heading}>
@@ -187,6 +203,17 @@ export function RedeployPreviewScreen({ view }: { view: RedeployPreviewView }) {
         {service !== null && <p className={parts.count}>{service}</p>}
         <p className={parts.count}><a href={deployVersionsHref(service)}>버전 목록으로</a></p>
       </div>
+      {incident !== undefined && (
+        <p className={parts.count}>
+          <strong>{`${REDEPLOY_INCIDENT_TEXT.headingPrefix}${incident.incidentId}${REDEPLOY_INCIDENT_TEXT.headingSuffix}`}</strong>
+          {" · "}<a href={incidentHref(incident.incidentId)}>{REDEPLOY_INCIDENT_TEXT.back}</a>
+        </p>
+      )}
+      {incident?.reason != null && (
+        <div className={parts.problem} role="alert">
+          <p className={parts.problemTitle}>{incident.reason}</p>
+        </div>
+      )}
 
       {!preview.ok && preview.reason === "invalid_input" && (
         <div className={parts.problem} role="alert">
@@ -198,7 +225,7 @@ export function RedeployPreviewScreen({ view }: { view: RedeployPreviewView }) {
         </div>
       )}
 
-      {!preview.ok && preview.reason !== "invalid_input" && (
+      {showPreview && !preview.ok && preview.reason !== "invalid_input" && (
         <div className={parts.problem} role="alert">
           <p className={parts.problemTitle}>버전을 확인하지 못함</p>
           <p className={parts.problemDetail}>
@@ -207,7 +234,9 @@ export function RedeployPreviewScreen({ view }: { view: RedeployPreviewView }) {
         </div>
       )}
 
-      {preview.ok && view.query !== null && <Preview preview={preview.value} submission={submission} commitSha={view.query.commitSha} />}
+      {showPreview && preview.ok && view.query !== null && (
+        <Preview preview={preview.value} submission={submission} commitSha={view.query.commitSha} incident={incident ?? null} />
+      )}
     </main>
   );
 }

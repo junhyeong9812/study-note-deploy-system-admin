@@ -9,12 +9,21 @@
  *   오류 로그의 대상 칸은 `<서비스> — <errorCountText>`. 확인하지 못한 출처의 줄(text) · errorLogsTruncated 글 · 확인한 범위의 줄(scopeNotes) · emptyText 는 표 위에.
  * - 문제 하나: 구역마다 `<section aria-labelledby="evidence-<칸>">` + `<h2 id="evidence-<칸>">` — 칸 = facts · alertHistory · logs · deployments · resources
  *   (이 차례), 줄인 것이 있으면 그 뒤에 evidence-reductions. facts 의 값 · 시각은 글과 같은 글자 그대로(KST 는 덧붙여도 된다). 커밋 · 요청 ID 는 전체 글자.
+ * - 조치(명세 ⑫ §24): `<section aria-labelledby="incident-actions">` — 서비스가 하나로 정해지면 조치마다 ⑥ 의 확인 화면으로 가는 링크
+ *   (`/deploys/redeploy?service=&incident=&action=` — 판은 글에만 보이고 주소에 싣지 않는다 · 판을 정할 수 없으면 링크 대신 까닭) · "Claude 가 권함"은 표시일 뿐 ·
+ *   이 문제에서 접수한 배포(그 서비스의 최근 200건에서 — 배포 이력의 그 배포로 · 서비스가 정해지지 않으면 이 줄이 없다). 폼 · 단추는 두지 않는다(첫 걸음은 GET 링크).
  * - 근거 묶음의 머리에 그 문제의 분석 화면(`/incidents/analysis?incident=<식별자>` — 저장된 분석 · 분석 요청)으로 가는 링크 "분석".
  * - 닫힘 · 확인하지 못함 · 입력 거절(UPSTREAM_FAILURE_MESSAGES.invalid_input)에는 `<a href="/incidents">문제 목록으로</a>`.
  * - 본문의 링크는 /incidents(· /incidents/analysis) · /logs · /deploys · /resources 로만(요청 추적 화면은 아직 없다). 폼 · 단추 · 입력 칸 · on* 속성 없음. */
 import type { ReactNode } from "react";
 import { failedStageLabel, formatKoreanTime } from "@/features/deploys/lib/deploy-format";
 import { StateBadge } from "@/features/deploys/ui/DeployHistoryTable";
+import { DEPLOY_HISTORY_DEFAULT_LIMIT, DEPLOY_SERVICES, type DeployService } from "@/features/deploys/lib/deploy-history-query";
+import { deploysHref } from "@/features/deploys/ui/deploys-address";
+import { incidentRedeployPreviewHref } from "@/features/deploy-redeploy/lib/redeploy-preview-query";
+import {
+  INCIDENT_ACTION_KINDS, INCIDENT_ACTION_LABELS, INCIDENT_ACTION_TEXT, type IncidentActionsView,
+} from "@/features/incidents/lib/incident-actions";
 import {
   EVIDENCE_SECTION_TITLES, EVIDENCE_TEXT, evidenceCellNotice,
   type AlertHistoryView, type EvidenceCell, type EvidenceDeploymentsView, type EvidenceLogsView, type EvidenceResourcesView, type EvidenceSection,
@@ -236,7 +245,53 @@ function ResourcesBody({ view, nowMilliseconds }: { view: EvidenceResourcesView;
   );
 }
 
-function EvidenceBlock({ evidence, checkedAt }: { evidence: IncidentEvidence; checkedAt: string }) {
+const COMMIT_PREFIX_LENGTH = 7;
+
+/** 조치 구역 — 링크(GET)와 글만. */
+function ActionsBlock({ incidentId, actions }: { incidentId: string; actions: IncidentActionsView }) {
+  const { service, targets, recommended, taken } = actions;
+  return (
+    <section className={styles.section} aria-labelledby="incident-actions">
+      <h2 id="incident-actions" className={styles.sectionTitle}>{INCIDENT_ACTION_TEXT.title}</h2>
+      {!service.ok ? <p className={styles.muted}>{INCIDENT_ACTION_TEXT.serviceReasons[service.reason]}</p> : targets !== null && (
+        <ul className={styles.entries}>
+          {INCIDENT_ACTION_KINDS.map((kind) => {
+            const target = targets[kind];
+            return (
+              <li key={kind}>
+                {target.ok
+                  ? <a href={incidentRedeployPreviewHref(service.service, incidentId, kind)}>{`${INCIDENT_ACTION_LABELS[kind]} — ${target.commitSha.slice(0, COMMIT_PREFIX_LENGTH)}`}</a>
+                  : <span className={styles.muted}>{`${INCIDENT_ACTION_LABELS[kind]} — ${INCIDENT_ACTION_TEXT.targetReasons[target.reason]}`}</span>}
+                {recommended === kind && <> · <strong>{INCIDENT_ACTION_TEXT.recommended}</strong></>}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      {taken !== null && <h3 className={styles.meta}>{INCIDENT_ACTION_TEXT.actionsTitle}</h3>}
+      {taken === null ? null : !taken.ok ? <p className={styles.muted}>{INCIDENT_ACTION_TEXT.actionsUnavailable}</p>
+        : taken.deployments.length === 0 ? <p className={styles.muted}>{INCIDENT_ACTION_TEXT.noActions}</p> : (
+          <ul className={styles.entries}>
+            {taken.deployments.map((deployment) => {
+              const listService = (DEPLOY_SERVICES as readonly string[]).includes(deployment.service) ? deployment.service as DeployService : null;
+              return (
+                <li key={deployment.requestId}>
+                  <a href={deploysHref({ service: listService, limit: DEPLOY_HISTORY_DEFAULT_LIMIT }, { requestId: deployment.requestId, service: deployment.service })}>
+                    <KoreanTime value={deployment.acceptedAt} />
+                  </a>
+                  <span>{deployment.service}</span>
+                  <StateBadge deployment={deployment} />
+                  <code className={styles.code}>{deployment.commitSha.slice(0, COMMIT_PREFIX_LENGTH)}</code>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+    </section>
+  );
+}
+
+function EvidenceBlock({ evidence, checkedAt, actions }: { evidence: IncidentEvidence; checkedAt: string; actions?: IncidentActionsView }) {
   const { incident } = evidence;
   return (
     <div className={styles.evidence}>
@@ -250,6 +305,7 @@ function EvidenceBlock({ evidence, checkedAt }: { evidence: IncidentEvidence; ch
         <dt>심한 정도</dt><dd><span className={SEVERITY_CLASS[incident.severity]}>{incident.severityLabel}</span></dd>
         <dt>언제부터</dt><dd>{incident.since === null ? "모름" : <>{incident.since} (KST <KoreanTime value={incident.since} />)</>}</dd>
       </dl>
+      {actions !== undefined && <ActionsBlock incidentId={incident.id} actions={actions} />}
       <EvidenceSectionBlock section="facts">
         <dl className={styles.summary}>
           {evidence.facts.map((fact) => <FactRow key={fact.label} label={fact.label} value={fact.value} />)}
@@ -275,7 +331,7 @@ function FactRow({ label, value }: { label: string; value: string }) {
 }
 
 function SelectedBlock({ selected, checkedAt }: { selected: SelectedIncident; checkedAt: string }) {
-  if (selected.kind === "evidence") return <EvidenceBlock evidence={selected.evidence} checkedAt={checkedAt} />;
+  if (selected.kind === "evidence") return <EvidenceBlock evidence={selected.evidence} checkedAt={checkedAt} actions={selected.actions} />;
   return (
     <div className={styles.evidence}>
       <p className={selected.kind === "unchecked" ? styles.failure : undefined}>

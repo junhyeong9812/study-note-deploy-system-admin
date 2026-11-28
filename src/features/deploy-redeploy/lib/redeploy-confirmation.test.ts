@@ -177,3 +177,48 @@ describe("요청 ID — 확인 화면이 그릴 때 정한다", () => {
     expect(seen.size).toBe(500);
   });
 });
+
+describe("문제의 ID 와 조치의 종류를 묶는다(명세 ⑫ §24 · §25) — ID 가 없으면 지금과 같은 글자", () => {
+  const INCIDENT = "monitor:front";
+  const BOUND = { incidentId: INCIDENT, action: "rollback" } as const;
+
+  it("ID 가 없으면(undefined · null) 계약의 일곱 줄 그대로 — 지금의 값과 글자까지 같다 · 조치를 줘도 서명에 들지 않는다", () => {
+    expect(issue({ incidentId: undefined })).toBe(handMade(CONTRACT_LINES));
+    expect(issue({ incidentId: null })).toBe(handMade(CONTRACT_LINES));
+    expect(issue({ incidentId: null })).toBe(issue());
+    expect(issue({ incidentId: null, action: "rollback" })).toBe(handMade(CONTRACT_LINES));
+    expect(issue({ action: "redeploy" })).toBe(handMade(CONTRACT_LINES));
+    expect(verifyRedeployConfirmation(issue(), FAKE_SIGNING_KEY, { ...EXPECTED, incidentId: null, action: "rollback" }, ISSUED_AT).ok).toBe(true);
+  });
+
+  it("ID 가 있으면 여덟째 줄 `incident:<ID>` · 아홉째 줄 `action:<종류>` 를 더해 서명한다 · 꼴은 그대로(rc1.<요청 ID>.<시각>.<서명>)", () => {
+    for (const action of ["rollback", "redeploy"] as const) {
+      const token = issue({ incidentId: INCIDENT, action });
+      expect(token).toBe(handMade([...CONTRACT_LINES, `incident:${INCIDENT}`, `action:${action}`]));
+      expect(token).toMatch(/^rc1\.adm-Fake_Request-01\.\d+\.[A-Za-z0-9_-]{43}$/);
+    }
+    expect(issue(BOUND)).not.toBe(handMade([...CONTRACT_LINES, `incident:${INCIDENT}`]));
+  });
+
+  it("같은 ID · 같은 조치로 검증하면 통한다", () => {
+    expect(verifyRedeployConfirmation(issue(BOUND), FAKE_SIGNING_KEY, { ...EXPECTED, ...BOUND }, ISSUED_AT))
+      .toEqual({ ok: true, requestId: FIELDS.requestId, issuedAt: ISSUED_AT });
+  });
+
+  it.each([
+    ["다른 ID 로 바꿈", BOUND, { incidentId: "monitor:backend", action: "rollback" }],
+    ["ID 를 뺌", BOUND, { incidentId: null, action: null }],
+    ["ID 를 더함(ID 없는 확인 화면의 값)", { incidentId: null, action: null }, BOUND],
+    ["접두만 같은 ID", { incidentId: "errors:ab", action: "rollback" }, { incidentId: "errors:abc", action: "rollback" }],
+    ["조치를 바꿈(되돌리기 → 다시 배포)", BOUND, { incidentId: INCIDENT, action: "redeploy" }],
+    ["조치를 뺌", BOUND, { incidentId: INCIDENT, action: null }],
+  ] as const)("%s → mismatch", (_label, issuedWith, verifiedWith) => {
+    expect(verifyRedeployConfirmation(issue(issuedWith), FAKE_SIGNING_KEY, { ...EXPECTED, ...verifiedWith }, ISSUED_AT))
+      .toEqual({ ok: false, reason: "mismatch" });
+  });
+
+  it("ID 가 있어도 만료는 그대로(5분)", () => {
+    expect(verifyRedeployConfirmation(issue(BOUND), FAKE_SIGNING_KEY, { ...EXPECTED, ...BOUND }, ISSUED_AT + 300_000))
+      .toEqual({ ok: false, reason: "expired" });
+  });
+});

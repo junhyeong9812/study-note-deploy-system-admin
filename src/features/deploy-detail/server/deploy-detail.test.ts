@@ -171,7 +171,7 @@ describe("정상 — 200 응답의 꼴", () => {
     expect(data.query).toEqual({ service: "backend", selectedRequestId: "selected-1", commitSha: SHA_MIDDLE });
     expect(data.deployment).toEqual({ ok: true, value: {
       requestId: "selected-1", state: "succeeded", service: "backend", commitSha: SHA_B, failedStage: null,
-      acceptedAt: "2026-11-22T02:00:00Z", finishedAt: "2026-11-22T02:05:00Z", integrationMilliseconds: 60000, deliveryMilliseconds: 30000,
+      acceptedAt: "2026-11-22T02:00:00Z", finishedAt: "2026-11-22T02:05:00Z", integrationMilliseconds: 60000, deliveryMilliseconds: 30000, requestedBy: null,   // 누가(⑫ 12-6 — master 의 requested_by, 없으면 null)
     } });
     expect(data.range).toEqual({ status: "range", baseRequestId: "previous-1", baseCommitSha: SHA_A, headCommitSha: SHA_B });
     expect(data.repository).toEqual({ owner: "junhyeong9812", name: "study-note-deploy-system-backend" });

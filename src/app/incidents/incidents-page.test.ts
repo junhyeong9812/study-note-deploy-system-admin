@@ -249,7 +249,7 @@ describe("문제 하나 — 칸마다 제목이 있는 구역", () => {
     const threshold = await render({ incident: resourceIncidentId("s158", "disk_warning", null) });
     expect(hrefsOf(sectionOf(threshold, "resources"))).toContain("/resources?range=1h#resource-server-s158");
     for (const html of [down, failed, threshold]) {
-      for (const href of hrefsOf(mainOf(html))) expect(href, href).toMatch(/^\/(incidents(\/analysis)?|logs|deploys|resources)([?#]|$)/);
+      for (const href of hrefsOf(mainOf(html))) expect(href, href).toMatch(/^\/(incidents(\/analysis)?|logs|deploys(\/redeploy)?|resources)([?#]|$)/);   // 조치(⑫ 12-6)는 ⑥ 의 확인 화면으로
     }
   });
 

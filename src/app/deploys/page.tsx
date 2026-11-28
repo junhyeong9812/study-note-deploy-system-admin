@@ -4,7 +4,7 @@ import { isTemporaryRestrictionActive } from "@/features/auth/server/temporary-r
 import { loadDeployDetail } from "@/features/deploy-detail/server/deploy-detail";
 import { loadDeployHistory } from "@/features/deploys/server/deploy-history";
 import { DeployHistoryScreen } from "@/features/deploys/ui/DeployHistoryScreen";
-import { detailInput, hasDetailSelection, selectedRequestIdOf } from "@/features/deploys/ui/deploys-address";
+import { detailInput, hasDetailSelection, incidentIdOf, selectedRequestIdOf } from "@/features/deploys/ui/deploys-address";
 import type { SearchParamsInput } from "@/shared/lib/upstream-result";
 
 export const dynamic = "force-dynamic";
@@ -19,7 +19,7 @@ export default async function DeploysPage({ searchParams }: { searchParams: Prom
   ]);
   return (
     <AdminShell current="deploys" temporaryRestriction={isTemporaryRestrictionActive()}>
-      <DeployHistoryScreen view={view} detail={detail} selectedRequestId={selectedRequestIdOf(input)} />
+      <DeployHistoryScreen view={view} detail={detail} selectedRequestId={selectedRequestIdOf(input)} incidentId={incidentIdOf(input)} />
     </AdminShell>
   );
 }
