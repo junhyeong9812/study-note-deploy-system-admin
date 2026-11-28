@@ -9,8 +9,9 @@
  *   오류 로그의 대상 칸은 `<서비스> — <errorCountText>`. 확인하지 못한 출처의 줄(text) · errorLogsTruncated 글 · 확인한 범위의 줄(scopeNotes) · emptyText 는 표 위에.
  * - 문제 하나: 구역마다 `<section aria-labelledby="evidence-<칸>">` + `<h2 id="evidence-<칸>">` — 칸 = facts · alertHistory · logs · deployments · resources
  *   (이 차례), 줄인 것이 있으면 그 뒤에 evidence-reductions. facts 의 값 · 시각은 글과 같은 글자 그대로(KST 는 덧붙여도 된다). 커밋 · 요청 ID 는 전체 글자.
+ * - 근거 묶음의 머리에 그 문제의 분석 화면(`/incidents/analysis?incident=<식별자>` — 저장된 분석 · 분석 요청)으로 가는 링크 "분석".
  * - 닫힘 · 확인하지 못함 · 입력 거절(UPSTREAM_FAILURE_MESSAGES.invalid_input)에는 `<a href="/incidents">문제 목록으로</a>`.
- * - 본문의 링크는 /incidents · /logs · /deploys · /resources 로만(요청 추적 화면은 아직 없다). 폼 · 단추 · 입력 칸 · on* 속성 없음. */
+ * - 본문의 링크는 /incidents(· /incidents/analysis) · /logs · /deploys · /resources 로만(요청 추적 화면은 아직 없다). 폼 · 단추 · 입력 칸 · on* 속성 없음. */
 import type { ReactNode } from "react";
 import { failedStageLabel, formatKoreanTime } from "@/features/deploys/lib/deploy-format";
 import { StateBadge } from "@/features/deploys/ui/DeployHistoryTable";
@@ -20,6 +21,7 @@ import {
   type IncidentEvidence,
 } from "@/features/incidents/lib/incident-evidence";
 import { EVIDENCE_REDUCTIONS_TITLE } from "@/features/incidents/lib/incident-evidence-text";
+import { incidentAnalysisHref } from "@/features/incident-analysis/lib/incident-analysis-screen";
 import { INCIDENT_LIST_TEXT, errorCountText, type IncidentList, type OpenIncident } from "@/features/incidents/lib/incident-list";
 import { INCIDENTS_PATH, incidentHref } from "@/features/incidents/lib/incidents-query";
 import { SELECTED_INCIDENT_TEXT, type IncidentsScreenData, type SelectedIncident } from "@/features/incidents/lib/incidents-screen";
@@ -240,6 +242,7 @@ function EvidenceBlock({ evidence, checkedAt }: { evidence: IncidentEvidence; ch
     <div className={styles.evidence}>
       <div className={styles.evidenceHeader}>
         <p className={styles.evidenceTitle}><strong>{incident.kindLabel} — {incident.target}</strong></p>
+        <a href={incidentAnalysisHref(incident.id)}>분석</a>
         <BackToList />
       </div>
       <dl className={styles.summary}>
