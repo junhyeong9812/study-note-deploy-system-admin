@@ -217,8 +217,8 @@ export function seriesNameOf(actualName: string): string {
 type BoundedResponse = { status: number; parsed: true; json: unknown } | { status: number; parsed: false };
 
 /** 본문을 maximumBytes 바이트까지만 읽는다 — 넘으면 남은 본문을 취소하고 null. 읽는 중의 실패(기한 끊김 포함)는 던진다.
- * 공용 getUpstream 은 본문을 끝까지 읽어(response.text()) 상한을 둘 수 없어 이 기능 안에 둔다. 기한은 fetch 에 준 신호가 본문 스트림까지 끊는다. */
-async function readBoundedText(response: Response, maximumBytes: number): Promise<string | null> {
+ * 공용 getUpstream 은 본문을 끝까지 읽어(response.text()) 상한을 둘 수 없어 이 기능 안에 둔다(통신 지도의 의존 상태 읽기도 이것을 쓴다). 기한은 fetch 에 준 신호가 본문 스트림까지 끊는다. */
+export async function readBoundedText(response: Response, maximumBytes: number): Promise<string | null> {
   if (response.body === null) return "";
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];

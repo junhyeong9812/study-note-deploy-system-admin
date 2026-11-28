@@ -35,6 +35,8 @@ export interface ServerConfig {
   ownerCookieSecret: string;
   /** 주인 표시 쿠키의 Domain — 어드민과 사이트가 함께 속한 상위 도메인. **선택**(앞뒤 공백은 다듬는다). */
   ownerCookieDomain: string;
+  /** llm 래퍼의 주소(통신 지도의 의존의 선 — GET /health) — **선택**: 비면 llm 의 선은 "설정 없음"(부르지 않는다). */
+  llmUrl: string;
   serverName: string;
 }
 
@@ -66,6 +68,7 @@ export function readServerConfig(): ServerConfig {
     claudeRunnerCallSecret: environmentValue("CLAUDE_RUNNER_SECRET"),
     ownerCookieSecret: process.env.OWNER_COOKIE_SECRET ?? "",
     ownerCookieDomain: environmentValue("OWNER_COOKIE_DOMAIN"),
+    llmUrl: environmentValue("LLM_URL"),
     serverName: environmentValue("SERVER_NAME") || "admin",
   };
 }

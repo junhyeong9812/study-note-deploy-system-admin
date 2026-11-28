@@ -32,6 +32,7 @@ vi.mock("next/navigation", () => ({
 
 import { SESSION_COOKIE_NAME, SESSION_LIFETIME_MILLISECONDS, issueSessionToken } from "@/features/auth/lib/session";
 import { FAKE_ORIGIN, FAKE_SIGNING_KEY, createFakeScheduler } from "@/features/auth/lib/test-fakes";
+import type { TrafficDependencyHub } from "@/features/traffic-map/lib/traffic-dependency-hub";
 import type { TrafficMapEvent, TrafficMapHub, TrafficMapListener } from "@/features/traffic-map/lib/traffic-map-hub";
 import type { TrafficMapRange } from "@/features/traffic-map/lib/traffic-map-query";
 import { LEAKED_ADDRESS, chatMapEdges, createFakeObserveMap, fakeMapServer, trafficMapEventOf } from "@/features/traffic-map/lib/traffic-map-test-fakes";
@@ -45,6 +46,11 @@ import {
 } from "@/shared/lib/upstream-test-fakes";
 import { UPSTREAM_FAILURE_MESSAGES } from "@/shared/lib/upstream-result";
 
+
+/** 의존의 선(⑬ T9d)의 조용한 허브 — 이 파일은 통신 지도의 흐름만 본다(의존의 사건은 traffic-map-dependencies.test 가 본다). */
+function quietDependencyHub(): TrafficDependencyHub {
+  return { subscribe: () => () => {}, snapshot: () => null, stop: () => {} };
+}
 const MINUTE = 60_000;
 const ADMIN_DIRECTORY = fileURLToPath(new URL("../../../..", import.meta.url));
 
@@ -166,7 +172,7 @@ describe("세션이 먼저", () => {
   it("세션이 없으면 401 JSON · 관측 서버를 부르지 않는다 · 구독하지 않는다", async () => {
     setSession(null);
     const { hub } = recordingHub();
-    const response = await trafficStreamResponse(streamRequest(), { hub });
+    const response = await trafficStreamResponse(streamRequest(), { dependencyHub: quietDependencyHub(), hub });
     expect(response.status).toBe(401);
     expect(response.headers.get("content-type") ?? "").toContain("application/json");
     expect(await response.json()).toEqual({ success: false, error: { code: "unauthorized" } });
@@ -176,7 +182,7 @@ describe("세션이 먼저", () => {
 
   it("만료된 세션도 401", async () => {
     setSession(Date.now() - SESSION_LIFETIME_MILLISECONDS - 1000);
-    expect((await trafficStreamResponse(streamRequest())).status).toBe(401);
+    expect((await trafficStreamResponse(streamRequest(), { dependencyHub: quietDependencyHub() })).status).toBe(401);
     expect(upstreamFetch).not.toHaveBeenCalled();
   });
 
@@ -189,7 +195,7 @@ describe("세션이 먼저", () => {
 
 describe("흐름의 머리와 사건", () => {
   it("200 · text/event-stream · 캐시 금지 · 버퍼링 끔(X-Accel-Buffering: no)", async () => {
-    const response = await trafficStreamResponse(streamRequest());
+    const response = await trafficStreamResponse(streamRequest(), { dependencyHub: quietDependencyHub() });
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toBe("text/event-stream; charset=utf-8");
     expect(response.headers.get("cache-control") ?? "").toContain("no-store");
@@ -198,7 +204,7 @@ describe("흐름의 머리와 사건", () => {
   });
 
   it("첫 덩어리는 retry: 5000 · 그다음 event: map(id = sequence · data = 사건 JSON 한 줄)", async () => {
-    const stream = reader(await trafficStreamResponse(streamRequest()));
+    const stream = reader(await trafficStreamResponse(streamRequest(), { dependencyHub: quietDependencyHub() }));
     const blocks = await stream.until(2);
     expect(blocks[0]).toBe("retry: 5000");
     const [{ id, event }] = mapEventsOf(blocks);
@@ -211,7 +217,7 @@ describe("흐름의 머리와 사건", () => {
 
   it("관측 서버를 부르는 법 — GET /traffic/map · 기간 5분(지금까지) · X-Observe-Secret 하나 · no-store", async () => {
     const before = Date.now();
-    await reader(await trafficStreamResponse(streamRequest())).until(2);
+    await reader(await trafficStreamResponse(streamRequest(), { dependencyHub: quietDependencyHub() })).until(2);
     expect(upstreamFetch).toHaveBeenCalledTimes(1);
     const [input, init] = upstreamFetch.mock.calls[0];
     const url = new URL(input);
@@ -227,7 +233,7 @@ describe("흐름의 머리와 사건", () => {
 
   it.each([["?range=1h", "1h", 60 * MINUTE], ["?range=24h", "24h", 24 * 60 * MINUTE], ["?range=7d", "5m", 5 * MINUTE], ["?range=", "5m", 5 * MINUTE],
     ["?range=1h&range=24h", "5m", 5 * MINUTE]] as const)("기간 %s → %s(틀리면 기본값 — 거절하지 않는다)", async (search, range, width) => {
-    const [{ event }] = mapEventsOf(await reader(await trafficStreamResponse(streamRequest(search))).until(2));
+    const [{ event }] = mapEventsOf(await reader(await trafficStreamResponse(streamRequest(search), { dependencyHub: quietDependencyHub() })).until(2));
     expect(event.range).toBe(range);
     const url = new URL(upstreamFetch.mock.calls[0][0]);
     expect(Date.parse(url.searchParams.get("to")!) - Date.parse(url.searchParams.get("from")!)).toBe(width);
@@ -237,7 +243,7 @@ describe("흐름의 머리와 사건", () => {
 describe("여러 연결 — 관측 서버의 조회는 주기당 한 번", () => {
   it("같은 기간의 흐름 셋 + 화면의 첫 그림 → 관측 서버 /traffic/map 한 번 · 모두 같은 사건", async () => {
     const screen = await loadTrafficMapScreen({});
-    const streams = await Promise.all([0, 1, 2].map(async () => reader(await trafficStreamResponse(streamRequest()))));
+    const streams = await Promise.all([0, 1, 2].map(async () => reader(await trafficStreamResponse(streamRequest(), { dependencyHub: quietDependencyHub() }))));
     const events = await Promise.all(streams.map(async (stream) => mapEventsOf(await stream.until(2))[0].event));
     expect(upstreamFetch).toHaveBeenCalledTimes(1);
     for (const event of events) expect(event.sequence).toBe(screen.initial.sequence);
@@ -245,15 +251,15 @@ describe("여러 연결 — 관측 서버의 조회는 주기당 한 번", () =>
   });
 
   it("기간이 다르면 기간마다 한 번", async () => {
-    await reader(await trafficStreamResponse(streamRequest("?range=1h"))).until(2);
-    await reader(await trafficStreamResponse(streamRequest("?range=1h"))).until(2);
-    await reader(await trafficStreamResponse(streamRequest("?range=24h"))).until(2);
+    await reader(await trafficStreamResponse(streamRequest("?range=1h"), { dependencyHub: quietDependencyHub() })).until(2);
+    await reader(await trafficStreamResponse(streamRequest("?range=1h"), { dependencyHub: quietDependencyHub() })).until(2);
+    await reader(await trafficStreamResponse(streamRequest("?range=24h"), { dependencyHub: quietDependencyHub() })).until(2);
     expect(upstreamFetch).toHaveBeenCalledTimes(2);
   });
 
   it("관측 서버가 실패하면 — 사건의 map 은 고정 글자의 실패(원문 · 주소 없음) · 앱 로그는 조회마다 1줄(연결 수만큼이 아니다)", async () => {
     observeHandler = () => textResponse(leakyErrorBody(), 503);
-    const streams = await Promise.all([0, 1].map(async () => reader(await trafficStreamResponse(streamRequest()))));
+    const streams = await Promise.all([0, 1].map(async () => reader(await trafficStreamResponse(streamRequest(), { dependencyHub: quietDependencyHub() }))));
     const events = await Promise.all(streams.map(async (stream) => mapEventsOf(await stream.until(2))[0].event));
     for (const event of events) expect(event.map).toEqual({ ok: false, reason: "unavailable", status: 503, message: UPSTREAM_FAILURE_MESSAGES.unavailable });
     await vi.waitFor(() => expect(everythingLogged()).toContain("screen:traffic cell=map upstream=unavailable status=503"));
@@ -268,7 +274,7 @@ describe("연결마다의 타이머 — 주석 줄 · 세션 끝 · 끊김", () 
     expect(TRAFFIC_STREAM_HEARTBEAT_MILLISECONDS).toBe(15_000);
     const scheduler = createFakeScheduler();
     const { hub } = recordingHub();
-    const stream = reader(await trafficStreamResponse(streamRequest(), { hub, scheduler: scheduler.scheduler, now: () => Date.now() }));
+    const stream = reader(await trafficStreamResponse(streamRequest(), { dependencyHub: quietDependencyHub(), hub, scheduler: scheduler.scheduler, now: () => Date.now() }));
     await stream.until(1);
     expect(scheduler.scheduledDelays).toContain(15_000);
     scheduler.runPending();
@@ -279,7 +285,7 @@ describe("연결마다의 타이머 — 주석 줄 · 세션 끝 · 끊김", () 
 
   it("허브의 사건을 그대로 흘려보낸다 — 순서대로, 모르는 칸 없이", async () => {
     const { hub, send } = recordingHub();
-    const stream = reader(await trafficStreamResponse(streamRequest("?range=1h"), { hub, scheduler: createFakeScheduler().scheduler }));
+    const stream = reader(await trafficStreamResponse(streamRequest("?range=1h"), { dependencyHub: quietDependencyHub(), hub, scheduler: createFakeScheduler().scheduler }));
     await stream.until(1);
     expect(hub.subscribe).toHaveBeenCalledWith("1h", expect.any(Function));
     send(trafficMapEventOf(7, chatMapEdges(), { range: "1h" }));
@@ -293,7 +299,7 @@ describe("연결마다의 타이머 — 주석 줄 · 세션 끝 · 끊김", () 
     setSession(now - SESSION_LIFETIME_MILLISECONDS + 60_000);   // 1분 남음
     const scheduler = createFakeScheduler();
     const { hub, unsubscribeCalls } = recordingHub();
-    const stream = reader(await trafficStreamResponse(streamRequest(), { hub, scheduler: scheduler.scheduler, now: () => now }));
+    const stream = reader(await trafficStreamResponse(streamRequest(), { dependencyHub: quietDependencyHub(), hub, scheduler: scheduler.scheduler, now: () => now }));
     await stream.until(1);
     expect(scheduler.scheduledDelays).toContain(60_000);
     scheduler.runPending();
@@ -308,7 +314,7 @@ describe("연결마다의 타이머 — 주석 줄 · 세션 끝 · 끊김", () 
     const scheduler = createFakeScheduler();
     const { hub, unsubscribeCalls, send } = recordingHub();
     const controller = new AbortController();
-    const stream = reader(await trafficStreamResponse(streamRequest("", controller), { hub, scheduler: scheduler.scheduler }));
+    const stream = reader(await trafficStreamResponse(streamRequest("", controller), { dependencyHub: quietDependencyHub(), hub, scheduler: scheduler.scheduler }));
     await stream.until(1);
     expect(scheduler.pendingCount()).toBeGreaterThan(0);
     controller.abort();
@@ -320,7 +326,7 @@ describe("연결마다의 타이머 — 주석 줄 · 세션 끝 · 끊김", () 
   it("읽는 쪽이 흐름을 취소해도(cancel) 같이 거둔다", async () => {
     const scheduler = createFakeScheduler();
     const { hub, unsubscribeCalls } = recordingHub();
-    const stream = reader(await trafficStreamResponse(streamRequest(), { hub, scheduler: scheduler.scheduler }));
+    const stream = reader(await trafficStreamResponse(streamRequest(), { dependencyHub: quietDependencyHub(), hub, scheduler: scheduler.scheduler }));
     await stream.until(1);
     await stream.cancel();
     await vi.waitFor(() => expect(unsubscribeCalls).toEqual(["5m"]));
@@ -330,7 +336,7 @@ describe("연결마다의 타이머 — 주석 줄 · 세션 끝 · 끊김", () 
 
 describe("주소 · 비밀값이 새지 않는다", () => {
   it("관측 서버가 계약 밖 칸에 주소를 실어도 사건에 없다 · 비밀값 · 관측 서버 주소도 없다", async () => {
-    const blocks = await reader(await trafficStreamResponse(streamRequest())).until(2);
+    const blocks = await reader(await trafficStreamResponse(streamRequest(), { dependencyHub: quietDependencyHub() })).until(2);
     const text = blocks.join("\n");
     expect(text).not.toContain(LEAKED_ADDRESS);
     expectNoForbiddenText(text);
@@ -338,7 +344,7 @@ describe("주소 · 비밀값이 새지 않는다", () => {
 
   it("서버 이름 속의 주소 꼴은 가려 싣는다", async () => {
     observe.store.servers = [fakeMapServer({ server: "edge-203.0.113.9" })];
-    const [{ event }] = mapEventsOf(await reader(await trafficStreamResponse(streamRequest())).until(2));
+    const [{ event }] = mapEventsOf(await reader(await trafficStreamResponse(streamRequest(), { dependencyHub: quietDependencyHub() })).until(2));
     expect(okValue(event.map).servers[0].server).toBe("edge-(주소)");
   });
 });

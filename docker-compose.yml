@@ -16,6 +16,7 @@ x-admin: &admin
     DEPLOY_MASTER_URL: ${DEPLOY_MASTER_URL:-}      # 배포 이력 · 상태 화면(필수)
     DEPLOY_SECRET: ${DEPLOY_SECRET:-}
     BACKEND_URL: ${BACKEND_URL:-}
+    LLM_URL: ${LLM_URL:-}                          # 통신 지도의 의존의 선(llm) — 선택
     LOG_REDIS_URL: ${LOG_REDIS_URL:-}
     GITHUB_TOKEN: ${GITHUB_TOKEN:-}               # 배포 상세(GitHub 읽기) — 선택
     SITE_ORIGIN: ${SITE_ORIGIN:-}                 # 방문 기록(경로 링크 · 자기 사이트 빼기) — 선택
