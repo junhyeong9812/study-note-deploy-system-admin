@@ -15,6 +15,7 @@ describe("classifyPath — 기본 거절(허용 목록에 없는 모든 경로)"
     "/api/auth/logout", "/api/deploys", "/api/logs", "/api/status", "/api/login-attempts",
     "/resources", "/api/resources",
     "/incidents", "/api/incidents", "/incidents/analysis", "/api/incidents/analysis",
+    "/visits", "/api/visits",
     "/deploys/versions", "/api/deploys/versions",
     "/deploys/redeploy", "/api/deploys/redeploy",
     "/claude-usage", "/api/claude-usage", "/api/claude-usage/limits",
