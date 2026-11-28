@@ -2,13 +2,16 @@
  * - loadClaudeUsageScreen(): 세션이 없으면 /login(실행 자리를 한 번도 부르지 않는다). 세 칸(헬스 · 사용량 · 상한)을 함께 읽는다 —
  *   한 칸의 실패는 그 칸에만(다른 칸은 그대로). 주소가 http(s) 로 해석되지 않으면 세 칸 모두 not_configured, 비밀값이 비면 사용량 · 상한만 not_configured.
  * - claudeUsageScreenResponse(request): GET /api/claude-usage — 세션이 없으면 401, 그 밖은 200 `{success:true,data:ClaudeUsageScreen}`(no-store).
- * - 실패한 칸마다 앱 로그 1줄(upstreamFailureLogLine("claude-usage", <칸>, 결과)) — 주소 · 비밀값 없음. */
+ * - 실패한 칸마다 앱 로그 1줄(upstreamFailureLogLine("claude-usage", <칸>, 결과) — ID 자리는 그 요청의 추적 ID) — 주소 · 비밀값 없음.
+ * - 두 진입 모두 그 요청의 추적 ID 범위에서 돈다(⑬ T2g). 실행 자리는 우리 규약 밖이라 그 호출에는 추적 ID 도 호출자 머리글도 싣지 않는다(클라이언트가 끈다). */
 import "server-only";
 import { requireApiSession, requireSession } from "@/features/auth/server/require-session";
 import type { ClaudeLimits } from "@/features/claude-usage/lib/claude-limits";
 import { createClaudeRunnerClient, type ClaudeRunnerHealth, type ClaudeUsage } from "@/features/claude-usage/lib/claude-runner-client";
 import { readServerConfig } from "@/shared/config/server-config";
 import { log } from "@/shared/lib/logger";
+import { inRequestScope } from "@/shared/lib/request-id";
+import { currentRequestId } from "@/shared/lib/request-scope";
 import { screenDataResponse, upstreamFailureLogLine } from "@/shared/lib/screen-responses";
 import { isHttpBaseUrl } from "@/shared/lib/upstream-fetch";
 import { upstreamFailure, type UpstreamResult } from "@/shared/lib/upstream-result";
@@ -39,18 +42,22 @@ async function buildClaudeUsageScreen(): Promise<ClaudeUsageScreen> {
   }
   for (const [cell, result] of Object.entries(screen)) {
     const logLine = upstreamFailureLogLine("claude-usage", cell, result);
-    if (logLine !== null) void log("screen-claude-usage", logLine, "warning");
+    if (logLine !== null) void log(currentRequestId(), logLine, "warning");
   }
   return screen;
 }
 
 export async function loadClaudeUsageScreen(): Promise<ClaudeUsageScreen> {
-  await requireSession();
-  return buildClaudeUsageScreen();
+  return inRequestScope(async () => {
+    await requireSession();
+    return buildClaudeUsageScreen();
+  });
 }
 
 export async function claudeUsageScreenResponse(_request: Request): Promise<Response> {
-  const session = await requireApiSession();
-  if (session instanceof Response) return session;
-  return screenDataResponse(await buildClaudeUsageScreen(), null);
+  return inRequestScope(async () => {
+    const session = await requireApiSession();
+    if (session instanceof Response) return session;
+    return screenDataResponse(await buildClaudeUsageScreen(), null);
+  });
 }

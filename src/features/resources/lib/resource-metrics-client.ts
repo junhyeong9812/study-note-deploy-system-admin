@@ -43,6 +43,7 @@
 import type { FetchLike, TimeoutSignalFactory } from "@/features/auth/lib/types";
 import { RESOURCE_CONTAINER_NAME_PATTERN, RESOURCE_SERVER_NAME_PATTERN } from "@/features/resources/lib/resources-query";
 import { withCallerService } from "@/shared/lib/caller-service";
+import { withRequestId } from "@/shared/lib/request-scope";
 import { parseIsoUtc } from "@/shared/lib/query-input";
 import { isHttpBaseUrl, isRecord, upstreamUrl } from "@/shared/lib/upstream-fetch";
 import {
@@ -249,7 +250,7 @@ async function getBounded(url: string, options: ResourceMetricsClientOptions): P
   try {
     const response = await options.fetch(url, {
       method: "GET",
-      headers: withCallerService({ Accept: "application/json", "X-Observe-Secret": options.secret }),
+      headers: withRequestId(withCallerService({ Accept: "application/json", "X-Observe-Secret": options.secret })),
       signal,
       redirect: "manual",
       cache: "no-store",

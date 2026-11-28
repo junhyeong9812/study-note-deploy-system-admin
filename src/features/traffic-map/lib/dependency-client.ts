@@ -11,6 +11,7 @@ import {
 } from "@/features/traffic-map/lib/dependency-lines";
 import { readBoundedText } from "@/features/resources/lib/resource-metrics-client";
 import { ADMIN_CALLER_SERVICE, withCallerService } from "@/shared/lib/caller-service";
+import { REQUEST_ID_HEADER, newRequestId } from "@/shared/lib/request-scope";
 import { isHttpBaseUrl, upstreamUrl } from "@/shared/lib/upstream-fetch";
 
 /** 경로마다 한 값(셋 모두) — backend 가 의존 하나가 멈췄을 때 전체 예산 3초를 다 쓰고 답하는 것을 받는다(메인 11-30). */
@@ -36,22 +37,13 @@ export interface DependencyClient {
   readDependencies(): Promise<DependencyLine[]>;
 }
 
-const REQUEST_ID_BYTES = 16;
-
-/** 16진수 소문자 32자 난수(규약 1.4). */
-function randomRequestId(): string {
-  const bytes = new Uint8Array(REQUEST_ID_BYTES);
-  crypto.getRandomValues(bytes);
-  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
-}
-
 function defaultTimeoutSignal(milliseconds: number): AbortSignal {
   return AbortSignal.timeout(milliseconds);
 }
 
 export function createDependencyClient(options: DependencyClientOptions): DependencyClient {
   const baseUrls: Readonly<Record<DependencyServiceName, string>> = { backend: options.backendUrl, "llm-wrapper": options.llmUrl, observe: options.observeUrl };
-  const newRequestId = options.newRequestId ?? randomRequestId;
+  const requestIdForCall = options.newRequestId ?? newRequestId;
 
   /** 한 서비스 — 경로마다 따로 기한(본문까지). 거부하지 않는다. 예외의 글 · 주소는 결과에 싣지 않는다(까닭의 낱말만). */
   async function readService(service: DependencyServiceName, path: string): Promise<DependencyLine[]> {
@@ -62,7 +54,7 @@ export function createDependencyClient(options: DependencyClientOptions): Depend
     try {
       const response = await options.fetch(upstreamUrl(baseUrl, path), {
         method: "GET",
-        headers: withCallerService({ Accept: "application/json", "X-Request-Id": newRequestId() }),
+        headers: withCallerService({ Accept: "application/json", [REQUEST_ID_HEADER]: requestIdForCall() }),
         signal,
         redirect: "manual",
         cache: "no-store",

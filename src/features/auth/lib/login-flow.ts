@@ -20,6 +20,7 @@ import { isAllowedOrigin } from "@/features/auth/lib/origin";
 import type { RateLimiter } from "@/features/auth/lib/rate-limit";
 import { issueSessionToken } from "@/features/auth/lib/session";
 import type { TemporaryLockout } from "@/features/auth/lib/temporary-lockout";
+import { newRequestId, runWithRequestId } from "@/shared/lib/request-scope";
 import type {
   AppLogger, AttemptRecordBody, AttemptVerdict, Clock, PasswordVerifier, RejectedAttemptBody, RejectionReason,
 } from "@/features/auth/lib/types";
@@ -200,7 +201,7 @@ export function createLoginFlow(dependencies: LoginFlowDependencies): LoginFlow 
       flushExpiredUnrecordedCounts();
       if (replayInFlight !== null) return;   // 도는 중이면 그 실행이 끝날 때 다시 건다
       if (attemptQueue.size() === 0) return; // 비었으면 멈춘다
-      startReplay("replay-timer");
+      startReplay();
     }, REPLAY_INTERVAL_MILLISECONDS);
   };
 
@@ -232,10 +233,13 @@ export function createLoginFlow(dependencies: LoginFlowDependencies): LoginFlow 
     }
   };
 
-  /** 관측 서버가 응답했으면 쌓인 기록을 재전송한다(한 번에 하나만 돈다). 현재 로그인 판정과는 무관. */
-  const startReplay = (requestId: string) => {
+  /** 관측 서버가 응답했으면 쌓인 기록을 재전송한다(한 번에 하나만 돈다). 현재 로그인 판정과는 무관.
+   * 한 바퀴 = 새 추적 ID 의 범위(통신 규약 §1.2 — 들어온 요청 없이 시작되는 호출): 그 바퀴의 호출 · 잠금 알림 · 로그 줄이 그 값이다.
+   * 대기열을 채운 요청 · 그때 로그인하는 요청의 ID 를 싣지 않고, 다시 건 타이머가 앞 바퀴의 값을 잇지 않는다(바퀴마다 새로 연다). */
+  const startReplay = () => {
     if (replayInFlight !== null || attemptQueue.size() === 0) return;
-    replayInFlight = (async () => {
+    const requestId = newRequestId();
+    replayInFlight = runWithRequestId(requestId, async () => {
       try {
         const discardStatuses = new Set<number>();
         // 관측 서버가 422(본문 자체가 틀림 — 다시 보내도 같다)를 준 항목만 버린다. 그 밖의 실패는 남겨 다음에 다시 보낸다.
@@ -273,7 +277,7 @@ export function createLoginFlow(dependencies: LoginFlowDependencies): LoginFlow 
         replayInFlight = null;
         scheduleReplay();   // 남은 항목(실패 · 도는 중에 들어온 것)이 있으면 다음 주기에 다시
       }
-    })();
+    });
   };
 
   /** 자격 검증 전 거절의 기록 — 창당 첫 1건만 관측 서버에, 나머지는 건수만 앱 로그에. */
@@ -291,7 +295,7 @@ export function createLoginFlow(dependencies: LoginFlowDependencies): LoginFlow 
         noteObserveCall(recorded.ok);
         if (recorded.ok) {
           log(requestId, `login:${reason} recorded=true`);
-          startReplay(requestId);
+          startReplay();
         } else {
           log(requestId, `login:${reason} recorded=false observe=${recorded.reason}`, "warning");
           enqueueRecord(requestId, { kind: "rejected", body });
@@ -361,7 +365,7 @@ export function createLoginFlow(dependencies: LoginFlowDependencies): LoginFlow 
         temporaryRestriction = false;
         // 관측 서버가 허용한 성공은 임시 제한의 메모리 횟수도 0 으로(세부 3)
         if (credentialOk && verdict.allowed && !verdict.lockStarted) temporaryLockout.reset();
-        startReplay(requestId);
+        startReplay();
       } else {
         verdict = temporaryLockout.decide(credentialOk);
         temporaryRestriction = true;

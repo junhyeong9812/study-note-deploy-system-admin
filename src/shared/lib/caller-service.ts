@@ -3,7 +3,7 @@
  * - 값은 코드의 상수 `admin`(소문자) — 설정(`SERVER_NAME` 등)이나 들어온 요청의 `X-Caller-Service` 에서 읽지 않는다. 호출마다 **정확히 하나**.
  * - 바깥(GitHub · Redis · Claude 실행 자리 — 규약의 목록에 없고 앞에 nginx 가 없다)에는 싣지 않는다.
  * - 싣는 자리: 공용 getUpstream(기본으로 싣는다 — 바깥으로 가는 호출만 ourService: false 로 끈다)과 직접 fetch 하는 클라이언트(관측 서버의 로그인 판정 ·
- *   알림 서버의 사건 · 관측 서버의 자원 · 의존 상태) — 모두 withCallerService 로. 서버 쪽 코드만 가져온다(브라우저 쪽 파일은 가져오지 않는다). */
+ *   알림 서버의 사건 · 관측 서버의 자원 · 의존 상태 · ci-cd 마스터의 재배포 접수) — 모두 withCallerService 로. 서버 쪽 코드만 가져온다(브라우저 쪽 파일은 가져오지 않는다). */
 export const CALLER_SERVICE_HEADER = "X-Caller-Service";
 export const ADMIN_CALLER_SERVICE = "admin";
 

@@ -1,9 +1,10 @@
 /** 다른 서버 GET 호출 한 번 — 화면 넷의 lib 클라이언트가 함께 쓴다(순수: 설정·비밀값을 읽지 않는다. 비밀 헤더는 부르는 쪽이 준다).
  * 본문까지 5초 기한 안에서 읽는다(머리글만 주고 본문을 끝내지 않는 서버도 5초에 끊긴다). 비밀값을 싣는 요청이 있으므로 리다이렉트를 따라가지 않는다.
  * 예외 · 오류 본문의 글자는 돌려주지 않는다 — 연결 실패 · 시간 초과는 고정 이유만, 응답은 상태 코드와 해석한 JSON(또는 해석 불가)만.
- * 우리 서비스로 가는 호출에는 `X-Caller-Service: admin` 을 싣는다(⑬ T4b — 바깥은 ourService: false). */
+ * 우리 서비스로 가는 호출에는 `X-Caller-Service: admin`(⑬ T4b)과 그 요청의 `X-Request-Id`(⑬ T2g — request-scope)를 싣는다(바깥은 ourService: false — 둘 다 싣지 않는다). */
 import type { FetchLike, TimeoutSignalFactory } from "@/features/auth/lib/types";
 import { withCallerService } from "@/shared/lib/caller-service";
+import { withRequestId } from "@/shared/lib/request-scope";
 import { UPSTREAM_TIMEOUT_MILLISECONDS, upstreamFailure, type UpstreamFailure } from "@/shared/lib/upstream-result";
 
 export interface UpstreamGetOptions {
@@ -12,7 +13,7 @@ export interface UpstreamGetOptions {
   /** 이 호출에만 싣는 머리글(비밀 헤더 포함) */
   headers?: Record<string, string>;
   /** 받는 쪽이 우리 서비스인가(⑬ T4b — 기본 true: `X-Caller-Service: admin` 을 싣는다). 바깥(우리 서비스가 아닌 곳)으로 가는 호출은 반드시 false 로 끈다
-   * — GitHub(deploy-detail/lib/github-client) · 다른 브랜치의 Claude 실행 자리 클라이언트 포함. */
+   * — GitHub(deploy-detail/lib/github-client) · Claude 실행 자리(claude-usage/lib/claude-runner-client). */
   ourService?: boolean;
 }
 
@@ -49,7 +50,7 @@ export async function getUpstream(url: string, options: UpstreamGetOptions): Pro
       method: "GET",
       headers: options.ourService === false
         ? { Accept: "application/json", ...(options.headers ?? {}) }
-        : withCallerService({ Accept: "application/json", ...(options.headers ?? {}) }),
+        : withRequestId(withCallerService({ Accept: "application/json", ...(options.headers ?? {}) })),
       signal,
       redirect: "manual",
       cache: "no-store",

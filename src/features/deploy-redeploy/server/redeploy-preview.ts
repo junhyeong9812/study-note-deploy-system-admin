@@ -24,6 +24,8 @@ import { INCIDENT_ACTION_TEXT, incidentActionServiceOf, incidentActionTargets, t
 import { lookupIncidentForAction } from "@/features/incidents/lib/incidents-screen";
 import { readServerConfig, sessionSigningKey, type ServerConfig } from "@/shared/config/server-config";
 import { log } from "@/shared/lib/logger";
+import { inRequestScope } from "@/shared/lib/request-id";
+import { currentRequestId } from "@/shared/lib/request-scope";
 import { searchParamsInputFromUrl } from "@/shared/lib/query-input";
 import { invalidInputOf, screenDataResponse, upstreamFailureLogLine } from "@/shared/lib/screen-responses";
 import { isHttpBaseUrl } from "@/shared/lib/upstream-fetch";
@@ -94,7 +96,7 @@ export async function resolveIncidentAction(config: ServerConfig, request: Omit<
     deployMasterUrl: config.deployMasterUrl, deploySecret: config.deploySecret, fetch: fetchUpstream, now: () => Date.now(),
     logFailure: (cell, failure) => {
       const logLine = upstreamFailureLogLine("deploy-redeploy", `incident:${cell}`, failure);
-      if (logLine !== null) void log("screen-deploy-redeploy", logLine, "warning");
+      if (logLine !== null) void log(currentRequestId(), logLine, "warning");
     },
   }, request.incidentId);
   if (found.kind === "closed") return { ok: false, reason: "incident_closed", text: REDEPLOY_INCIDENT_TEXT.closed };
@@ -152,7 +154,7 @@ async function buildRedeployPreviewView(searchParams: SearchParamsInput): Promis
   }
   for (const [cell, result] of cells) {
     const logLine = upstreamFailureLogLine("deploy-redeploy", cell, result);
-    if (logLine !== null) void log("screen-deploy-redeploy", logLine, "warning");
+    if (logLine !== null) void log(currentRequestId(), logLine, "warning");
   }
   const submission = submissionFor(query, preview, config, incident);
   return incident === undefined ? { query, service: query.service, preview, submission } : { query, service: query.service, preview, submission, incident };
@@ -160,15 +162,19 @@ async function buildRedeployPreviewView(searchParams: SearchParamsInput): Promis
 
 /** 화면용 — 세션이 없으면 requireSession 이 /login 으로 보낸다(다른 서버를 한 번도 부르지 않는다). */
 export async function loadRedeployPreview(searchParams: SearchParamsInput): Promise<RedeployPreviewView> {
-  await requireSession();
-  return buildRedeployPreviewView(searchParams);
+  return inRequestScope(async () => {
+    await requireSession();
+    return buildRedeployPreviewView(searchParams);
+  });
 }
 
 /** 데이터 경로용(Route Handler 의 GET 이 그대로 돌려준다) — 세션이 없으면 401(requireApiSession).
  * 입력이 틀리면 422 `{success:false,error:{code:"invalid_input",field}}`, 그 밖은 200 `{success:true,data:RedeployPreviewView}`. 언제나 no-store. */
 export async function redeployPreviewResponse(request: Request): Promise<Response> {
-  const session = await requireApiSession();
-  if (session instanceof Response) return session;
-  const view = await buildRedeployPreviewView(searchParamsInputFromUrl(new URL(request.url)));
-  return screenDataResponse(view, invalidInputOf(view.preview));
+  return inRequestScope(async () => {
+    const session = await requireApiSession();
+    if (session instanceof Response) return session;
+    const view = await buildRedeployPreviewView(searchParamsInputFromUrl(new URL(request.url)));
+    return screenDataResponse(view, invalidInputOf(view.preview));
+  });
 }

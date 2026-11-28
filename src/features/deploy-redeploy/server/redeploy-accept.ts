@@ -8,6 +8,8 @@
  * 응답: 접수됨(새 · duplicate) 303 → 배포 이력의 그 배포 상세 / 그 밖의 실패는 HTML(no-store — 스크립트 없음).
  * 접수 여부를 모르면(10초 기한 · 보낸 뒤 끊김 등) 504 와 같은 확인 값의 다시 보내기 폼 — 새 요청 ID 를 만들지 않는다(master 의 멱등 접수가 같은 배포로 답한다).
  * 로그: 접수 한 건에 한 줄 `redeploy:<결과> service=… commit=<7자> account=…` — 비밀번호 · 확인 값 · 비밀값 · 해시는 로그 · 응답 · 주소 어디에도 없다.
+ *   줄의 ID 자리: 확인 값을 본 뒤에는 그 접수 번호(일의 ID — 배포 이력의 그 배포와 같은 값), 그 앞의 거절은 그 요청의 추적 ID.
+ * 그 요청의 추적 ID 범위에서 돈다(⑬ T2g) — 관측 서버의 판정 · 마스터의 이력 · 접수 호출의 `X-Request-Id` 가 그 값 하나(접수 번호는 본문의 `request_id` 에만 — 규약 1.2).
  * 문제의 조치(명세 ⑫ §24 · §25)는 같은 길이다 — 넓어지는 것은:
  * - 칸 incident · action(둘 다 없거나 둘 다 하나 · isIncidentId · redeploy|rollback)이 확인 값의 서명에 묶여 있어야 한다.
  * - 확인 값 다음 · 비밀번호 전에 **다시 정한다**(읽기는 그 종류를 가르는 목록의 출처 하나 + 그 서비스의 이력 · 전체 기한 8초 — 넘으면 409 recheck_timeout):
@@ -40,6 +42,8 @@ import { DEPLOY_HISTORY_DEFAULT_LIMIT } from "@/features/deploys/lib/deploy-hist
 import { deploysHref } from "@/features/deploys/ui/deploys-address";
 import { readServerConfig, sessionSigningKey } from "@/shared/config/server-config";
 import { log } from "@/shared/lib/logger";
+import { inRequestScope } from "@/shared/lib/request-id";
+import { currentRequestId } from "@/shared/lib/request-scope";
 import { NO_STORE_HEADERS, errorResponse } from "@/shared/lib/responses";
 import { isHttpBaseUrl } from "@/shared/lib/upstream-fetch";
 
@@ -90,7 +94,7 @@ interface LogSubject {
 function logOutcome(subject: LogSubject, outcome: string, level: "info" | "warning" = "warning") {
   const commit = subject.commitSha === null ? "-" : subject.commitSha.slice(0, COMMIT_PREFIX_LENGTH);
   const incident = subject.incidentId ? ` incident=${subject.incidentId}` : "";
-  void log(subject.requestId ?? "redeploy", `redeploy:${outcome} service=${subject.service ?? "-"} commit=${commit} account=${subject.account}${incident}`, level);
+  void log(subject.requestId ?? currentRequestId(), `redeploy:${outcome} service=${subject.service ?? "-"} commit=${commit} account=${subject.account}${incident}`, level);
 }
 
 /** 다시 정하기에 절대 기한을 건다 — setTimeout 하나(끝나면 지운다). 기한이 먼저면 "timeout" 이고 늦게 끝난 결과는 버린다. */
@@ -249,105 +253,107 @@ function responseForAccept(result: RedeployAcceptResult, form: AcceptForm, subje
 }
 
 export async function redeployAcceptResponse(request: Request): Promise<Response> {
-  const config = readServerConfig();
-  const allowedAccount = requestedByFor(config.adminUser) !== null;
-  const subject: LogSubject = { account: allowedAccount ? config.adminUser : "(not_allowed)", service: null, commitSha: null, requestId: null };
+  return inRequestScope(async () => {
+    const config = readServerConfig();
+    const allowedAccount = requestedByFor(config.adminUser) !== null;
+    const subject: LogSubject = { account: allowedAccount ? config.adminUser : "(not_allowed)", service: null, commitSha: null, requestId: null };
 
-  // 1 출처 — 로그인 · 로그아웃과 같은 검사(Referer 로 갈음하지 않는다)
-  if (!isAllowedOrigin(request.headers.get("origin"), config.adminOrigin)) {
-    logOutcome(subject, "origin_rejected");
-    return errorResponse(403, "origin_rejected");
-  }
-  // 2 세션
-  const session = await requireApiSession();
-  if (session instanceof Response) {
-    logOutcome(subject, "unauthenticated");
-    return session;
-  }
-  // 3 속도 제한 — 계정당
-  if (!accountRateLimiter.hit(config.adminUser).allowed) {
-    logOutcome(subject, "rate_limited");
-    return failurePage(429, "접수 시도가 너무 잦습니다", "잠시 뒤 다시 시도하세요(1분에 5번까지).", null);
-  }
-  // 4 입력의 꼴
-  const form = await readAcceptForm(request);
-  if (form === null) {
-    logOutcome(subject, "malformed");
-    return failurePage(400, "요청의 꼴이 맞지 않습니다", "확인 화면의 폼으로만 접수할 수 있습니다. 확인 화면을 다시 열어 주세요.", null);
-  }
-  subject.service = form.query.service;
-  subject.commitSha = form.query.commitSha;
-  subject.incidentId = form.incidentId ?? null;
-  // 5 계정 이름 — requested_by 로 쓸 수 없으면 master 를 부르지 않는다(문제의 조치면 `admin:<계정>:incident:<ID>` 가 128자 안이어야 한다)
-  const incidentId = form.incidentId ?? null;
-  if (incidentId !== null && requestedByFor(config.adminUser) !== null && incidentRequestedByFor(config.adminUser, incidentId) === null) {
-    logOutcome(subject, "incident_account_too_long");
-    return failurePage(422, "이 문제의 조치를 접수하지 않았습니다", REDEPLOY_INCIDENT_TEXT.accountTooLong, form.query, "", incidentOf(form));
-  }
-  const requestedBy = incidentId === null ? requestedByFor(config.adminUser) : incidentRequestedByFor(config.adminUser, incidentId);
-  if (requestedBy === null) {
-    logOutcome(subject, "account_not_allowed");
-    return failurePage(422, "이 계정 이름으로는 배포를 일으킬 수 없습니다", "접수에 남기는 이름(admin:계정)은 영문 · 숫자 · . _ - 만 받습니다. 계정 이름(ADMIN_USER)을 바꾼 뒤 다시 접수하세요.", form.query, "", incidentOf(form));
-  }
-  // 6 확인 값 — 틀리면 비밀번호를 확인하지 않는다
-  const check = verifyRedeployConfirmation(form.confirmation, sessionSigningKey(),
-    { service: form.query.service, commitSha: form.query.commitSha, account: config.adminUser, incidentId, action: form.action ?? null }, Date.now());
-  if (!check.ok) {
-    logOutcome(subject, `confirmation_${check.reason}`);
-    if (check.reason === "expired") return failurePage(410, "확인 화면을 다시 열어 주세요", "확인 화면은 연 뒤 5분 동안만 쓸 수 있습니다.", form.query, "", incidentOf(form));
-    return failurePage(400, "확인 값이 맞지 않습니다", "확인 화면에서 고른 서비스 · 커밋과 다르거나 값이 바뀌었습니다. 확인 화면을 다시 열어 주세요.", form.query, "", incidentOf(form));
-  }
-  subject.requestId = check.requestId;
-  // 6-1 다시 정하기(문제 모드만) — 확인 화면 뒤에 배포 · 문제가 바뀌었으면 서명한 판으로 가지 않는다. 비밀번호를 보기 전에(잠금 횟수를 쓰지 않는다)
-  //     전체에 기한 INCIDENT_RECHECK_TIMEOUT_MILLISECONDS(절대) — 넘으면 409 recheck_timeout, 늦게 끝난 결과는 버린다(접수로 이어지지 않는다)
-  const incident = incidentOf(form);
-  if (incident !== null) {
-    const resolved = await withinRecheckDeadline(resolveIncidentAction(config, { service: form.query.service, incidentId: incident.incidentId, action: incident.action }));
-    if (resolved === "timeout") {
-      logOutcome(subject, "incident_changed reason=recheck_timeout");
-      return failurePage(409, REDEPLOY_INCIDENT_TEXT.changed, REDEPLOY_INCIDENT_TEXT.recheckTimeout, form.query, "", incident);
+    // 1 출처 — 로그인 · 로그아웃과 같은 검사(Referer 로 갈음하지 않는다)
+    if (!isAllowedOrigin(request.headers.get("origin"), config.adminOrigin)) {
+      logOutcome(subject, "origin_rejected");
+      return errorResponse(403, "origin_rejected");
     }
-    if (!resolved.ok || !isSameCommit(resolved.commitSha, form.query.commitSha)) {
-      logOutcome(subject, `incident_changed reason=${resolved.ok ? "target_changed" : resolved.reason}`);
-      return failurePage(409, REDEPLOY_INCIDENT_TEXT.changed, resolved.ok ? "확인 화면의 판과 지금 정한 판이 다릅니다." : resolved.text, form.query, "", incident);
+    // 2 세션
+    const session = await requireApiSession();
+    if (session instanceof Response) {
+      logOutcome(subject, "unauthenticated");
+      return session;
     }
-  }
-  // 7 비밀번호 — 로그인 흐름 그대로(잠금 판정 · 시도 기록 · 임시 제한). 흐름이 만든 세션 토큰은 쓰지 않는다(쿠키를 놓지 않는다).
-  const { flow } = loginService();
-  if (flow === null) {
-    logOutcome(subject, "password_unavailable");
-    return failurePage(401, "비밀번호를 확인할 수 없습니다", "로그인 설정이 없어 비밀번호를 확인하지 못했습니다.", form.query, "", incidentOf(form));
-  }
-  const login = await flow.login({
-    id: config.adminUser, password: form.password, ip: clientIpOrUnknown(request.headers),
-    userAgent: request.headers.get("user-agent") ?? "", origin: request.headers.get("origin"), requestId: check.requestId,
+    // 3 속도 제한 — 계정당
+    if (!accountRateLimiter.hit(config.adminUser).allowed) {
+      logOutcome(subject, "rate_limited");
+      return failurePage(429, "접수 시도가 너무 잦습니다", "잠시 뒤 다시 시도하세요(1분에 5번까지).", null);
+    }
+    // 4 입력의 꼴
+    const form = await readAcceptForm(request);
+    if (form === null) {
+      logOutcome(subject, "malformed");
+      return failurePage(400, "요청의 꼴이 맞지 않습니다", "확인 화면의 폼으로만 접수할 수 있습니다. 확인 화면을 다시 열어 주세요.", null);
+    }
+    subject.service = form.query.service;
+    subject.commitSha = form.query.commitSha;
+    subject.incidentId = form.incidentId ?? null;
+    // 5 계정 이름 — requested_by 로 쓸 수 없으면 master 를 부르지 않는다(문제의 조치면 `admin:<계정>:incident:<ID>` 가 128자 안이어야 한다)
+    const incidentId = form.incidentId ?? null;
+    if (incidentId !== null && requestedByFor(config.adminUser) !== null && incidentRequestedByFor(config.adminUser, incidentId) === null) {
+      logOutcome(subject, "incident_account_too_long");
+      return failurePage(422, "이 문제의 조치를 접수하지 않았습니다", REDEPLOY_INCIDENT_TEXT.accountTooLong, form.query, "", incidentOf(form));
+    }
+    const requestedBy = incidentId === null ? requestedByFor(config.adminUser) : incidentRequestedByFor(config.adminUser, incidentId);
+    if (requestedBy === null) {
+      logOutcome(subject, "account_not_allowed");
+      return failurePage(422, "이 계정 이름으로는 배포를 일으킬 수 없습니다", "접수에 남기는 이름(admin:계정)은 영문 · 숫자 · . _ - 만 받습니다. 계정 이름(ADMIN_USER)을 바꾼 뒤 다시 접수하세요.", form.query, "", incidentOf(form));
+    }
+    // 6 확인 값 — 틀리면 비밀번호를 확인하지 않는다
+    const check = verifyRedeployConfirmation(form.confirmation, sessionSigningKey(),
+      { service: form.query.service, commitSha: form.query.commitSha, account: config.adminUser, incidentId, action: form.action ?? null }, Date.now());
+    if (!check.ok) {
+      logOutcome(subject, `confirmation_${check.reason}`);
+      if (check.reason === "expired") return failurePage(410, "확인 화면을 다시 열어 주세요", "확인 화면은 연 뒤 5분 동안만 쓸 수 있습니다.", form.query, "", incidentOf(form));
+      return failurePage(400, "확인 값이 맞지 않습니다", "확인 화면에서 고른 서비스 · 커밋과 다르거나 값이 바뀌었습니다. 확인 화면을 다시 열어 주세요.", form.query, "", incidentOf(form));
+    }
+    subject.requestId = check.requestId;
+    // 6-1 다시 정하기(문제 모드만) — 확인 화면 뒤에 배포 · 문제가 바뀌었으면 서명한 판으로 가지 않는다. 비밀번호를 보기 전에(잠금 횟수를 쓰지 않는다)
+    //     전체에 기한 INCIDENT_RECHECK_TIMEOUT_MILLISECONDS(절대) — 넘으면 409 recheck_timeout, 늦게 끝난 결과는 버린다(접수로 이어지지 않는다)
+    const incident = incidentOf(form);
+    if (incident !== null) {
+      const resolved = await withinRecheckDeadline(resolveIncidentAction(config, { service: form.query.service, incidentId: incident.incidentId, action: incident.action }));
+      if (resolved === "timeout") {
+        logOutcome(subject, "incident_changed reason=recheck_timeout");
+        return failurePage(409, REDEPLOY_INCIDENT_TEXT.changed, REDEPLOY_INCIDENT_TEXT.recheckTimeout, form.query, "", incident);
+      }
+      if (!resolved.ok || !isSameCommit(resolved.commitSha, form.query.commitSha)) {
+        logOutcome(subject, `incident_changed reason=${resolved.ok ? "target_changed" : resolved.reason}`);
+        return failurePage(409, REDEPLOY_INCIDENT_TEXT.changed, resolved.ok ? "확인 화면의 판과 지금 정한 판이 다릅니다." : resolved.text, form.query, "", incident);
+      }
+    }
+    // 7 비밀번호 — 로그인 흐름 그대로(잠금 판정 · 시도 기록 · 임시 제한). 흐름이 만든 세션 토큰은 쓰지 않는다(쿠키를 놓지 않는다).
+    const { flow } = loginService();
+    if (flow === null) {
+      logOutcome(subject, "password_unavailable");
+      return failurePage(401, "비밀번호를 확인할 수 없습니다", "로그인 설정이 없어 비밀번호를 확인하지 못했습니다.", form.query, "", incidentOf(form));
+    }
+    const login = await flow.login({
+      id: config.adminUser, password: form.password, ip: clientIpOrUnknown(request.headers),
+      userAgent: request.headers.get("user-agent") ?? "", origin: request.headers.get("origin"), requestId: check.requestId,
+    });
+    if (login.kind !== "success") {
+      logOutcome(subject, `password_${login.kind}`);
+      if (login.kind === "locked") return failurePage(423, "잠겨 있습니다", "비밀번호를 여러 번 틀려 잠겼습니다. 로그인과 같은 잠금입니다 — 풀린 뒤에 다시 접수하세요.", form.query, "", incidentOf(form));
+      if (login.kind === "rate_limited") return failurePage(429, "비밀번호 확인이 너무 잦습니다", "잠시 뒤 다시 시도하세요.", form.query, "", incidentOf(form));
+      return failurePage(401, "비밀번호가 맞지 않습니다", "로그인 비밀번호를 다시 넣어 주세요. 틀린 입력은 로그인의 잠금 횟수에 듭니다.", form.query, "", incidentOf(form));
+    }
+    // 8 이력 재확인 — 그 서비스의 성공한 버전인가(배포 이력만 읽는다 — 커밋 제목을 얻는 git 조회는 하지 않는다)
+    if (!isHttpBaseUrl(config.deployMasterUrl) || config.deploySecret.length === 0) {
+      logOutcome(subject, "history_not_configured");
+      return failurePage(502, "배포 이력을 확인하지 못해 접수하지 않았습니다", "배포 서버 설정이 없습니다.", form.query, "", incidentOf(form));
+    }
+    const masterOptions = { baseUrl: config.deployMasterUrl, secret: config.deploySecret, fetch: (input: string, init: RequestInit) => fetch(input, init) };
+    const history = await createDeployHistoryClient(masterOptions).listDeployments({ service: form.query.service, limit: DEPLOY_VERSIONS_HISTORY_LIMIT });
+    if (!history.ok) {
+      logOutcome(subject, `history_unavailable upstream=${history.reason}`);
+      return failurePage(502, "배포 이력을 확인하지 못해 접수하지 않았습니다", `배포 서버: ${history.message}`, form.query, "", incidentOf(form));
+    }
+    const deployable = history.value.some((deployment) => deployment.service === form.query.service && deployment.state === "succeeded"
+      && isSameCommit(deployment.commitSha, form.query.commitSha));
+    if (!deployable) {
+      logOutcome(subject, "not_deployable");
+      return failurePage(409, "배포된 적 없는 버전은 고를 수 없습니다", "이 커밋은 그 서비스의 성공한 배포 이력(최근 200건)에 없습니다.", form.query, "", incidentOf(form));
+    }
+    // 9 master 접수 한 번
+    const result = await createRedeployAcceptClient(masterOptions).accept({
+      service: form.query.service, commitSha: form.query.commitSha, requestId: check.requestId, requestedBy,
+    });
+    return responseForAccept(result, form, subject);
   });
-  if (login.kind !== "success") {
-    logOutcome(subject, `password_${login.kind}`);
-    if (login.kind === "locked") return failurePage(423, "잠겨 있습니다", "비밀번호를 여러 번 틀려 잠겼습니다. 로그인과 같은 잠금입니다 — 풀린 뒤에 다시 접수하세요.", form.query, "", incidentOf(form));
-    if (login.kind === "rate_limited") return failurePage(429, "비밀번호 확인이 너무 잦습니다", "잠시 뒤 다시 시도하세요.", form.query, "", incidentOf(form));
-    return failurePage(401, "비밀번호가 맞지 않습니다", "로그인 비밀번호를 다시 넣어 주세요. 틀린 입력은 로그인의 잠금 횟수에 듭니다.", form.query, "", incidentOf(form));
-  }
-  // 8 이력 재확인 — 그 서비스의 성공한 버전인가(배포 이력만 읽는다 — 커밋 제목을 얻는 git 조회는 하지 않는다)
-  if (!isHttpBaseUrl(config.deployMasterUrl) || config.deploySecret.length === 0) {
-    logOutcome(subject, "history_not_configured");
-    return failurePage(502, "배포 이력을 확인하지 못해 접수하지 않았습니다", "배포 서버 설정이 없습니다.", form.query, "", incidentOf(form));
-  }
-  const masterOptions = { baseUrl: config.deployMasterUrl, secret: config.deploySecret, fetch: (input: string, init: RequestInit) => fetch(input, init) };
-  const history = await createDeployHistoryClient(masterOptions).listDeployments({ service: form.query.service, limit: DEPLOY_VERSIONS_HISTORY_LIMIT });
-  if (!history.ok) {
-    logOutcome(subject, `history_unavailable upstream=${history.reason}`);
-    return failurePage(502, "배포 이력을 확인하지 못해 접수하지 않았습니다", `배포 서버: ${history.message}`, form.query, "", incidentOf(form));
-  }
-  const deployable = history.value.some((deployment) => deployment.service === form.query.service && deployment.state === "succeeded"
-    && isSameCommit(deployment.commitSha, form.query.commitSha));
-  if (!deployable) {
-    logOutcome(subject, "not_deployable");
-    return failurePage(409, "배포된 적 없는 버전은 고를 수 없습니다", "이 커밋은 그 서비스의 성공한 배포 이력(최근 200건)에 없습니다.", form.query, "", incidentOf(form));
-  }
-  // 9 master 접수 한 번
-  const result = await createRedeployAcceptClient(masterOptions).accept({
-    service: form.query.service, commitSha: form.query.commitSha, requestId: check.requestId, requestedBy,
-  });
-  return responseForAccept(result, form, subject);
 }

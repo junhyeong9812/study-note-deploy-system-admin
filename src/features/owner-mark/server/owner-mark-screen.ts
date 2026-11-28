@@ -4,7 +4,8 @@
  * - loadOwnerMarkScreen(): 세션이 없으면 /login. 설정의 판정(checkOwnerMarkSettings) + 이 브라우저의 판정(verifyOwnerMark — 서버의 시계).
  * - ownerMarkScreenResponse(request): GET /api/owner-mark — 세션이 없으면 401, 그 밖은 200 `{success:true,data:OwnerMarkScreen}`(no-store).
  * - 열쇠는 OWNER_COOKIE_SECRET 의 글자 **그대로**(다듬지 않는다 — server-config 의 ownerCookieSecret). 도메인은 앞뒤 공백을 다듬는다.
- * - 화면 데이터에 쿠키의 값 · 서명 · 열쇠가 없다(판정의 낱말과 시각만). */
+ * - 화면 데이터에 쿠키의 값 · 서명 · 열쇠가 없다(판정의 낱말과 시각만).
+ * - 다른 진입과 같이 그 요청의 추적 ID 범위에서 돈다(⑬ T2g — 지금은 부르는 서버도 남기는 로그 줄도 없다). */
 import "server-only";
 import { headers } from "next/headers";
 import { requireApiSession, requireSession } from "@/features/auth/server/require-session";
@@ -12,6 +13,7 @@ import {
   checkOwnerMarkSettings, ownerCookieValuesFromHeader, verifyOwnerMark, type OwnerMarkSettings, type OwnerMarkVerdict,
 } from "@/features/owner-mark/lib/owner-mark";
 import { readServerConfig } from "@/shared/config/server-config";
+import { inRequestScope } from "@/shared/lib/request-id";
 import { screenDataResponse } from "@/shared/lib/screen-responses";
 
 export interface OwnerMarkScreen {
@@ -30,12 +32,16 @@ async function buildOwnerMarkScreen(): Promise<OwnerMarkScreen> {
 }
 
 export async function loadOwnerMarkScreen(): Promise<OwnerMarkScreen> {
-  await requireSession();
-  return buildOwnerMarkScreen();
+  return inRequestScope(async () => {
+    await requireSession();
+    return buildOwnerMarkScreen();
+  });
 }
 
 export async function ownerMarkScreenResponse(_request: Request): Promise<Response> {
-  const session = await requireApiSession();
-  if (session instanceof Response) return session;
-  return screenDataResponse(await buildOwnerMarkScreen(), null);
+  return inRequestScope(async () => {
+    const session = await requireApiSession();
+    if (session instanceof Response) return session;
+    return screenDataResponse(await buildOwnerMarkScreen(), null);
+  });
 }

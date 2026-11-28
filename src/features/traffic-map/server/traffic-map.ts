@@ -25,6 +25,7 @@ import { searchParamsInputFromUrl } from "@/shared/lib/query-input";
 import { upstreamFailureLogLine } from "@/shared/lib/screen-responses";
 import { isHttpBaseUrl } from "@/shared/lib/upstream-fetch";
 import { upstreamFailure, type SearchParamsInput, type UpstreamResult } from "@/shared/lib/upstream-result";
+import { currentRequestId, newRequestId, runWithRequestId } from "@/shared/lib/request-scope";
 
 /** 연결마다 주석 줄(`: keep-alive`)을 보내는 간격 — 어드민 nginx 의 읽기 시간 제한 30초보다 짧게(규약 3.3). */
 export const TRAFFIC_STREAM_HEARTBEAT_MILLISECONDS = 15_000;
@@ -50,21 +51,23 @@ export interface TrafficStreamOptions {
   now?: () => number;
 }
 
-/** 허브의 조회 한 번 — 설정을 그때 읽는다(비었거나 주소가 http(s) 가 아니면 not_configured · 부르지 않는다). 실패는 앱 로그 1줄. */
+/** 허브의 조회 한 번(들어온 요청 없이 시작되는 호출 — 바퀴마다 새 추적 ID 의 범위: 호출과 실패 로그 줄이 그 값, 구독자의 값을 물려받지 않는다) — 설정을 그때 읽는다(비었거나 주소가 http(s) 가 아니면 not_configured · 부르지 않는다). 실패는 앱 로그 1줄. */
 async function loadTrafficMap(range: TrafficMapRange): Promise<UpstreamResult<TrafficMapView>> {
-  const config = readServerConfig();
-  let result: UpstreamResult<TrafficMapView>;
-  if (!isHttpBaseUrl(config.observeUrl) || config.observeSecret.length === 0) {
-    result = upstreamFailure("not_configured");
-  } else {
-    const client = createTrafficMapClient({ baseUrl: config.observeUrl, secret: config.observeSecret, fetch: (input, init) => fetch(input, init) });
-    const window = trafficMapWindow(range, Date.now());
-    const snapshot = await client.trafficMap(window.from, window.to);
-    result = snapshot.ok ? { ok: true, value: buildTrafficMapView(snapshot.value) } : snapshot;
-  }
-  const failureLogLine = upstreamFailureLogLine("traffic", "map", result);
-  if (failureLogLine !== null) void log("screen-traffic", failureLogLine, "warning");
-  return result;
+  return runWithRequestId(newRequestId(), async () => {
+    const config = readServerConfig();
+    let result: UpstreamResult<TrafficMapView>;
+    if (!isHttpBaseUrl(config.observeUrl) || config.observeSecret.length === 0) {
+      result = upstreamFailure("not_configured");
+    } else {
+      const client = createTrafficMapClient({ baseUrl: config.observeUrl, secret: config.observeSecret, fetch: (input, init) => fetch(input, init) });
+      const window = trafficMapWindow(range, Date.now());
+      const snapshot = await client.trafficMap(window.from, window.to);
+      result = snapshot.ok ? { ok: true, value: buildTrafficMapView(snapshot.value) } : snapshot;
+    }
+    const failureLogLine = upstreamFailureLogLine("traffic", "map", result);
+    if (failureLogLine !== null) void log(currentRequestId(), failureLogLine, "warning");
+    return result;
+  });
 }
 
 // 프로세스에 하나씩 — globalThis 에 둔다(개발 모드의 모듈 재로딩 · 라우트별 묶음 · instrumentation 의 묶음에서도 같은 인스턴스)
@@ -92,20 +95,23 @@ export function defaultTrafficDependencyHub(): TrafficDependencyHub {
 }
 
 /** 의존 허브의 조회 한 번 — 설정을 그때 읽는다(BACKEND_URL · LLM_URL · OBSERVE_URL — 비었거나 http(s) 가 아니면 그 서비스는 not_configured · 부르지 않는다).
- * 모름인 서비스마다 앱 로그 1줄 `screen:traffic cell=dependencies:<서비스> upstream=<까닭>`(log("screen-traffic", …, "warning")) — 끊김(DOWN) · 알리지 않음(not_reported)은
+ * 바퀴마다 새 추적 ID 의 범위(로그 줄의 ID — 세 경로의 호출은 의존 클라이언트가 호출마다 따로 새 값을 싣는다).
+ * 모름인 서비스마다 앱 로그 1줄 `screen:traffic cell=dependencies:<서비스> upstream=<까닭>`(그 범위의 ID · "warning") — 끊김(DOWN) · 알리지 않음(not_reported)은
  * 로그가 아니다. 줄에는 서비스 이름과 까닭의 낱말만(주소 · 비밀값 · 서비스가 준 detail 없음). */
 export async function loadTrafficDependencies(): Promise<DependencyLine[]> {
-  const config = readServerConfig();
-  const client = createDependencyClient({
-    backendUrl: config.backendUrl, llmUrl: config.llmUrl, observeUrl: config.observeUrl, fetch: (input, init) => fetch(input, init),
+  return runWithRequestId(newRequestId(), async () => {
+    const config = readServerConfig();
+    const client = createDependencyClient({
+      backendUrl: config.backendUrl, llmUrl: config.llmUrl, observeUrl: config.observeUrl, fetch: (input, init) => fetch(input, init),
+    });
+    const lines = await client.readDependencies();
+    const failedServices = new Map<string, string>();
+    for (const line of lines) {
+      if (line.state === "unknown" && line.reason !== "not_reported" && !failedServices.has(line.service)) failedServices.set(line.service, line.reason ?? "unknown");
+    }
+    for (const [service, reason] of failedServices) void log(currentRequestId(), `screen:traffic cell=dependencies:${service} upstream=${reason}`, "warning");
+    return lines;
   });
-  const lines = await client.readDependencies();
-  const failedServices = new Map<string, string>();
-  for (const line of lines) {
-    if (line.state === "unknown" && line.reason !== "not_reported" && !failedServices.has(line.service)) failedServices.set(line.service, line.reason ?? "unknown");
-  }
-  for (const [service, reason] of failedServices) void log("screen-traffic", `screen:traffic cell=dependencies:${service} upstream=${reason}`, "warning");
-  return lines;
 }
 
 /** 멈춤 신호를 물리는 이음매 — 기본은 process.once(signal, handler). 테스트는 가짜를 준다. */

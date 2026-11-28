@@ -25,6 +25,8 @@ import { errorResponse } from "@/shared/lib/responses";
 import { screenDataResponse, upstreamFailureLogLine } from "@/shared/lib/screen-responses";
 import { isHttpBaseUrl } from "@/shared/lib/upstream-fetch";
 import { upstreamFailure, type SearchParamsInput, type UpstreamResult } from "@/shared/lib/upstream-result";
+import { currentRequestId } from "@/shared/lib/request-scope";
+import { inRequestScope } from "@/shared/lib/request-id";
 
 /** 부를 때마다 설정의 토큰과 전역 fetch 로 GitHub 를 부르는 클라이언트(캐시 안쪽). */
 const currentGitHubClient = (): GitHubClient => createGitHubClient({
@@ -58,7 +60,7 @@ function logFailedCells(outcome: DeployDetailOutcome) {
   for (const [cell, result] of cells) {
     if (result === null) continue;
     const logLine = upstreamFailureLogLine("deploy-detail", cell, result);
-    if (logLine !== null) void log("screen-deploy-detail", logLine, "warning");
+    if (logLine !== null) void log(currentRequestId(), logLine, "warning");
   }
 }
 
@@ -78,20 +80,24 @@ async function buildOutcome(query: DeployDetailQuery): Promise<DeployDetailOutco
 
 /** 화면용 — 세션이 없으면 requireSession 이 /login 으로 보낸다(다른 서버를 한 번도 부르지 않는다). */
 export async function loadDeployDetail(searchParams: SearchParamsInput): Promise<DeployDetailOutcome> {
-  await requireSession();
-  const parsed = parseDeployDetailQuery(searchParams);
-  if (!parsed.ok) return { kind: "invalid_input", field: parsed.field ?? "" };
-  return buildOutcome(parsed.query);
+  return inRequestScope(async () => {
+    await requireSession();
+    const parsed = parseDeployDetailQuery(searchParams);
+    if (!parsed.ok) return { kind: "invalid_input", field: parsed.field ?? "" };
+    return buildOutcome(parsed.query);
+  });
 }
 
 /** 데이터 경로용(Route Handler 의 GET 이 그대로 돌려준다). */
 export async function deployDetailResponse(request: Request): Promise<Response> {
-  const session = await requireApiSession();
-  if (session instanceof Response) return session;
-  const parsed = parseDeployDetailQuery(searchParamsInputFromUrl(new URL(request.url)));
-  if (!parsed.ok) return screenDataResponse(null, parsed);
-  const outcome = await buildOutcome(parsed.query);
-  if (outcome.kind === "not_found") return errorResponse(404, "not_found");
-  if (outcome.kind === "invalid_input") return errorResponse(422, "invalid_input", { field: outcome.field });
-  return screenDataResponse(outcome.view, null);
+  return inRequestScope(async () => {
+    const session = await requireApiSession();
+    if (session instanceof Response) return session;
+    const parsed = parseDeployDetailQuery(searchParamsInputFromUrl(new URL(request.url)));
+    if (!parsed.ok) return screenDataResponse(null, parsed);
+    const outcome = await buildOutcome(parsed.query);
+    if (outcome.kind === "not_found") return errorResponse(404, "not_found");
+    if (outcome.kind === "invalid_input") return errorResponse(422, "invalid_input", { field: outcome.field });
+    return screenDataResponse(outcome.view, null);
+  });
 }

@@ -12,6 +12,8 @@ import { searchParamsInputFromUrl } from "@/shared/lib/query-input";
 import { invalidInputOf, screenDataResponse, upstreamFailureLogLine } from "@/shared/lib/screen-responses";
 import { isHttpBaseUrl } from "@/shared/lib/upstream-fetch";
 import { upstreamFailure, type SearchParamsInput, type UpstreamResult } from "@/shared/lib/upstream-result";
+import { currentRequestId } from "@/shared/lib/request-scope";
+import { inRequestScope } from "@/shared/lib/request-id";
 
 export interface LoginAttemptsScreenView {
   /** 입력이 틀렸으면 null — attempts 는 invalid_input(목록은 부르지 않는다). 잠금 상태는 입력과 무관하게 부른다. */
@@ -35,7 +37,7 @@ async function buildLoginAttemptsView(searchParams: SearchParamsInput): Promise<
   }
   for (const [cell, result] of [["attempts", attempts], ["lock", lock]] as const) {
     const logLine = upstreamFailureLogLine("login-attempts", cell, result);
-    if (logLine !== null) void log("screen-login-attempts", logLine, "warning");
+    if (logLine !== null) void log(currentRequestId(), logLine, "warning");
   }
   const query = parsed.ok ? parsed.query : null;
   return { query, attempts, lock, nextPageQuery: query !== null && attempts.ok ? nextLoginAttemptsPageQuery(query, attempts.value) : null };
@@ -43,18 +45,22 @@ async function buildLoginAttemptsView(searchParams: SearchParamsInput): Promise<
 
 /** 화면용 — 세션이 없으면 /login(다른 서버를 부르지 않는다). */
 export async function loadLoginAttempts(searchParams: SearchParamsInput): Promise<LoginAttemptsScreenView> {
-  await requireSession();
-  return buildLoginAttemptsView(searchParams);
+  return inRequestScope(async () => {
+    await requireSession();
+    return buildLoginAttemptsView(searchParams);
+  });
 }
 
 /** 데이터 경로용 — 세션이 없으면 401. 입력이 틀리면 422 `{success:false,error:{code:"invalid_input",field}}`(어떤 서버도 부르지 않는다), 그 밖은 200 `{success:true,data:LoginAttemptsScreenView}`. no-store. */
 export async function loginAttemptsResponse(request: Request): Promise<Response> {
-  const session = await requireApiSession();
-  if (session instanceof Response) return session;
-  const searchParams = searchParamsInputFromUrl(new URL(request.url));
-  // 데이터 경로는 입력이 틀리면 422 만 — 잠금 상태도 부르지 않는다(화면은 입력과 무관하게 잠금 상태를 보인다)
-  const parsed = parseLoginAttemptsQuery(searchParams, Date.now());
-  if (!parsed.ok) return screenDataResponse(null, parsed);
-  const view = await buildLoginAttemptsView(searchParams);
-  return screenDataResponse(view, invalidInputOf(view.attempts));
+  return inRequestScope(async () => {
+    const session = await requireApiSession();
+    if (session instanceof Response) return session;
+    const searchParams = searchParamsInputFromUrl(new URL(request.url));
+    // 데이터 경로는 입력이 틀리면 422 만 — 잠금 상태도 부르지 않는다(화면은 입력과 무관하게 잠금 상태를 보인다)
+    const parsed = parseLoginAttemptsQuery(searchParams, Date.now());
+    if (!parsed.ok) return screenDataResponse(null, parsed);
+    const view = await buildLoginAttemptsView(searchParams);
+    return screenDataResponse(view, invalidInputOf(view.attempts));
+  });
 }

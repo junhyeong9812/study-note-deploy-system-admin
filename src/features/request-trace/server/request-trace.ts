@@ -17,6 +17,8 @@ import { searchParamsInputFromUrl } from "@/shared/lib/query-input";
 import { screenDataResponse, upstreamFailureLogLine } from "@/shared/lib/screen-responses";
 import { isHttpBaseUrl } from "@/shared/lib/upstream-fetch";
 import type { SearchParamsInput } from "@/shared/lib/upstream-result";
+import { currentRequestId } from "@/shared/lib/request-scope";
+import { inRequestScope } from "@/shared/lib/request-id";
 
 /** 세션 검증과 입력 검증을 마친 뒤에만 부른다. */
 async function buildRequestTraceView(query: RequestTraceQuery): Promise<RequestTraceView> {
@@ -34,24 +36,28 @@ async function buildRequestTraceView(query: RequestTraceQuery): Promise<RequestT
     upstreamFailureLogLine("request-trace", "spans", spans),
     spans.ok ? upstreamFailureLogLine("request-trace", "receipt", spans.value.receipt) : null,
   ];
-  for (const failureLogLine of failureLogLines) if (failureLogLine !== null) void log("screen-request-trace", failureLogLine, "warning");
+  for (const failureLogLine of failureLogLines) if (failureLogLine !== null) void log(currentRequestId(), failureLogLine, "warning");
   return { requestId: query.requestId, trace, spans };
 }
 
 /** 화면용 — 세션이 없으면 /login(관측 서버를 부르지 않는다). 입력이 없으면 빈 폼(부르지 않는다) · 빈 값을 포함해 틀리면 invalid_input. */
 export async function loadRequestTrace(searchParams: SearchParamsInput): Promise<RequestTraceView> {
-  await requireSession();
-  if (searchParams.request_id === undefined) return { requestId: null, trace: null, spans: null };
-  const parsed = parseRequestTraceQuery(searchParams);
-  if (!parsed.ok) return { requestId: null, trace: parsed, spans: null };
-  return buildRequestTraceView(parsed.query);
+  return inRequestScope(async () => {
+    await requireSession();
+    if (searchParams.request_id === undefined) return { requestId: null, trace: null, spans: null };
+    const parsed = parseRequestTraceQuery(searchParams);
+    if (!parsed.ok) return { requestId: null, trace: parsed, spans: null };
+    return buildRequestTraceView(parsed.query);
+  });
 }
 
 /** 데이터 경로용 — 세션이 없으면 401 · 입력이 없거나 틀리면 422 · 그 밖 200 {success:true,data:RequestTraceView}. no-store. */
 export async function requestTraceResponse(request: Request): Promise<Response> {
-  const session = await requireApiSession();
-  if (session instanceof Response) return session;
-  const parsed = parseRequestTraceQuery(searchParamsInputFromUrl(new URL(request.url)));
-  if (!parsed.ok) return screenDataResponse(null, parsed);
-  return screenDataResponse(await buildRequestTraceView(parsed.query), null);
+  return inRequestScope(async () => {
+    const session = await requireApiSession();
+    if (session instanceof Response) return session;
+    const parsed = parseRequestTraceQuery(searchParamsInputFromUrl(new URL(request.url)));
+    if (!parsed.ok) return screenDataResponse(null, parsed);
+    return screenDataResponse(await buildRequestTraceView(parsed.query), null);
+  });
 }
