@@ -42,6 +42,7 @@
  * containers: server 가 요청과 같음 · from · to 는 시각 · containers 는 배열, 줄마다 name(꼴) · last_seen_at(시각). */
 import type { FetchLike, TimeoutSignalFactory } from "@/features/auth/lib/types";
 import { RESOURCE_CONTAINER_NAME_PATTERN, RESOURCE_SERVER_NAME_PATTERN } from "@/features/resources/lib/resources-query";
+import { withCallerService } from "@/shared/lib/caller-service";
 import { parseIsoUtc } from "@/shared/lib/query-input";
 import { isHttpBaseUrl, isRecord, upstreamUrl } from "@/shared/lib/upstream-fetch";
 import {
@@ -248,7 +249,7 @@ async function getBounded(url: string, options: ResourceMetricsClientOptions): P
   try {
     const response = await options.fetch(url, {
       method: "GET",
-      headers: { Accept: "application/json", "X-Observe-Secret": options.secret },
+      headers: withCallerService({ Accept: "application/json", "X-Observe-Secret": options.secret }),
       signal,
       redirect: "manual",
       cache: "no-store",

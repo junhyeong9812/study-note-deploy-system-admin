@@ -10,11 +10,13 @@ import {
   DEPENDENCY_SOURCES, dependencyLinesFromBody, unknownDependencyLines, type DependencyLine, type DependencyServiceName,
 } from "@/features/traffic-map/lib/dependency-lines";
 import { readBoundedText } from "@/features/resources/lib/resource-metrics-client";
+import { ADMIN_CALLER_SERVICE, withCallerService } from "@/shared/lib/caller-service";
 import { isHttpBaseUrl, upstreamUrl } from "@/shared/lib/upstream-fetch";
 
 /** 경로마다 한 값(셋 모두) — backend 가 의존 하나가 멈췄을 때 전체 예산 3초를 다 쓰고 답하는 것을 받는다(메인 11-30). */
 export const DEPENDENCY_CHECK_TIMEOUT_MILLISECONDS = 4_000;
-export const DEPENDENCY_CALLER_SERVICE = "admin";
+/** 호출자 머리글의 값 — 공용 상수(ADMIN_CALLER_SERVICE)를 그대로 가리킨다(값이 두 곳에서 따로 살지 않게). */
+export const DEPENDENCY_CALLER_SERVICE = ADMIN_CALLER_SERVICE;
 /** 본문의 크기 상한(T9d 리뷰 R1) — 바이트로 센다. 꼭 이만큼은 읽고, 넘으면 다 받지 않고 끊는다(읽기를 취소) · 그 서비스의 선은 모두 unparseable.
  * Content-Length 가 없거나 거짓이어도 지킨다(머리글을 보지 않고 흘린 바이트를 센다). */
 export const DEPENDENCY_BODY_MAX_BYTES = 65_536;
@@ -60,7 +62,7 @@ export function createDependencyClient(options: DependencyClientOptions): Depend
     try {
       const response = await options.fetch(upstreamUrl(baseUrl, path), {
         method: "GET",
-        headers: { Accept: "application/json", "X-Caller-Service": DEPENDENCY_CALLER_SERVICE, "X-Request-Id": newRequestId() },
+        headers: withCallerService({ Accept: "application/json", "X-Request-Id": newRequestId() }),
         signal,
         redirect: "manual",
         cache: "no-store",

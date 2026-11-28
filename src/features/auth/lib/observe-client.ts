@@ -5,6 +5,7 @@
 import type {
   AttemptRecordBody, Clock, AttemptVerdict, FetchLike, RejectedAttemptBody, TimeoutSignalFactory,
 } from "@/features/auth/lib/types";
+import { withCallerService } from "@/shared/lib/caller-service";
 
 export const OBSERVE_TIMEOUT_MILLISECONDS = 5_000;
 
@@ -68,7 +69,7 @@ export function createObserveClient(options: ObserveClientOptions): ObserveClien
     try {
       response = await options.fetch(`${baseUrl}${path}`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", "X-Observe-Secret": options.secret },
+        headers: withCallerService({ "Content-Type": "application/json", "X-Observe-Secret": options.secret }),
         body: JSON.stringify(body),
         signal,
         redirect: "manual",
