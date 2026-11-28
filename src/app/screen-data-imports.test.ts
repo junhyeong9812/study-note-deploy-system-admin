@@ -9,7 +9,7 @@ import { describe, expect, it } from "vitest";
 import { APP_DIRECTORY, routesFromAppDirectory } from "@/features/auth/lib/test-fakes";
 
 const SOURCE_DIRECTORY = fileURLToPath(new URL("..", import.meta.url));
-const SCREEN_FEATURES = ["deploys", "logs", "status", "login-attempts", "resources", "visits", "deploy-versions", "deploy-redeploy"] as const;
+const SCREEN_FEATURES = ["deploys", "logs", "status", "login-attempts", "resources", "visits", "deploy-versions", "deploy-redeploy", "claude-usage"] as const;
 
 /** 화면 경로 → 그 화면이 써야 하는 진입 모듈(경로가 생기면 검사가 켜진다). */
 const SCREEN_ENTRY_MODULES: Record<string, string> = {
@@ -21,6 +21,7 @@ const SCREEN_ENTRY_MODULES: Record<string, string> = {
   "/visits": "@/features/visits/server/",
   "/deploys/versions": "@/features/deploy-versions/server/",
   "/deploys/redeploy": "@/features/deploy-redeploy/server/",
+  "/claude-usage": "@/features/claude-usage/server/",
 };
 
 function sourceFiles(directory: string): string[] {
@@ -87,6 +88,7 @@ describe("src/app 은 화면 넷의 lib 를 값으로 임포트하지 않는다(
  * 목록의 파일이 화면용 함수(requireSession)를 부르게 되면 목록에서 뺀다(아래 사례가 실패한다 — 낡은 예외가 남지 않게). */
 const API_ONLY_ENTRY_MODULES: readonly string[] = [
   "features/deploy-redeploy/server/redeploy-accept.ts",   // POST /api/deploys/redeploy(재배포 접수)만 — 화면이 없다
+  "features/claude-usage/server/claude-limits-change.ts",   // POST /api/claude-usage/limits(상한 바꾸기)만 — 화면이 없다
 ];
 
 /** 주석을 뺀 소스 — 세션 검증 호출을 주석의 글자로 채우지 못하게. */
