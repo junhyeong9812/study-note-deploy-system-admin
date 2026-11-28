@@ -2,7 +2,7 @@
 
 운영자 한 명이 배포 이력 · 로그 · 서비스 상태 · 로그인 시도 기록을 읽기 전용으로 보는 어드민 화면(Next.js 15 App Router).
 어드민 백엔드는 따로 두지 않는다 — 이 앱의 서버 쪽 코드가 master · 관측 · 알림 · backend 서버를 직접 부른다.
-지금 있는 것: 로그인(`/login`) · 로그인 뒤 홈(`/`, 화면 넷의 메뉴) · 화면 넷(`/deploys` · `/logs` · `/status` · `/login-attempts`) · `POST /api/auth/login` · `POST /api/auth/logout` · `GET /api/health` · 화면 넷과 두 상세의 데이터 경로(아래 "구성") · Claude 사용량(`/claude-usage` — 아래 "Claude 사용량").
+지금 있는 것: 로그인(`/login`) · 로그인 뒤 홈(`/`, 화면 넷의 메뉴) · 화면 넷(`/deploys` · `/logs` · `/status` · `/login-attempts`) · 방문 기록(`/visits` — 아래 "방문 기록") · `POST /api/auth/login` · `POST /api/auth/logout` · `GET /api/health` · 화면 넷과 두 상세의 데이터 경로(아래 "구성") · Claude 사용량(`/claude-usage` — 아래 "Claude 사용량").
 
 ## 구성
 
@@ -12,7 +12,7 @@
 - `src/features/auth/server/login-service.ts` — 속도 제한 · 임시 제한 · 대기열을 프로세스 안에 하나만 둔다(`globalThis`).
 - 화면 넷과 두 상세(배포 상세 · 연관 로그)의 데이터 계층 `src/features/{deploys,logs,status,login-attempts,deploy-detail,log-trace}/` — `lib/`(순수: 입력 검증 · 다른 서버 클라이언트 · 응답에서 화면에 필요한 칸만 고르기, 설정·Next 를 읽지 않는다) + `server/`(진입 함수 — `requireSession()`/`requireApiSession()` 을 **직접** 부른 뒤에만 설정을 읽고 다른 서버를 부른다) + `ui/`(서버 컴포넌트 — 받은 값만 그린다. server · `*-client` · 설정을 값으로 임포트하지 않는다). `src/app` 의 화면 · `GET /api/{deploys,logs,status,login-attempts}` · `GET /api/deploys/detail` · `GET /api/logs/trace` 는 진입 함수만 부른다(화면 넷의 기능 폴더는 소스 검사 `src/app/screen-data-imports.test.ts`).
   - 다른 서버 호출: 전부 GET · `redirect: "manual"` · 본문까지 5초 기한. 실패는 고정된 짧은 사유(`src/shared/lib/upstream-result.ts`)와 상태 코드만 — 오류 본문 원문 · 주소 · 예외 문구는 넘기지 않는다. 정상 응답 안의 사유 글자(감시 대상의 DOWN 사유 · backend 의존성 detail · 관측 서버 헬스의 failure)는 주소를 `(주소)` 로 가리고 120자로 자른다(`maskUpstreamReason`). 입력이 틀리면 데이터 경로는 422 `invalid_input`(다른 서버를 부르지 않는다), 다른 서버가 실패해도 200 에 그 칸의 실패로 보인다. 상태 화면의 다섯 호출은 병렬.
-  - 화면 넷: 배포 이력(`/deploys` — 줄을 누르면 오른쪽에 배포 상세(`deploy-detail`, `GET /api/deploys/detail`): 요약 · 직전 성공 배포→이번 배포의 커밋 목록 · PR · 커밋별 바뀐 파일과 diff. 커밋 목록 · diff 는 배포 master 의 git 조회(`GET /deploys/git/commits` · `GET /deploys/git/commit` — 배포 이력과 같은 `DEPLOY_MASTER_URL` · `DEPLOY_SECRET`)에서, PR 제목 · 본문만 GitHub 에서 읽는다. 선택은 주소의 `selected` · `selectedService` · `commit`) · 로그 조회(`/logs` — 줄을 누르면 오른쪽에 연관 로그(`log-trace`, `GET /api/logs/trace`): 고른 로그 · 이 요청 요약 · 같은 요청 ID 의 연관 로그 · 그때 서버 상태(수준별 건수 · 배포 · 알림). 선택은 주소의 `selected`) · 상태 한눈에(`/status`) · 로그인 시도 기록(`/login-attempts`). 공통 틀 `src/features/admin-shell/ui/AdminShell.tsx`(내비게이션 · 로그아웃 · "임시 제한 중").
+  - 화면 넷: 배포 이력(`/deploys` — 줄을 누르면 오른쪽에 배포 상세(`deploy-detail`, `GET /api/deploys/detail`): 요약 · 직전 성공 배포→이번 배포의 커밋 목록 · PR · 커밋별 바뀐 파일과 diff. 커밋 목록 · diff 는 배포 master 의 git 조회(`GET /deploys/git/commits` · `GET /deploys/git/commit` — 배포 이력과 같은 `DEPLOY_MASTER_URL` · `DEPLOY_SECRET`)에서, PR 제목 · 본문만 GitHub 에서 읽는다. 선택은 주소의 `selected` · `selectedService` · `commit`) · 로그 조회(`/logs` — 줄을 누르면 오른쪽에 연관 로그(`log-trace`, `GET /api/logs/trace`): 고른 로그 · 이 요청 요약 · 같은 요청 ID 의 연관 로그 · 그때 서버 상태(수준별 건수 · 배포 · 알림). 선택은 주소의 `selected`) · 상태 한눈에(`/status`) · 로그인 시도 기록(`/login-attempts`). 방문 기록(`/visits` · `GET /api/visits` — `src/features/visits/`, 같은 `lib/` · `server/` · `ui/` 층). 공통 틀 `src/features/admin-shell/ui/AdminShell.tsx`(내비게이션 · 로그아웃 · "임시 제한 중").
 - 문제(`/incidents` · `GET /api/incidents`, `src/features/incidents/` — `lib/` · `server/` · `ui/` 의 나눔은 위와 같다) — 지금 열려 있는 문제의 목록과, 고른 문제(`?incident=<식별자>`) 하나의 근거 묶음. **읽기 전용**이다(폼 · 단추 · 스크립트 없음 — 고르기 · 이동은 링크).
   - 보이는 것: 목록은 문제마다 종류 · 대상 · 언제부터 · 심한 정도(글자로 — 색만으로 전하지 않는다). 근거 묶음은 구역 다섯 — 무엇이 · 언제부터 / 관련 알림 / 로그(경고 · 오류, 최근 100줄 — 넘으면 "더 있음"을 적는다) / 배포(배포 실패는 앞 성공 배포와의 사이의 커밋, 그 밖은 앞 1시간의 배포) / 자원(그 서비스가 그때 있던 서버의 값 — 로그 추적의 자원 칸, 자원 임계값은 그 서버의 지금 값). 로그 줄 · 배포 · 서버는 로그 화면 · 배포 이력 · 서버 자원 화면의 그것으로 가는 링크.
   - 출처 넷: 감시 대상 DOWN(알림 서버 `GET /monitors`) · 자원 임계값(관측 서버 `GET /metrics/latest` 의 firing) · 서비스의 가장 최근 배포가 실패(배포 master `GET /deploys?limit=200` — 그 뒤에 성공했거나 다시 배포하는 중이면 열린 문제가 아니다) · 오류 로그(관측 서버 `GET /logs?level=error`, 최근 10분의 줄을 서비스마다 센 수 — 급증 판정은 하지 않는다). 한 출처 · 한 칸의 실패는 그 출처 · 그 칸만 "확인하지 못함"으로 보이고 나머지는 그대로 보인다. 로그인 잠금은 문제로 치지 않는다.
@@ -46,6 +46,9 @@
   - nginx: 로그인 경로(`location = /api/auth/login`)는 본문을 모으지 않고 앱으로 흘려보낸다(`proxy_request_buffering off`). 그래서 앱의 4KB 상한과 **전체 3초 기한**이 nginx 를 거쳐도 실제로 걸린다(넘으면 400 `malformed` 로 기록되고 속도 제한에도 든다). nginx 는 8KB 상한(넘으면 413 — 앱에 닿지 않는 유일한 경우)과 `client_body_timeout 10s`(두 번의 읽기 사이 간격 — 전체 기한이 아니다)만 맡는다.
   - nginx 가 서버에서 여는 포트는 `.env` 의 `PUBLIC_PORT`(비면 18000)다 — 바꾸면 `docker compose up -d nginx` 로 nginx 를 다시 만들고, ci-cd agent 의 `DEPLOY_HEALTH_ADMIN` 도 같은 포트로 맞춘다. 자리 포트(18001·18002)와 컨테이너 안쪽 포트(18000)는 그대로다.
   - `deploy/active/` 는 서버에만 있고 git 에 없다. `edge-allow.conf` 가 없으면 nginx 가 뜨지 않는다(닫힌 쪽으로 실패).
+  - 접속 기록(nginx — 루트 프로젝트 `docs/cross-cutting/plans/2026-11-25/traffic-map/communication-protocol.md` 3절): 요청마다 표준 출력에 JSON 한 줄(14칸, `service` 는 `admin` — 응답 없이 닫는 444 도 한 줄). 접속 주소 · 쿼리 문자열 · 리퍼러 · User-Agent · 쿠키 · 인증 머리글은 싣지 않고, 경로는 첫 `?` 앞 1024자까지다(접속 IP 는 접속 기록에는 남지 않는다 — 오류 기록 · 관측 서버의 로그인 시도 기록에는 남는다). 오류 기록은 표준 오류(주소가 든다 — 수집하지 않는다). 도커 로그는 10MB × 3 으로 묶는다.
+  - 요청 ID(`X-Request-Id`): 사설 대역 · 루프백에서 온 꼴(`^[A-Za-z0-9_-]{1,64}$`) 맞는 값만 믿고(엣지에서 온 값은 아직 믿지 않는다), 아니면 nginx 가 새로 만들어 앱에 넘기고 응답 머리글로 돌려준다. 호출자(`X-Caller-Service`)는 엣지 연결이면 `edge`, 사설 대역의 아는 이름이면 그대로, 나머지는 `outside` 로 덮어써 넘긴다 — 지도 표시용이지 인증이 아니다.
+  - 배포: 이 변경을 병합 · 배포한 뒤 서버에서 한 번 `docker compose up -d --force-recreate nginx` 로 nginx 컨테이너를 다시 만든다(설정이 이미 반영된 서버에서는 그냥 `up -d` 가 다시 만들지 않는다). 다시 만드는 수 초 동안 연결이 끊기고, 열려 있던 긴 연결(채팅 스트림 · SSE)도 끊긴다 — 쓰는 사람이 없는 때에 한다. 다시 만들면 (가) 로그 크기 제한(10MB × 3)이 그때 걸린다(설정 복사 · reload 로는 걸리지 않는다) (나) 이전 형식으로 쌓인 접속 기록(방문자 주소 · 쿼리가 든 줄)이 컨테이너의 로그와 함께 지워진다 (다) reload 뒤 옛 워커가 끝날 때까지(`worker_shutdown_timeout`) 쓰던 옛 형식의 줄도 로그와 함께 지워진다.
   - 배포·전환·수동 조작은 ci-cd 저장소 README 의 "무중단 배포" 절을 따른다. 자리 포트: blue `127.0.0.1:18001`, green `127.0.0.1:18002`.
 - 비밀번호 해시 만들기(한 줄 — 평문이 셸 기록에 남지 않게 읽어서 넣는다). **비용은 `m=19456,t=2,p=1` 로 고정**이다 — 설정 해시가 `$argon2id$v=19$m=19456,t=2,p=1$` 로 시작하지 않으면 더미 해시와 검증 시간이 달라지므로 설정 없음과 같다(서버가 뜨지 않는다 — 아래 "환경 변수"). 아래 명령은 그 매개변수를 명시한다:
 
@@ -69,9 +72,20 @@
   - 실측: 요청을 하나도 받기 전에 끝난다(컨테이너 안에서 시작 직후부터 헬스를 두드려도 응답 0건). `restart: unless-stopped` 아래에서는 재시작이 되풀이된다(12초에 5회).
   - 배포에서의 뜻: 새 자리가 뜨지 않으므로 compose healthcheck 는 healthy 가 되지 않고, ci-cd agent 의 자리 헬스 확인(`127.0.0.1:18001`/`18002`)이 실패해 그 배포는 `cd_health` 실패로 끝난다 — nginx 는 전환되지 않고 이전 자리가 계속 서비스한다.
   - 헬스(`GET /api/health`)도 필수 설정이 유효할 때만 200, 아니면 503(본문에 키 이름·값 없음) — 시작 검사가 건너뛰어져도 자리 헬스 확인에서 걸린다.
-- **선택**: `LOG_REDIS_URL`(비면 stdout 만) — 비어 있으면 시작 로그에 이름만 1줄. `GITHUB_TOKEN`(배포 상세가 GitHub REST API 로 PR 제목 · 본문을 읽을 때 싣는 토큰 — 커밋 목록 · diff 는 GitHub 가 아니라 master 에서 읽는다) — 비면 토큰 없이 부른다(GitHub 익명 한도 IP 당 시간당 60회, 토큰이 있으면 5000회 — 한도를 넘으면 상세의 PR 구역만 "GitHub: 한도 초과"). 권한은 **공개 저장소 읽기 전용**만 준다(fine-grained token 의 "Public repositories (read-only)", 그 밖의 권한 없음). 값은 서버 쪽에만 있고 로그 · 응답 · 오류 문구에 나오지 않는다.
+- **선택**: `LOG_REDIS_URL`(비면 stdout 만) — 비어 있으면 시작 로그에 이름만 1줄. `GITHUB_TOKEN`(배포 상세가 GitHub REST API 로 PR 제목 · 본문을 읽을 때 싣는 토큰 — 커밋 목록 · diff 는 GitHub 가 아니라 master 에서 읽는다) — 비면 토큰 없이 부른다(GitHub 익명 한도 IP 당 시간당 60회, 토큰이 있으면 5000회 — 한도를 넘으면 상세의 PR 구역만 "GitHub: 한도 초과"). 권한은 **공개 저장소 읽기 전용**만 준다(fine-grained token 의 "Public repositories (read-only)", 그 밖의 권한 없음). 값은 서버 쪽에만 있고 로그 · 응답 · 오류 문구에 나오지 않는다. `SITE_ORIGIN`(사이트의 공개 주소 — http(s) 출처 꼴 그대로, 끝의 `/` · 경로 없음, 호스트가 점으로 끝나면 틀림 — 받으면 자기 사이트가 한 번도 빠지지 않는다) — 방문 기록 화면이 경로 링크와 자기 사이트 빼기에만 쓴다. 비었거나 꼴이 틀리면 링크 · 빼기 없이 뜨고 화면에 그렇다고 보인다(시작 로그의 선택 키 알림에는 넣지 않는다).
   `CLAUDE_RUNNER_URL`(Claude 실행 자리의 주소 — 해석되는 http(s), 끝의 `/` 허용) · `CLAUDE_RUNNER_SETTINGS_SECRET`(실행 자리의 **설정용** 비밀값 — 호출용 비밀값과 다른 값) — 비면 Claude 사용량 화면의 칸이 "설정 없음"이고 상한 바꾸기는 503(실행 자리가 배포되기 전에도 어드민이 뜬다 · 시작 검사에 넣지 않는다). 비밀값만 비면 헬스(인증 없음)는 읽는다.
   `CLAUDE_RUNNER_SECRET`(실행 자리의 **호출용** 비밀값 — 실행 자리의 것과 같은 값 · 설정용과 다른 값) — 비면(또는 `CLAUDE_RUNNER_URL` · `LOG_REDIS_URL` 이 비면) 문제의 분석은 "설정 없음"이고 보내기는 503.
+
+## 방문 기록
+
+`/visits?days=7|30|90`(그 밖의 값은 거절하지 않고 7) — 관측 서버의 `GET /visits/summary?days=` 를 `X-Observe-Secret` 으로 한 번 부른다(5초). 데이터 경로 `GET /api/visits` 는 같은 화면 데이터를 `{success:true,data}` 로.
+
+- 보이는 것: 날짜별 조회 수 · 순방문자(봇 제외 · 포함 — 날짜는 관측 서버가 준 서울의 날) · 기간의 합(조회 수만 — 순방문자는 날마다 따로 센 값이라 더하지 않고 "—") · 많이 본 경로 상위 10 · 들어온 곳 상위 10(둘 다 봇 제외, 직접 = "직접") · 기기별 조회 수 · 봇 비율(기기별 합이 0 이면 "—" — 관측 서버가 주는 0 을 0% 로 보이지 않는다).
+- 없는 것: 방문자의 주소 · 구분값. 관측 서버의 응답은 정해 둔 칸만 골라 읽는다 — 모르는 칸(`ip` · `visitor` 등)이 실려 와도 화면 · HTML · API 응답 · 로그로 옮기지 않는다. 칸이 빠지거나 형이 틀리면 요약 전체가 "확인하지 못함 — 해석 불가"(수를 0 으로 · 목록을 빈 것으로 메우지 않는다). 빈 날의 0 은 관측 서버가 준 0 이다. 실패의 앱 로그는 `screen:visits cell=summary upstream=<이유> status=<코드>` 한 줄뿐 — 경로 · 호스트 · 주소는 찍지 않는다.
+- 경로를 푸는 규칙: 사이트(front)는 경로의 빈칸을 `%20`, `%` 를 `%25` 로 써서 보낸다 — 화면은 이 둘만 왼쪽부터 한 번 푼다(`%2520` 은 `%20` 으로 남는다 · 그 밖의 `%XX` 와 깨진 `%` 는 받은 글자 그대로 · 던지지 않는다). 보이지 않는 글자(제어 · 서식 — 방향 뒤집기 · 폭 없는 빈칸 · 줄/문단 구분 · 한글 채움 문자 U+3164 · U+FFA0 · U+115F · U+1160 · 점자 빈칸 U+2800 · 변형 선택자 U+FE00~FE0F · U+E0100~E01EF — 사이트도 관측 서버도 막지 않아 `/wiki/real` 뒤에 붙인 닮은꼴이 실제로 저장된다)는 하나마다 `�` 로 바꾸고, 결합 문자(악센트 · 탁점 등)는 연달아 4개까지만 남기고(사이에 다른 글자가 오면 다시 센다), 120자(코드 포인트)를 넘으면 잘라 `…` 를 붙인다. 들어온 곳의 호스트는 풀지 않고 같은 규칙으로 바꾸고 자른다.
+- 링크: 경로에만, `SITE_ORIGIN` 으로 출처를 고정한 주소로만 건다(`<SITE_ORIGIN><받은 경로 그대로>` — 경로가 `/` 로 시작하고 `//` 로 시작하지 않으며 `\` · 보이지 않는 글자가 없고 결합 문자가 5개 이상 이어지지 않으며, 만든 주소의 출처가 `SITE_ORIGIN` 과 같을 때만 · `rel="noreferrer"` — 어드민이 사이트의 들어온 곳으로 섞이지 않게). 들어온 곳에는 링크를 걸지 않는다. 글자는 React 가 이스케이프한다(`dangerouslySetInnerHTML` 을 쓰지 않는다).
+- 자기 사이트 빼기: 사이트 안에서 화면을 옮기면 들어온 곳이 자기 사이트가 된다 — `SITE_ORIGIN` 의 호스트와 완전히 같은 줄만 들어온 곳 목록에서 빼고 "사이트 안 이동 N (목록에서 뺌)"으로 따로 보인다. 빈자리는 메우지 않는다(10개 중 하나를 빼면 9개). 받은 상위 10개에 없으면 "받은 상위 10개에 없음"(0 이라고 하지 않는다), 설정이 없으면 빼지 않고 그렇다고 글로 보인다.
+- 안내 글 "경로와 들어온 곳은 방문자가 보낸 값입니다 — 사이트에 없는 글도 올라올 수 있습니다.": `/api/visit` 는 누구나 부를 수 있어 아무 경로 · 호스트 꼴의 글자를 상위 목록에 올릴 수 있다(관측 서버 쪽 속도 제한이 상한) — 목록의 글이 사이트에 실제로 있다는 뜻이 아니다.
 
 ## 보안 경계 요약
 
