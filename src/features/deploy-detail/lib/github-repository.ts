@@ -11,6 +11,7 @@ export const GITHUB_REPOSITORY_NAMES: Readonly<Record<DeployService, string>> = 
   alert: "study-note-deploy-system-alert",
   observe: "study-note-deploy-system-observe",
   admin: "study-note-deploy-system-admin",
+  claude: "study-note-deploy-system-claude",
 };
 
 export interface GitHubRepository {

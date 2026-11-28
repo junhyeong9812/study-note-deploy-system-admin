@@ -7,6 +7,8 @@ import type {
   AlertMonitorsView, BackendDependenciesView, ObserveHealthView, ServiceHealthView, StatusCheckName, StatusOverview,
 } from "@/features/status/lib/status-overview";
 import { formatDuration, formatKoreanTime } from "@/features/deploys/lib/deploy-format";
+import { monitorIncidentId } from "@/features/incidents/lib/incident-id";
+import { incidentHref } from "@/features/incidents/lib/incidents-query";
 import {
   ALERT_HEALTH_WORDS, BACKEND_DEPENDENCY_LABELS, CARD_SERVICES, DEPLOY_MASTER_HEALTH_WORDS, OBSERVE_HEALTH_WORDS, STATUS_CARD_LABELS,
   STATUS_CARD_ORDER, STATUS_PATH, TONE_LABELS, TONE_MARKS, describeMonitor, healthTone, serviceLinksOf, sortMonitors, summarizeStatus,
@@ -180,7 +182,14 @@ function MonitorTable({ view, checkedAt }: { view: AlertMonitorsView; checkedAt:
                 <td className={styles.reasonCell}>
                   {monitor.reason === "" ? <span className={styles.none}>—</span> : <span className={styles.reasonText}>{monitor.reason}</span>}
                 </td>
-                <td>{serviceLinksOf(monitor.name) === null ? <span className={styles.none}>—</span> : <ServiceLinks name={monitor.name} />}</td>
+                <td>
+                  {monitor.status !== "DOWN" ? (serviceLinksOf(monitor.name) === null ? <span className={styles.none}>—</span> : <ServiceLinks name={monitor.name} />) : (
+                    <span className={styles.links}>
+                      <a href={incidentHref(monitorIncidentId(monitor.name))} aria-label={`${monitor.name} 의 문제 보기`}>문제 보기</a>
+                      <ServiceLinks name={monitor.name} />
+                    </span>
+                  )}
+                </td>
               </tr>
             );
           })}

@@ -21,6 +21,20 @@ export interface ServerConfig {
   logRedisUrl: string;
   /** GitHub REST API 토큰(배포 상세 task 07) — **선택**: 비어 있어도 뜬다(익명 한도). 값은 로그 · 응답 · 오류 문구에 내지 않는다. */
   githubToken: string;
+  /** 사이트의 공개 주소(방문 기록 화면 — 경로 링크 · 들어온 곳에서 자기 사이트 빼기) — **선택**: 비었거나 꼴이 틀리면 링크 · 빼기 없이 뜬다. */
+  siteOrigin: string;
+  /** Claude 실행 자리(사용량 · 상한 화면 — GET /usage · GET/PUT /limits · GET /health) — **선택**: 비어 있어도 뜬다(실행 자리가 배포되기 전에도 어드민이 뜬다).
+   * 비면 그 화면의 칸이 "설정 없음". 설정용 비밀값은 머리글로만 싣고 로그 · 응답 · 오류 문구에 내지 않는다. */
+  claudeRunnerUrl: string;
+  claudeRunnerSettingsSecret: string;
+  /** 실행 자리의 **호출용** 비밀값(X-Claude-Runner-Secret — 문제 화면의 분석 POST /runs) — **선택**: 비면 분석을 시작하지 않는다(503 "설정 없음").
+   * 설정용 비밀값과 다른 값. 머리글로만 싣고 로그 · 응답 · 오류 문구에 내지 않는다. */
+  claudeRunnerCallSecret: string;
+  /** 주인 표시(쿠키 study_owner)의 서명 열쇠 — **선택**: 비면 표시를 만들지 않는다("설정 없음"). backend 와 같은 값이라 글자 **그대로** 읽는다(다듬지 않는다 — 다듬으면 서명이 backend 와 달라진다).
+   * 값은 로그 · 응답 · 오류 문구에 내지 않는다. */
+  ownerCookieSecret: string;
+  /** 주인 표시 쿠키의 Domain — 어드민과 사이트가 함께 속한 상위 도메인. **선택**(앞뒤 공백은 다듬는다). */
+  ownerCookieDomain: string;
   /** llm 래퍼의 주소(통신 지도의 의존의 선 — GET /health) — **선택**: 비면 llm 의 선은 "설정 없음"(부르지 않는다). */
   llmUrl: string;
   serverName: string;
@@ -48,6 +62,12 @@ export function readServerConfig(): ServerConfig {
     backendUrl: environmentValue("BACKEND_URL"),
     logRedisUrl: environmentValue("LOG_REDIS_URL"),
     githubToken: environmentValue("GITHUB_TOKEN"),
+    siteOrigin: environmentValue("SITE_ORIGIN"),
+    claudeRunnerUrl: environmentValue("CLAUDE_RUNNER_URL"),
+    claudeRunnerSettingsSecret: environmentValue("CLAUDE_RUNNER_SETTINGS_SECRET"),
+    claudeRunnerCallSecret: environmentValue("CLAUDE_RUNNER_SECRET"),
+    ownerCookieSecret: process.env.OWNER_COOKIE_SECRET ?? "",
+    ownerCookieDomain: environmentValue("OWNER_COOKIE_DOMAIN"),
     llmUrl: environmentValue("LLM_URL"),
     serverName: environmentValue("SERVER_NAME") || "admin",
   };

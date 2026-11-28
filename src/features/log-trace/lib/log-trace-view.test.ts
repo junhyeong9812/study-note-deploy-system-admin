@@ -499,7 +499,7 @@ describe("그때 서버 상태 ② — ±30분 안에 접수됐거나 끝난 배
     expect(around.deployments.map((deployment) => deployment.requestId)).toEqual(["accepted-at-end", "inside", "finished-at-start"]);
     expect(around.deployments[1]).toStrictEqual({
       requestId: "inside", state: "succeeded", service: "front", commitSha: "a".repeat(40), failedStage: null,
-      acceptedAt: at(T - 10 * MINUTE), finishedAt: at(T - 8 * MINUTE), integrationMilliseconds: 60000, deliveryMilliseconds: 30000,
+      acceptedAt: at(T - 10 * MINUTE), finishedAt: at(T - 8 * MINUTE), integrationMilliseconds: 60000, deliveryMilliseconds: 30000, requestedBy: null,   // 누가(⑫ 12-6 — master 의 requested_by, 없으면 null)
     });
     expect(around.coversWindow).toBe(true);
     expectNoForbiddenText(around);

@@ -3,8 +3,8 @@
 import { parseLimit, singleValue } from "@/shared/lib/query-input";
 import { invalidInput, type SearchParamsInput, type UpstreamFailure } from "@/shared/lib/upstream-result";
 
-/** 고를 수 있는 서비스 — master 의 허용 목록(ci-cd internal/master/master.go:59 front·backend·llm·alert·observe) + 로드맵 task 05 에서 더할 admin. */
-export const DEPLOY_SERVICES = ["front", "backend", "llm", "alert", "observe", "admin"] as const;
+/** 고를 수 있는 서비스 — master 의 허용 목록(ci-cd internal/master/master.go 의 고정 열거 일곱: front·backend·llm·alert·observe·admin·claude). claude = Claude 실행 자리. */
+export const DEPLOY_SERVICES = ["front", "backend", "llm", "alert", "observe", "admin", "claude"] as const;
 export type DeployService = (typeof DEPLOY_SERVICES)[number];
 
 export const DEPLOY_HISTORY_DEFAULT_LIMIT = 50;

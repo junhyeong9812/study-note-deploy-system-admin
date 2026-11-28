@@ -3,13 +3,13 @@
  * 다른 서버를 부르면(진입 함수를 거치지 않으면) 통과해 버린다. 명세 ② 세부 "다른 서버를 부르는 모든 서버 쪽 함수 … 가 같은 세션 검증 함수를 직접 호출"
  * 을 지키려면 src/app 은 화면 넷의 다른 서버 호출을 **server/ 진입 함수로만** 해야 한다. */
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { join, relative } from "node:path";
+import { join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { APP_DIRECTORY, routesFromAppDirectory } from "@/features/auth/lib/test-fakes";
 
 const SOURCE_DIRECTORY = fileURLToPath(new URL("..", import.meta.url));
-const SCREEN_FEATURES = ["deploys", "logs", "status", "login-attempts", "resources", "request-trace", "traffic-map"] as const;
+const SCREEN_FEATURES = ["deploys", "logs", "status", "login-attempts", "resources", "visits", "deploy-versions", "deploy-redeploy", "claude-usage", "incident-analysis", "owner-mark", "request-trace", "traffic-map"] as const;
 
 /** 화면 경로 → 그 화면이 써야 하는 진입 모듈(경로가 생기면 검사가 켜진다). */
 const SCREEN_ENTRY_MODULES: Record<string, string> = {
@@ -18,6 +18,13 @@ const SCREEN_ENTRY_MODULES: Record<string, string> = {
   "/status": "@/features/status/server/",
   "/login-attempts": "@/features/login-attempts/server/",
   "/resources": "@/features/resources/server/",
+  "/incidents": "@/features/incidents/server/",
+  "/visits": "@/features/visits/server/",
+  "/deploys/versions": "@/features/deploy-versions/server/",
+  "/deploys/redeploy": "@/features/deploy-redeploy/server/",
+  "/claude-usage": "@/features/claude-usage/server/",
+  "/incidents/analysis": "@/features/incident-analysis/server/",
+  "/owner-mark": "@/features/owner-mark/server/",
   "/trace": "@/features/request-trace/server/",
   "/traffic": "@/features/traffic-map/server/",
 };
@@ -82,6 +89,19 @@ describe("src/app 은 화면 넷의 lib 를 값으로 임포트하지 않는다(
   }
 });
 
+/** 화면 진입이 없고 API 만 내보내는 진입 모듈 — requireSession(화면용)을 부르지 않아도 된다(requireApiSession 은 그대로 필요).
+ * 목록의 파일이 화면용 함수(requireSession)를 부르게 되면 목록에서 뺀다(아래 사례가 실패한다 — 낡은 예외가 남지 않게). */
+const API_ONLY_ENTRY_MODULES: readonly string[] = [
+  "features/deploy-redeploy/server/redeploy-accept.ts",   // POST /api/deploys/redeploy(재배포 접수)만 — 화면이 없다
+  "features/claude-usage/server/claude-limits-change.ts",   // POST /api/claude-usage/limits(상한 바꾸기)만 — 화면이 없다
+  "features/owner-mark/server/owner-mark-change.ts",   // POST /api/owner-mark · /api/owner-mark/clear(주인 표시 심기 · 지우기)만 — 화면이 없다
+];
+
+/** 주석을 뺀 소스 — 세션 검증 호출을 주석의 글자로 채우지 못하게. */
+function withoutComments(source: string): string {
+  return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|\s)\/\/.*$/gm, "$1");
+}
+
 describe("화면 넷의 server/ 진입 모듈 — server-only 이고 세션 검증을 부른다", () => {
   for (const feature of SCREEN_FEATURES) {
     const files = sourceFiles(join(SOURCE_DIRECTORY, "features", feature, "server"));
@@ -91,15 +111,28 @@ describe("화면 넷의 server/ 진입 모듈 — server-only 이고 세션 검�
     });
 
     for (const file of files) {
-      it(`${relative(SOURCE_DIRECTORY, file)} — "server-only" · requireSession · requireApiSession`, () => {
+      const path = relative(SOURCE_DIRECTORY, file).split(sep).join("/");
+      const apiOnly = API_ONLY_ENTRY_MODULES.includes(path);
+      it(`${path} — "server-only" · requireApiSession${apiOnly ? "(API 만 — requireSession 없음)" : " · requireSession"}`, () => {
         const source = readFileSync(file, "utf8");
+        const code = withoutComments(source);
         expect(valueImports(source)).toContain("server-only");
-        expect(source).toMatch(/\brequireSession\s*\(/);
-        expect(source).toMatch(/\brequireApiSession\s*\(/);
+        expect(code).toMatch(/\brequireApiSession\s*\(/);
         expect(valueImports(source)).toContain("@/features/auth/server/require-session");
+        if (apiOnly) expect(code, "API 만 내보내는 예외 목록의 파일이 requireSession 을 부른다 — 목록에서 뺀다").not.toMatch(/\brequireSession\s*\(/);
+        else expect(code).toMatch(/\brequireSession\s*\(/);
       });
     }
   }
+
+  it("API 만 내보내는 예외 목록의 파일은 실제로 있다", () => {
+    for (const path of API_ONLY_ENTRY_MODULES) expect(existsSync(join(SOURCE_DIRECTORY, path)), path).toBe(true);
+  });
+
+  it("주석을 빼는 도구 — 주석 속 호출은 남지 않고 코드의 호출은 남는다", () => {
+    expect(withoutComments("/** requireSession() */\n// requireSession()\nawait requireApiSession();")).not.toMatch(/\brequireSession\s*\(/);
+    expect(withoutComments("await requireSession(); // 화면용")).toMatch(/\brequireSession\s*\(/);
+  });
 });
 
 describe("화면 넷의 lib/ — 순수(설정 · 환경 변수 · Next · server-only 를 읽지 않는다)", () => {

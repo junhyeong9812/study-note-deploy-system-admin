@@ -207,7 +207,7 @@ describe("githubRepositoryFor — 코드에 고정한 허용 목록", () => {
     expect(GITHUB_REPOSITORY_OWNER).toBe("junhyeong9812");
     expect(GITHUB_REPOSITORY_NAMES).toEqual({
       front: "study-note-deploy-system-front", backend: "study-note-deploy-system-backend", llm: "study-note-deploy-system-llm",
-      alert: "study-note-deploy-system-alert", observe: "study-note-deploy-system-observe", admin: "study-note-deploy-system-admin",
+      alert: "study-note-deploy-system-alert", observe: "study-note-deploy-system-observe", admin: "study-note-deploy-system-admin", claude: "study-note-deploy-system-claude",
     });
   });
 
