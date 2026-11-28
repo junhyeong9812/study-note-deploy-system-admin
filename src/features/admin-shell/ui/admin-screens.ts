@@ -1,5 +1,5 @@
 /** 어드민의 화면 넷 — 내비게이션과 홈 메뉴가 같은 목록을 쓴다. 지금은 넷 모두 화면이 있다(path 가 있다). path 가 null 이면 아직 만들지 않은 화면(링크를 걸지 않고 "준비 중") — 새 화면을 목록에 먼저 올릴 때 쓴다. */
-export type AdminScreenKey = "deploys" | "deploy-versions" | "logs" | "status" | "incidents" | "resources" | "login-attempts" | "visits" | "claude-usage";
+export type AdminScreenKey = "deploys" | "deploy-versions" | "logs" | "status" | "incidents" | "resources" | "login-attempts" | "visits" | "claude-usage" | "owner-mark";
 
 export interface AdminScreen {
   key: AdminScreenKey;
@@ -18,4 +18,5 @@ export const ADMIN_SCREENS: readonly AdminScreen[] = [
   { key: "login-attempts", title: "로그인 시도 기록", description: "어드민 로그인 성공 · 실패 · 잠금 기록", path: "/login-attempts" },
   { key: "visits", title: "방문 기록", description: "사이트의 날짜별 조회 수 · 순방문자 · 많이 본 경로 · 들어온 곳 · 봇 비율", path: "/visits" },
   { key: "claude-usage", title: "Claude 사용량", description: "Claude 실행 자리의 오늘 · 최근 한 시간 호출 수와 상한 · 켬/끔 바꾸기", path: "/claude-usage" },
+  { key: "owner-mark", title: "주인 표시", description: "이 브라우저를 사이트의 주인으로 표시하거나 지우기(Claude 대체 답변 · 실습)", path: "/owner-mark" },
 ];

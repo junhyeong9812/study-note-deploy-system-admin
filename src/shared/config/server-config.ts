@@ -30,6 +30,11 @@ export interface ServerConfig {
   /** 실행 자리의 **호출용** 비밀값(X-Claude-Runner-Secret — 문제 화면의 분석 POST /runs) — **선택**: 비면 분석을 시작하지 않는다(503 "설정 없음").
    * 설정용 비밀값과 다른 값. 머리글로만 싣고 로그 · 응답 · 오류 문구에 내지 않는다. */
   claudeRunnerCallSecret: string;
+  /** 주인 표시(쿠키 study_owner)의 서명 열쇠 — **선택**: 비면 표시를 만들지 않는다("설정 없음"). backend 와 같은 값이라 글자 **그대로** 읽는다(다듬지 않는다 — 다듬으면 서명이 backend 와 달라진다).
+   * 값은 로그 · 응답 · 오류 문구에 내지 않는다. */
+  ownerCookieSecret: string;
+  /** 주인 표시 쿠키의 Domain — 어드민과 사이트가 함께 속한 상위 도메인. **선택**(앞뒤 공백은 다듬는다). */
+  ownerCookieDomain: string;
   serverName: string;
 }
 
@@ -59,6 +64,8 @@ export function readServerConfig(): ServerConfig {
     claudeRunnerUrl: environmentValue("CLAUDE_RUNNER_URL"),
     claudeRunnerSettingsSecret: environmentValue("CLAUDE_RUNNER_SETTINGS_SECRET"),
     claudeRunnerCallSecret: environmentValue("CLAUDE_RUNNER_SECRET"),
+    ownerCookieSecret: process.env.OWNER_COOKIE_SECRET ?? "",
+    ownerCookieDomain: environmentValue("OWNER_COOKIE_DOMAIN"),
     serverName: environmentValue("SERVER_NAME") || "admin",
   };
 }
