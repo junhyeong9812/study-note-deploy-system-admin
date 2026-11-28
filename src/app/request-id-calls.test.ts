@@ -6,10 +6,14 @@
  *   한 쪽이 진입 함수 둘을 나란히 불러도(배포 이력 + 상세 · 로그 + 연관 로그) 같은 값. 그 요청의 서버 쪽 로그 줄의 ID 자리도 그 값(`screen-*` 의 고정 낱말이 아니다).
  * - 섞이지 않는다: 동시에 도는 두 요청은 서로의 값을 싣지 · 쓰지 않는다. 앞 요청의 값이 다음 요청(머리글 없음)에 남지 않는다.
  * - 들어온 요청 없이 시작되는 호출(통신 지도의 허브 · 의존 조회): 호출마다 새 16진수 소문자 32자 — 그 조회를 깨운 구독자의 요청 ID 를 쓰지 않는다(규약 1.2).
- * - 바깥(GitHub)에는 싣지 않는다(규약 1.2 "바깥 서비스를 부를 때는 싣지 않는다").
+ * - 바깥(GitHub · Claude 실행 자리)에는 싣지 않는다(규약 1.2 "바깥 서비스를 부를 때는 싣지 않는다" — 실행 자리는 규약의 목록에 없고 앞에 nginx 가 없다).
+ * - 쓰는 진입(POST — 재배포 접수 · Claude 상한 · 분석 보내기 · 주인 표시)도 같다: 그 요청의 호출에 그 값 하나, 고정 낱말(`redeploy` · `incident-analysis` · `owner-mark`)이나
+ *   진입이 따로 만든 값 대신 그 요청의 값이 로그 줄의 ID 자리에. 본문의 `request_id`(재배포의 접수 번호 — 일의 ID)는 그대로이고 머리글로 올리지 않는다(규약 1.2).
  * - 그 밖의 머리글(`X-Caller-Service: admin` · 비밀값)은 그대로.
  * 열어 둔 것: ID 를 요청의 길 따라 넘기는 법(인자 · AsyncLocalStorage — 이 테스트는 진입의 바깥에서만 본다) · 응답 머리글로 돌려주는가(규약 1.2 는 "처음 받는 쪽" = admin nginx 의 일 — 7.1 T4) ·
- * 허브의 로그 줄과 그 조회의 호출 ID 를 잇는가(꼴 · 구독자의 값이 아님만 본다) · 로그인 대기열의 재전송이 싣는 값(꼴 · 하나만 본다 — 여기서는 부르지 않는다).
+ * 허브의 로그 줄과 그 조회의 호출 ID 를 잇는가(꼴 · 구독자의 값이 아님만 본다) · 로그인 대기열의 재전송이 싣는 값(꼴 · 하나만 본다 — 여기서는 부르지 않는다) ·
+ * 일의 ID 가 ID 자리에 오는 로그 줄(재배포 접수의 확인 값을 본 뒤의 결과 줄 · 분석의 진행 줄 — 접수 번호 · 분석 번호)은 여기서 보지 않는다 ·
+ * 다른 서버를 부르지 않고 로그도 없는 진입(GET /api/owner-mark · 쪽 /owner-mark)은 밖에서 볼 것이 없다.
  * `next/headers` 의 `headers()` 는 Next 처럼 요청마다의 범위(AsyncLocalStorage)로 흉내 낸다 — route 핸들러도 같은 범위 안에서 부른다(Next 에서 둘은 같은 머리글이다). */
 import { AsyncLocalStorage } from "node:async_hooks";
 import { readFileSync } from "node:fs";
@@ -36,24 +40,42 @@ vi.mock("next/navigation", () => ({ redirect: (location: string) => { throw new 
 
 import { hash } from "@node-rs/argon2";
 import { POST as loginPost } from "@/app/api/auth/login/route";
+import { POST as claudeLimitsPost } from "@/app/api/claude-usage/limits/route";
+import { GET as claudeUsageGet } from "@/app/api/claude-usage/route";
 import { GET as deployDetailGet } from "@/app/api/deploys/detail/route";
+import { GET as redeployPreviewGet, POST as redeployAcceptPost } from "@/app/api/deploys/redeploy/route";
 import { GET as deploysGet } from "@/app/api/deploys/route";
+import { GET as deployVersionsGet } from "@/app/api/deploys/versions/route";
+import { POST as incidentAnalysisPost } from "@/app/api/incidents/analysis/route";
+import { GET as incidentsGet } from "@/app/api/incidents/route";
 import { GET as loginAttemptsGet } from "@/app/api/login-attempts/route";
 import { GET as logTraceGet } from "@/app/api/logs/trace/route";
 import { GET as logsGet } from "@/app/api/logs/route";
+import { POST as ownerMarkClearPost } from "@/app/api/owner-mark/clear/route";
+import { POST as ownerMarkSetPost } from "@/app/api/owner-mark/route";
 import { GET as resourcesGet } from "@/app/api/resources/route";
 import { GET as statusGet } from "@/app/api/status/route";
 import { GET as trafficStreamGet } from "@/app/api/traffic/stream/route";
 import { GET as requestTraceGet } from "@/app/api/trace/route";
+import { GET as visitsGet } from "@/app/api/visits/route";
+import ClaudeUsagePage from "@/app/claude-usage/page";
 import DeploysPage from "@/app/deploys/page";
+import RedeployPreviewPage from "@/app/deploys/redeploy/page";
+import DeployVersionsPage from "@/app/deploys/versions/page";
+import IncidentAnalysisPage from "@/app/incidents/analysis/page";
+import IncidentsPage from "@/app/incidents/page";
 import LoginAttemptsPage from "@/app/login-attempts/page";
 import LogsPage from "@/app/logs/page";
 import ResourcesPage from "@/app/resources/page";
 import StatusPage from "@/app/status/page";
 import TracePage from "@/app/trace/page";
 import TrafficPage from "@/app/traffic/page";
+import VisitsPage from "@/app/visits/page";
 import { SESSION_COOKIE_NAME, issueSessionToken } from "@/features/auth/lib/session";
 import { FAKE_ADMIN_ID, FAKE_ORIGIN, FAKE_PASSWORD, FAKE_SIGNING_KEY } from "@/features/auth/lib/test-fakes";
+import { CLAUDE_SETTINGS_HEADER, FAKE_CLAUDE_RUNNER_SETTINGS_SECRET, FAKE_CLAUDE_RUNNER_URL } from "@/features/claude-usage/lib/claude-runner-test-fakes";
+import { issueRedeployConfirmation, newRedeployRequestId } from "@/features/deploy-redeploy/lib/redeploy-confirmation";
+import { monitorIncidentId } from "@/features/incidents/lib/incident-id";
 import { FAKE_LLM_URL } from "@/features/traffic-map/lib/dependency-test-fakes";
 import { defaultTrafficDependencyHub, defaultTrafficMapHub, loadTrafficDependencies } from "@/features/traffic-map/server/traffic-map";
 import {
@@ -221,6 +243,15 @@ const ENTRIES: [string, (requestHeaders: Headers) => Promise<unknown>, boolean][
   ["쪽 /resources", page(ResourcesPage, {}), true],
   ["쪽 /status", () => StatusPage(), true],
   ["쪽 /trace", page(TracePage, { request_id: "req-0123456789ab" }), true],
+  ["GET /api/deploys/versions", (requestHeaders) => deployVersionsGet(apiRequest("/api/deploys/versions?service=backend", requestHeaders)), true],
+  ["GET /api/deploys/redeploy(확인 화면의 데이터)", (requestHeaders) => redeployPreviewGet(apiRequest(`/api/deploys/redeploy?service=backend&commit=${SHA}`, requestHeaders)), true],
+  ["GET /api/incidents(목록의 네 출처)", (requestHeaders) => incidentsGet(apiRequest("/api/incidents", requestHeaders)), true],
+  ["GET /api/visits", (requestHeaders) => visitsGet(apiRequest("/api/visits", requestHeaders)), true],
+  ["쪽 /deploys/versions", page(DeployVersionsPage, { service: "backend" }), true],
+  ["쪽 /deploys/redeploy", page(RedeployPreviewPage, { service: "backend", commit: SHA }), true],
+  ["쪽 /incidents", page(IncidentsPage, {}), true],
+  ["쪽 /incidents/analysis(그 문제를 찾는 목록의 호출)", page(IncidentAnalysisPage, { incident: monitorIncidentId("front") }), true],
+  ["쪽 /visits", page(VisitsPage, {}), true],
 ];
 
 describe("진입마다 — 들어온 ID 를 꼴만 보고 받고, 그 요청의 모든 호출 · 로그 줄에 그 값 하나", () => {
@@ -282,6 +313,9 @@ describe("섞이지 않는다 — 동시에 도는 두 요청 · 앞 요청의 �
     ["GET /api/logs/trace", (requestHeaders) => logTraceGet(apiRequest("/api/logs/trace?selected=1764212400000-0", requestHeaders))],
     ["쪽 /login-attempts", page(LoginAttemptsPage, {})],
     ["쪽 /deploys(이력 + 상세)", page(DeploysPage, { service: "backend", selected: "req-1", commit: SHA })],
+    ["GET /api/incidents(목록의 네 출처)", (requestHeaders) => incidentsGet(apiRequest("/api/incidents", requestHeaders))],
+    ["쪽 /deploys/redeploy", page(RedeployPreviewPage, { service: "backend", commit: SHA })],
+    ["쪽 /visits", page(VisitsPage, {})],
   ];
 
   for (const [entry, call] of CONCURRENT) {
@@ -459,6 +493,169 @@ describe("바깥(GitHub)에는 싣지 않는다 — 배포 상세가 GitHub 까�
     }
     for (const call of ours) expect(call.headers.get("x-request-id"), `${call.url.pathname}`).toBe("detail_trace_01");
   });
+});
+
+// ---- 바깥(Claude 실행 자리) — 규약의 목록에 없다: 머리글 둘을 싣지 않고, 그 요청의 로그 줄만 그 값 ----
+
+const RUNNER_ORIGIN = new URL(FAKE_CLAUDE_RUNNER_URL).origin;
+
+/** 들어온 ID 가 있을 때와 없을 때 — 쓰는 진입 · 실행 자리의 진입은 이 둘로 본다(받는 꼴의 판정은 위의 전수가 본다). */
+const GIVEN_AND_NEW: IncomingCase[] = [INCOMING_CASES[1], INCOMING_CASES[2]];
+
+/** 그 줄들의 ID 자리가 모두 그 요청의 값인가(들어온 값이 없으면 새 16진 32자 하나) — 그 값을 돌려준다. */
+function expectLinesCarryRequestId(lines: string[], label: string, incoming: IncomingCase): string {
+  expect(lines.length, `${label} — 로그 줄이 없다(빈 검사)`).toBeGreaterThan(0);
+  const id = lineId(lines[0]);
+  if (incoming.expected !== null) expect(id, `${label} — 로그 줄의 ID 자리: ${lines[0]}`).toBe(incoming.expected);
+  else expect(id, `${label} — 새 값의 꼴: ${lines[0]}`).toMatch(NEW_ID);
+  for (const line of lines) expect(lineId(line), `${label} — 로그 줄의 ID 자리: ${line}`).toBe(id);
+  return id;
+}
+
+function formRequest(path: string, requestHeaders: Headers, body: string, contentType = "application/x-www-form-urlencoded"): Request {
+  const merged = new Headers(requestHeaders);
+  merged.set("origin", FAKE_ORIGIN);
+  merged.set("content-type", contentType);
+  merged.set("x-real-ip", "198.51.100.77");
+  return new Request(new URL(path, FAKE_ORIGIN), { method: "POST", headers: merged, body });
+}
+
+describe("바깥(Claude 실행 자리)에는 싣지 않는다 — 그 요청의 로그 줄은 그 값", () => {
+  beforeEach(() => {
+    vi.stubEnv("CLAUDE_RUNNER_URL", FAKE_CLAUDE_RUNNER_URL);
+    vi.stubEnv("CLAUDE_RUNNER_SETTINGS_SECRET", FAKE_CLAUDE_RUNNER_SETTINGS_SECRET);
+  });
+
+  const RUNNER_ENTRIES: [string, (requestHeaders: Headers) => Promise<unknown>][] = [
+    ["GET /api/claude-usage", (requestHeaders) => claudeUsageGet(apiRequest("/api/claude-usage", requestHeaders))],
+    ["쪽 /claude-usage", () => ClaudeUsagePage()],
+  ];
+
+  for (const [entry, call] of RUNNER_ENTRIES) {
+    for (const incoming of GIVEN_AND_NEW) {
+      it(`${entry} · ${incoming.label} — 헬스 · 사용량 · 상한의 세 호출에 X-Request-Id 도 X-Caller-Service 도 없다 · 실패 줄 셋의 ID 자리는 그 요청의 값`, async () => {
+        const requestHeaders = incoming.headers();
+        await inRequest(requestHeaders, () => call(requestHeaders));
+        expect(recorder.calls.map((recorded) => recorded.url.pathname).sort()).toEqual(["/health", "/limits", "/usage"]);
+        for (const recorded of recorder.calls) {
+          const where = `${entry} → ${recorded.method} ${recorded.url.pathname}`;
+          expect(recorded.url.origin, where).toBe(RUNNER_ORIGIN);
+          expect(recorded.headers.get("x-request-id"), `${where} — 추적 ID 를 싣지 않는다`).toBeNull();
+          expect(recorded.headers.get("x-caller-service"), `${where} — 호출자 머리글을 싣지 않는다`).toBeNull();
+          if (recorded.url.pathname !== "/health") expect(recorded.headers.get(CLAUDE_SETTINGS_HEADER), `${where} — 설정용 비밀값은 그대로`).toBe(FAKE_CLAUDE_RUNNER_SETTINGS_SECRET);
+        }
+        expect(consoleLines).toHaveLength(3);
+        for (const line of consoleLines) expect(line.startsWith("screen-"), `${entry} — 옛 고정 낱말: ${line}`).toBe(false);
+        expectLinesCarryRequestId(consoleLines, `${entry} · ${incoming.label}`, incoming);
+      });
+    }
+  }
+
+  for (const incoming of GIVEN_AND_NEW) {
+    it(`POST /api/claude-usage/limits · ${incoming.label} — 지금 상한을 다시 읽는 호출에 싣지 않는다 · 결과 줄의 ID 자리는 그 요청의 값(진입이 따로 만든 값이 아니다)`, async () => {
+      const requestHeaders = incoming.headers();
+      const response = await inRequest(requestHeaders, () => claudeLimitsPost(formRequest("/api/claude-usage/limits", requestHeaders, "enabled=true")));
+      expect(response.status).toBe(503);   // 지금 상한을 읽지 못해 바꾸지 않았다(실행 자리가 503)
+      expect(recorder.calls.map((recorded) => `${recorded.method} ${recorded.url.origin}${recorded.url.pathname}`)).toEqual([`GET ${RUNNER_ORIGIN}/limits`]);
+      expect(recorder.calls[0].headers.get("x-request-id")).toBeNull();
+      expect(recorder.calls[0].headers.get("x-caller-service")).toBeNull();
+      const lines = consoleLines.filter((line) => line.includes(":claude-limits:"));
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain("claude-limits:limits_unreadable");
+      expectLinesCarryRequestId(consoleLines, `상한 바꾸기 · ${incoming.label}`, incoming);
+    });
+  }
+});
+
+// ---- 쓰는 진입(POST) — 로그 줄의 ID 자리 · 재배포 접수의 호출 ----
+
+describe("쓰는 진입 — 고정 낱말 대신 그 요청의 값이 로그 줄의 ID 자리에", () => {
+  for (const incoming of GIVEN_AND_NEW) {
+    it(`POST /api/deploys/redeploy(꼴이 틀린 본문) · ${incoming.label} — 줄 redeploy:malformed 의 ID 자리`, async () => {
+      const requestHeaders = incoming.headers();
+      const response = await inRequest(requestHeaders, () => redeployAcceptPost(formRequest("/api/deploys/redeploy", requestHeaders, "not a form", "text/plain")));
+      expect(response.status).toBe(400);
+      expect(recorder.calls).toEqual([]);
+      expect(consoleLines.filter((line) => line.includes(":redeploy:malformed "))).toHaveLength(1);
+      const id = expectLinesCarryRequestId(consoleLines, `재배포 접수(꼴) · ${incoming.label}`, incoming);
+      expect(id).not.toBe("redeploy");
+    });
+
+    it(`POST /api/incidents/analysis(꼴이 틀린 본문) · ${incoming.label} — 줄 incident-analysis:malformed 의 ID 자리`, async () => {
+      const requestHeaders = incoming.headers();
+      const response = await inRequest(requestHeaders, () => incidentAnalysisPost(formRequest("/api/incidents/analysis", requestHeaders, "not a form", "text/plain")));
+      expect(response.status).toBe(400);
+      expect(recorder.calls).toEqual([]);
+      expect(consoleLines.filter((line) => line.includes(":incident-analysis:malformed "))).toHaveLength(1);
+      const id = expectLinesCarryRequestId(consoleLines, `분석 보내기(꼴) · ${incoming.label}`, incoming);
+      expect(id).not.toBe("incident-analysis");
+    });
+
+    it(`POST /api/owner-mark(설정 없음) · ${incoming.label} — 줄 owner-mark:not_configured 의 ID 자리`, async () => {
+      const requestHeaders = incoming.headers();
+      const response = await inRequest(requestHeaders, () => ownerMarkSetPost(formRequest("/api/owner-mark", requestHeaders, "")));
+      expect(response.status).toBe(503);
+      expect(consoleLines.filter((line) => line.includes(":owner-mark:not_configured action=set "))).toHaveLength(1);
+      const id = expectLinesCarryRequestId(consoleLines, `주인 표시 심기 · ${incoming.label}`, incoming);
+      expect(id).not.toBe("owner-mark");
+    });
+  }
+
+  it("POST /api/owner-mark/clear(설정 없음) — 줄 owner-mark:not_configured action=clear 의 ID 자리", async () => {
+    const incoming = GIVEN_AND_NEW[0];
+    const requestHeaders = incoming.headers();
+    const response = await inRequest(requestHeaders, () => ownerMarkClearPost(formRequest("/api/owner-mark/clear", requestHeaders, "")));
+    expect(response.status).toBe(503);
+    expect(consoleLines.filter((line) => line.includes(":owner-mark:not_configured action=clear "))).toHaveLength(1);
+    expectLinesCarryRequestId(consoleLines, "주인 표시 지우기", incoming);
+  });
+});
+
+describe("재배포 접수(POST /api/deploys/redeploy) — 접수까지 가는 세 호출이 그 요청의 값 하나 · 접수 번호(일의 ID)는 본문에만", () => {
+  for (const incoming of GIVEN_AND_NEW) {
+    it(`${incoming.label} — 관측 서버의 판정 · 마스터의 이력 · 마스터의 접수(직접 fetch)`, async () => {
+      const calls: RecordedCall[] = [];
+      vi.stubGlobal("fetch", vi.fn(async (input: string | URL, init: RequestInit = {}) => {
+        const url = new URL(String(input));
+        const method = (init.method ?? "GET").toUpperCase();
+        calls.push({ url, method, headers: new Headers(init.headers ?? {}), body: init.body ?? null });
+        if (url.pathname === "/auth/attempts") return jsonBody({ success: true, data: { allowed: true, outcome: "success", locked_until: null, lock_started: false, failures: 0 } });
+        if (url.pathname === "/deploys") {
+          return jsonBody({ success: true, data: { deployments: [
+            { request_id: "deployed-1", service: "backend", commit_sha: SHA, state: "succeeded", accepted_at: "2026-11-22T02:00:00Z", finished_at: "2026-11-22T02:05:00Z", ci_ms: 60000, cd_ms: 30000 },
+          ] } });
+        }
+        if (url.pathname === "/deploy" && method === "POST") {
+          const sent = JSON.parse(String(init.body)) as { request_id: string };
+          return jsonBody({ success: true, data: { request_id: sent.request_id, service: "backend", state: "ci_running" } }, 202);
+        }
+        return jsonBody({ success: false, error: { code: "unavailable" } }, 503);
+      }));
+      const jobId = newRedeployRequestId();
+      const confirmation = issueRedeployConfirmation(FAKE_SIGNING_KEY, { service: "backend", commitSha: SHA, requestId: jobId, issuedAt: Date.now(), account: FAKE_ADMIN_ID });
+      const body = new URLSearchParams({ service: "backend", commit: SHA, confirmation, password: FAKE_PASSWORD }).toString();
+      const requestHeaders = incoming.headers();
+      const response = await inRequest(requestHeaders, () => redeployAcceptPost(formRequest("/api/deploys/redeploy", requestHeaders, body)));
+      expect(response.status).toBe(303);
+      expect(calls.map((call) => `${call.method} ${call.url.origin}${call.url.pathname}`)).toEqual([
+        `POST ${FAKE_OBSERVE_URL}/auth/attempts`, `GET ${FAKE_DEPLOY_MASTER_URL}/deploys`, `POST ${FAKE_DEPLOY_MASTER_URL}/deploy`,
+      ]);
+      const id = calls[0].headers.get("x-request-id");
+      if (incoming.expected !== null) expect(id).toBe(incoming.expected);
+      else expect(id).toMatch(NEW_ID);
+      for (const call of calls) {
+        const where = `${call.method} ${call.url.origin}${call.url.pathname}`;
+        expect(call.headers.get("x-request-id"), `${where} — 정확히 하나 · 그 요청의 값`).toBe(id);
+        expect(call.headers.get("x-caller-service"), `${where} — 호출자 머리글`).toBe("admin");
+        expect(call.headers.get(SECRET_BY_ORIGIN.get(call.url.origin)!), `${where} — 비밀값은 그대로`).not.toBeNull();
+      }
+      // 접수의 본문 · 메서드는 그대로 — 접수 번호(일의 ID)는 본문에만 있고 머리글의 추적 ID 와 다른 값이다
+      const accept = calls[2];
+      expect(JSON.parse(String(accept.body))).toEqual({ service: "backend", commit_sha: SHA, request_id: jobId, requested_by: `admin:${FAKE_ADMIN_ID}` });
+      expect(accept.headers.get("content-type")).toContain("application/json");
+      expect(accept.headers.get("x-request-id")).not.toBe(jobId);
+    });
+  }
 });
 
 describe("브라우저 쪽 코드는 요청 ID 모듈을 가져오지 않는다(서버 전용)", () => {

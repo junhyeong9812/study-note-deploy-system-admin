@@ -3,7 +3,7 @@
  * 고정하는 계약:
  * - 값은 코드의 상수 `admin`(소문자) · 호출마다 **정확히 하나**(`Headers.get` 이 쉼표로 잇지 않은 `admin`).
  * - 들어온 `X-Caller-Service`(edge · front · 이상한 값 · 여러 값)를 옮겨 싣지 않는다 · 설정(SERVER_NAME 등)에서 읽지 않는다.
- * - 바깥(GitHub)에는 싣지 않는다. 그 밖의 머리글(비밀값) · 본문 · 메서드는 그대로. 브라우저 쪽 코드는 이 머리글을 싣지 않는다.
+ * - 바깥(GitHub · Claude 실행 자리 — 규약의 목록에 없고 앞에 nginx 가 없다)에는 싣지 않는다. 그 밖의 머리글(비밀값) · 본문 · 메서드는 그대로. 브라우저 쪽 코드는 이 머리글을 싣지 않는다.
  * 두 겹으로 본다 — (가) 클라이언트마다 모든 메서드(전수 표의 호출 자리 하나하나) · (나) 화면 · API · 허브의 진입에서 실제 설정 · 실제 전역 fetch 로. */
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -25,22 +25,33 @@ vi.mock("next/navigation", () => ({ redirect: (location: string) => { throw new 
 
 import { hash } from "@node-rs/argon2";
 import { POST as loginPost } from "@/app/api/auth/login/route";
+import { GET as claudeUsageGet } from "@/app/api/claude-usage/route";
 import { GET as deployDetailGet } from "@/app/api/deploys/detail/route";
+import { GET as redeployPreviewGet } from "@/app/api/deploys/redeploy/route";
 import { GET as deploysGet } from "@/app/api/deploys/route";
+import { GET as deployVersionsGet } from "@/app/api/deploys/versions/route";
+import { GET as incidentsGet } from "@/app/api/incidents/route";
 import { GET as loginAttemptsGet } from "@/app/api/login-attempts/route";
 import { GET as logTraceGet } from "@/app/api/logs/trace/route";
 import { GET as logsGet } from "@/app/api/logs/route";
 import { GET as resourcesGet } from "@/app/api/resources/route";
 import { GET as statusGet } from "@/app/api/status/route";
 import { GET as requestTraceGet } from "@/app/api/trace/route";
+import { GET as visitsGet } from "@/app/api/visits/route";
 import { createAlertClient } from "@/features/auth/lib/alert-client";
 import { createObserveClient } from "@/features/auth/lib/observe-client";
 import { SESSION_COOKIE_NAME, issueSessionToken } from "@/features/auth/lib/session";
 import { FAKE_ADMIN_ID, FAKE_ORIGIN, FAKE_PASSWORD, FAKE_SIGNING_KEY } from "@/features/auth/lib/test-fakes";
+import { createClaudeRunnerClient } from "@/features/claude-usage/lib/claude-runner-client";
+import { CLAUDE_SETTINGS_HEADER, FAKE_CLAUDE_RUNNER_SETTINGS_SECRET, FAKE_CLAUDE_RUNNER_URL } from "@/features/claude-usage/lib/claude-runner-test-fakes";
 import { createDeployGitClient } from "@/features/deploy-detail/lib/deploy-git-client";
 import { createGitHubClient } from "@/features/deploy-detail/lib/github-client";
+import { createRedeployAcceptClient } from "@/features/deploy-redeploy/lib/redeploy-accept-client";
 import { createDeployHistoryClient } from "@/features/deploys/lib/deploy-history-client";
 import { parseDeployHistoryQuery } from "@/features/deploys/lib/deploy-history-query";
+import { createAnalysisRunnerClient } from "@/features/incident-analysis/lib/analysis-runner-client";
+import { createDeployFailureOutputClient } from "@/features/incident-analysis/lib/deploy-failure-output-client";
+import { collectIncidentsScreen } from "@/features/incidents/lib/incidents-screen";
 import { createIncidentClient } from "@/features/log-trace/lib/incident-client";
 import { createLoginAttemptsClient } from "@/features/login-attempts/lib/login-attempts-client";
 import { parseLoginAttemptsQuery } from "@/features/login-attempts/lib/login-attempts-query";
@@ -53,6 +64,7 @@ import { createDependencyClient } from "@/features/traffic-map/lib/dependency-cl
 import { FAKE_LLM_URL } from "@/features/traffic-map/lib/dependency-test-fakes";
 import { createTrafficMapClient } from "@/features/traffic-map/lib/traffic-map-client";
 import { defaultTrafficMapHub, loadTrafficDependencies } from "@/features/traffic-map/server/traffic-map";
+import { createVisitSummaryClient } from "@/features/visits/lib/visit-summary-client";
 import { ADMIN_CALLER_SERVICE, CALLER_SERVICE_HEADER } from "@/shared/lib/caller-service";
 import { okValue } from "@/shared/lib/upstream-test-fakes";
 import {
@@ -63,6 +75,10 @@ const NOW = Date.UTC(2026, 10, 27, 3, 0, 0);
 /** 우리 서비스의 주소(규약 §2.1 의 이름 — 관측 서버 · 알림 서버 · ci-cd 마스터 · backend · llm-wrapper). */
 const OUR_ORIGINS = [FAKE_OBSERVE_URL, FAKE_ALERT_URL, FAKE_DEPLOY_MASTER_URL, FAKE_BACKEND_URL, FAKE_LLM_URL].map((url) => new URL(url).origin);
 const SHA = "0123456789abcdef0123456789abcdef01234567";
+/** 재배포의 접수 번호(일의 ID — 본문에 싣는다). */
+const JOB_ID = "adm-0123456789abcdef";
+const RUNNER_ORIGIN = new URL(FAKE_CLAUDE_RUNNER_URL).origin;
+const FAKE_CLAUDE_RUNNER_CALL_SECRET = "fake-claude-call-secret-marker-k85";
 
 interface RecordedCall { url: URL; method: string; headers: Headers; body: unknown }
 
@@ -127,6 +143,15 @@ describe("(가) 클라이언트마다 — 모든 호출 자리에 정확히 하�
       alertUrl: FAKE_ALERT_URL, alertSecret: FAKE_ALERT_SECRET, observeUrl: FAKE_OBSERVE_URL, backendUrl: FAKE_BACKEND_URL, deployMasterUrl: FAKE_DEPLOY_MASTER_URL, fetch,
     }), null],
     ["의존 상태(T9d — backend · llm-wrapper · observe)", (fetch) => createDependencyClient({ backendUrl: FAKE_BACKEND_URL, llmUrl: FAKE_LLM_URL, observeUrl: FAKE_OBSERVE_URL, fetch }).readDependencies(), null],
+    ["ci-cd 마스터 — 재배포 접수(POST /deploy · 직접 fetch)", (fetch) => createRedeployAcceptClient({ baseUrl: FAKE_DEPLOY_MASTER_URL, secret: FAKE_DEPLOY_SECRET, fetch })
+      .accept({ service: "backend", commitSha: SHA, requestId: JOB_ID, requestedBy: `admin:${FAKE_ADMIN_ID}` }), "x-deploy-secret"],
+    ["ci-cd 마스터 — 배포 실패의 출력(GET /deploys/<접수 번호>/output)", (fetch) => createDeployFailureOutputClient({ baseUrl: FAKE_DEPLOY_MASTER_URL, secret: FAKE_DEPLOY_SECRET, fetch })
+      .readFailureOutput(JOB_ID), "x-deploy-secret"],
+    ["관측 서버 — 방문 요약(GET /visits/summary)", (fetch) => createVisitSummaryClient({ baseUrl: FAKE_OBSERVE_URL, secret: FAKE_OBSERVE_SECRET, fetch }).summary(7), "x-observe-secret"],
+    ["문제 화면의 목록 — 알림 감시 · 관측 지표 · 마스터 이력 · 관측 오류 로그(넷)", (fetch) => collectIncidentsScreen({
+      alertUrl: FAKE_ALERT_URL, alertSecret: FAKE_ALERT_SECRET, observeUrl: FAKE_OBSERVE_URL, observeSecret: FAKE_OBSERVE_SECRET,
+      deployMasterUrl: FAKE_DEPLOY_MASTER_URL, deploySecret: FAKE_DEPLOY_SECRET, fetch, now: () => NOW,
+    }, null), null],
   ];
 
   for (const [label, call, secretHeader] of cases) {
@@ -157,6 +182,57 @@ describe("(가) 클라이언트마다 — 모든 호출 자리에 정확히 하�
     expect(calls).toHaveLength(1);
     expect(calls[0].url.origin).toBe("https://api.github.com");
     expect(calls[0].headers.get("x-caller-service")).toBeNull();
+  });
+
+  it("문제 화면의 목록은 네 출처 모두 — 비밀값도 그대로", async () => {
+    const recorder = recordingFetch();
+    await collectIncidentsScreen({
+      alertUrl: FAKE_ALERT_URL, alertSecret: FAKE_ALERT_SECRET, observeUrl: FAKE_OBSERVE_URL, observeSecret: FAKE_OBSERVE_SECRET,
+      deployMasterUrl: FAKE_DEPLOY_MASTER_URL, deploySecret: FAKE_DEPLOY_SECRET, fetch: recorder.fetch, now: () => NOW,
+    }, null);
+    expect(recorder.calls.map((call) => `${call.url.origin}${call.url.pathname}`).sort()).toEqual([
+      `${FAKE_ALERT_URL}/monitors`, `${FAKE_DEPLOY_MASTER_URL}/deploys`, `${FAKE_OBSERVE_URL}/logs`, `${FAKE_OBSERVE_URL}/metrics/latest`,
+    ].sort());
+    expectAdminOnEveryCall(recorder.calls, "문제 화면의 목록");
+    for (const call of recorder.calls) {
+      const secretHeader = call.url.origin === new URL(FAKE_ALERT_URL).origin ? "x-alert-secret" : call.url.origin === new URL(FAKE_OBSERVE_URL).origin ? "x-observe-secret" : "x-deploy-secret";
+      expect(call.headers.get(secretHeader), `${call.url.pathname} 의 비밀값`).not.toBeNull();
+    }
+  });
+
+  it("바깥(Claude 실행 자리)에는 싣지 않는다 — 읽기 셋 · 상한 바꾸기 · 분석 부르기(비밀값 · 본문은 그대로)", async () => {
+    const recorder = recordingFetch();
+    const runner = createClaudeRunnerClient({ baseUrl: FAKE_CLAUDE_RUNNER_URL, settingsSecret: FAKE_CLAUDE_RUNNER_SETTINGS_SECRET, fetch: recorder.fetch });
+    await runner.readHealth();
+    await runner.readUsage();
+    await runner.readLimits();
+    await runner.replaceLimits({ enabled: true, total: { perDay: 10, perHour: 5 }, purposes: { chat: { perDay: 10, perHour: 5 } } }, `admin:${FAKE_ADMIN_ID}`);
+    await createAnalysisRunnerClient({ baseUrl: FAKE_CLAUDE_RUNNER_URL, callSecret: FAKE_CLAUDE_RUNNER_CALL_SECRET, fetch: recorder.fetch }).runAnalysis("분석할 글", JOB_ID);
+    expect(recorder.calls.map((call) => `${call.method} ${call.url.pathname}`)).toEqual(["GET /health", "GET /usage", "GET /limits", "PUT /limits", "POST /runs"]);
+    for (const call of recorder.calls) {
+      const where = `${call.method} ${call.url.pathname}`;
+      expect(call.url.origin, where).toBe(RUNNER_ORIGIN);
+      expect(call.headers.get("x-caller-service"), `${where} — 호출자 머리글을 싣지 않는다`).toBeNull();
+      expect(call.headers.get("x-request-id"), `${where} — 추적 ID 를 싣지 않는다`).toBeNull();
+    }
+    expect(recorder.calls[0].headers.get(CLAUDE_SETTINGS_HEADER), "헬스에는 비밀값이 없다").toBeNull();
+    for (const call of recorder.calls.slice(1, 4)) expect(call.headers.get(CLAUDE_SETTINGS_HEADER), `${call.method} ${call.url.pathname} 의 설정용 비밀값`).toBe(FAKE_CLAUDE_RUNNER_SETTINGS_SECRET);
+    expect(recorder.calls[4].headers.get("x-claude-runner-secret")).toBe(FAKE_CLAUDE_RUNNER_CALL_SECRET);
+    expect(JSON.parse(String(recorder.calls[4].body))).toMatchObject({ purpose: "analysis", request_id: JOB_ID });
+  });
+
+  it("본문 · 메서드는 그대로 — 재배포 접수는 POST · JSON 본문 네 칸(머리글 하나가 더해질 뿐 · 접수 번호는 본문에만)", async () => {
+    const recorder = recordingFetch();
+    await createRedeployAcceptClient({ baseUrl: FAKE_DEPLOY_MASTER_URL, secret: FAKE_DEPLOY_SECRET, fetch: recorder.fetch })
+      .accept({ service: "backend", commitSha: SHA, requestId: JOB_ID, requestedBy: `admin:${FAKE_ADMIN_ID}` });
+    expect(recorder.calls).toHaveLength(1);
+    expect(recorder.calls[0].method).toBe("POST");
+    expect(`${recorder.calls[0].url.origin}${recorder.calls[0].url.pathname}`).toBe(`${FAKE_DEPLOY_MASTER_URL}/deploy`);
+    expect(JSON.parse(String(recorder.calls[0].body))).toEqual({ service: "backend", commit_sha: SHA, request_id: JOB_ID, requested_by: `admin:${FAKE_ADMIN_ID}` });
+    expect(recorder.calls[0].headers.get("content-type")).toContain("application/json");
+    expect(recorder.calls[0].headers.get("x-deploy-secret")).toBe(FAKE_DEPLOY_SECRET);
+    expect(recorder.calls[0].headers.get("x-caller-service")).toBe("admin");
+    expect([...recorder.calls[0].headers.values()], "접수 번호를 머리글로 올리지 않는다").not.toContain(JOB_ID);
   });
 
   it("본문 · 메서드는 그대로 — 로그인 시도 기록은 POST · JSON 본문(머리글 하나가 더해질 뿐)", async () => {
@@ -233,6 +309,10 @@ const ENTRIES: [string, (incoming: Record<string, string>) => Promise<unknown>][
   ["GET /api/resources", (incoming) => resourcesGet(apiRequest("/api/resources", incoming))],
   ["GET /api/status", (incoming) => statusGet(apiRequest("/api/status", incoming))],
   ["GET /api/trace", (incoming) => requestTraceGet(apiRequest("/api/trace?request_id=req-0123456789ab", incoming))],
+  ["GET /api/deploys/versions", (incoming) => deployVersionsGet(apiRequest("/api/deploys/versions?service=backend", incoming))],
+  ["GET /api/deploys/redeploy(확인 화면의 데이터)", (incoming) => redeployPreviewGet(apiRequest(`/api/deploys/redeploy?service=backend&commit=${SHA}`, incoming))],
+  ["GET /api/incidents", (incoming) => incidentsGet(apiRequest("/api/incidents", incoming))],
+  ["GET /api/visits", (incoming) => visitsGet(apiRequest("/api/visits", incoming))],
   ["통신 지도의 허브 — 주기 조회(snapshot)", async () => { defaultTrafficMapHub().clear(); return defaultTrafficMapHub().snapshot("5m"); }],
   ["통신 지도의 의존 조회(허브의 load)", () => loadTrafficDependencies()],
 ];
@@ -258,6 +338,17 @@ describe("(나) 진입마다 — 들어온 값을 옮기지 않고 · 설정에�
     await vi.waitFor(() => expect(recorder.calls.some((call) => call.url.origin === new URL(FAKE_ALERT_URL).origin)).toBe(true));
     expect(recorder.calls.some((call) => call.url.pathname === "/auth/attempts")).toBe(true);
     expectAdminOnEveryCall(recorder.calls, "로그인");
+  });
+
+  it("GET /api/claude-usage — 실행 자리(바깥)로 가는 세 호출에는 싣지 않는다(들어온 머리글 edge · 실제 설정)", async () => {
+    vi.stubEnv("CLAUDE_RUNNER_URL", FAKE_CLAUDE_RUNNER_URL);
+    vi.stubEnv("CLAUDE_RUNNER_SETTINGS_SECRET", FAKE_CLAUDE_RUNNER_SETTINGS_SECRET);
+    await claudeUsageGet(apiRequest("/api/claude-usage", { "x-caller-service": "edge" }));
+    expect(recorder.calls.map((call) => `${call.url.origin}${call.url.pathname}`).sort()).toEqual([`${RUNNER_ORIGIN}/health`, `${RUNNER_ORIGIN}/limits`, `${RUNNER_ORIGIN}/usage`]);
+    for (const call of recorder.calls) {
+      expect(call.headers.get("x-caller-service"), call.url.pathname).toBeNull();
+      expect(call.headers.get("x-request-id"), call.url.pathname).toBeNull();
+    }
   });
 
   it("통신 지도의 허브 결과는 그대로 — 실패도 사건으로(머리글 하나가 더해질 뿐)", async () => {
