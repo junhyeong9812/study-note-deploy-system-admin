@@ -151,7 +151,7 @@ function observeHealthCell(response: UpstreamResponse): UpstreamResult<ObserveHe
   return { ok: true, value: { ...cell.value, backlog, lastLogAt } };
 }
 
-function parseMonitors(response: UpstreamResponse): AlertMonitorsView | null {
+export function parseMonitors(response: UpstreamResponse): AlertMonitorsView | null {
   const data = envelopeData(response);
   if (data === undefined || !Array.isArray(data.monitors)) return null;
   const { last_round_at: lastRoundAt, undelivered } = data;

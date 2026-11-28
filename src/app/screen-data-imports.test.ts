@@ -18,6 +18,7 @@ const SCREEN_ENTRY_MODULES: Record<string, string> = {
   "/status": "@/features/status/server/",
   "/login-attempts": "@/features/login-attempts/server/",
   "/resources": "@/features/resources/server/",
+  "/incidents": "@/features/incidents/server/",
   "/visits": "@/features/visits/server/",
   "/deploys/versions": "@/features/deploy-versions/server/",
   "/deploys/redeploy": "@/features/deploy-redeploy/server/",

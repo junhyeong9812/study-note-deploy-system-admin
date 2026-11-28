@@ -3,6 +3,8 @@
  * 받은 값(진입 함수의 자원 요약)만 그린다 — 다른 서버를 부르지 않는다. 요약 조회가 실패하면 이 카드만 "확인하지 못함 — <고정 글>".
  * 상태는 색 + 기호 + 글자(색만으로 전하지 않는다). */
 import { formatKoreanTime } from "@/features/deploys/lib/deploy-format";
+import { resourceIncidentId } from "@/features/incidents/lib/incident-id";
+import { incidentHref } from "@/features/incidents/lib/incidents-query";
 import { formatAge } from "@/features/resources/lib/resource-format";
 import { resourcesHref } from "@/features/resources/lib/resources-query";
 import type { StatusResourceRow, StatusResourcesSummary, StatusResourceValue } from "@/features/status/lib/status-resources";
@@ -35,7 +37,8 @@ function FreshnessCell({ row }: { row: StatusResourceRow }) {
   );
 }
 
-/** 임계값 — 가장 심한 것 하나 + 나머지 개수("! 디스크 경고(경고) 외 1건"). 없으면 "없음", 모르면 "확인하지 못함". */
+/** 임계값 — 가장 심한 것 하나 + 나머지 개수("! 디스크 경고(경고) 외 1건"). 없으면 "없음", 모르면 "확인하지 못함".
+ * 가장 심한 것은 그 문제로 가는 링크 — 이름(aria-label)은 `<서버> <규칙 이름>[ <대상>] 문제 보기`. */
 function FiringCell({ row, firingKnown }: { row: StatusResourceRow; firingKnown: boolean }) {
   if (!firingKnown) return <td><span className={styles.none}>확인하지 못함</span></td>;
   const worst = row.worstFiring;
@@ -43,7 +46,7 @@ function FiringCell({ row, firingKnown }: { row: StatusResourceRow; firingKnown:
   return (
     <td className={worst.severity === "critical" ? styles.undelivered : undefined}>
       <span aria-hidden="true" className={styles.badgeMark}>{SEVERITY_MARKS[worst.severity] ?? "?"} </span>
-      <strong>{worst.ruleLabel}{worst.target !== null && <> {worst.target}</>}({worst.severityLabel})</strong>
+      <a href={incidentHref(resourceIncidentId(row.server, worst.rule, worst.target))} aria-label={`${row.server} ${worst.ruleLabel}${worst.target === null ? "" : ` ${worst.target}`} 문제 보기`}><strong>{worst.ruleLabel}{worst.target !== null && <> {worst.target}</>}({worst.severityLabel})</strong></a>
       {row.firingCount > 1 && <> 외 {row.firingCount - 1}건</>}
     </td>
   );
