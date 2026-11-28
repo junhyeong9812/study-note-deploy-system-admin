@@ -9,7 +9,7 @@ import { describe, expect, it } from "vitest";
 import { APP_DIRECTORY, routesFromAppDirectory } from "@/features/auth/lib/test-fakes";
 
 const SOURCE_DIRECTORY = fileURLToPath(new URL("..", import.meta.url));
-const SCREEN_FEATURES = ["deploys", "logs", "status", "login-attempts", "resources", "deploy-versions", "deploy-redeploy"] as const;
+const SCREEN_FEATURES = ["deploys", "logs", "status", "login-attempts", "resources", "visits", "deploy-versions", "deploy-redeploy"] as const;
 
 /** 화면 경로 → 그 화면이 써야 하는 진입 모듈(경로가 생기면 검사가 켜진다). */
 const SCREEN_ENTRY_MODULES: Record<string, string> = {
@@ -18,6 +18,7 @@ const SCREEN_ENTRY_MODULES: Record<string, string> = {
   "/status": "@/features/status/server/",
   "/login-attempts": "@/features/login-attempts/server/",
   "/resources": "@/features/resources/server/",
+  "/visits": "@/features/visits/server/",
   "/deploys/versions": "@/features/deploy-versions/server/",
   "/deploys/redeploy": "@/features/deploy-redeploy/server/",
 };
