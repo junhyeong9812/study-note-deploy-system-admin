@@ -1,8 +1,9 @@
 /** 배포 이력 화면의 주소(순수) — 목록 조건과 상세 선택을 주소에 담는다(새로 고침 · 뒤로 가기 · 주소 공유가 그대로 된다 — 명세 §10.2).
  * 인자: service(목록의 서비스 선택 — 없으면 전체) · limit(목록 건수) · selected(고른 배포의 요청 ID) · selectedService(고른 줄의 서비스 —
- * "전체" 보기에서도 상세의 데이터 조회에 쓴다) · commit(상세에서 고른 커밋의 40자 SHA).
+ * "전체" 보기에서도 상세의 데이터 조회에 쓴다) · commit(상세에서 고른 커밋의 40자 SHA) · incident(문제에서 온 접수의 결과 — 문제 화면으로 돌아가는 링크).
  * 상세 데이터 경로(/api/deploys/detail)의 입력 이름은 service · selected · commit 이므로 detailInput 이 이름을 옮긴다. */
 import { DEPLOY_HISTORY_DEFAULT_LIMIT, type DeployService } from "@/features/deploys/lib/deploy-history-query";
+import { isIncidentId } from "@/features/incidents/lib/incident-id";
 import type { SearchParamsInput } from "@/shared/lib/upstream-result";
 
 export const DEPLOYS_PATH = "/deploys";
@@ -18,6 +19,8 @@ export interface DeploySelectionAddress {
   requestId: string;
   service: string;
   commitSha?: string | null;
+  /** 문제에서 온 접수의 결과로 보일 때 그 문제의 ID — 화면이 문제 화면으로 돌아가는 링크를 단다(명세 ⑫ §24) */
+  incidentId?: string | null;
 }
 
 export function deploysHref(list: DeployListAddress, selection: DeploySelectionAddress | null = null): string {
@@ -28,6 +31,7 @@ export function deploysHref(list: DeployListAddress, selection: DeploySelectionA
     search.set("selected", selection.requestId);
     search.set("selectedService", selection.service);
     if (selection.commitSha) search.set("commit", selection.commitSha);
+    if (selection.incidentId) search.set("incident", selection.incidentId);
   }
   const query = search.toString();
   return query.length > 0 ? `${DEPLOYS_PATH}?${query}` : DEPLOYS_PATH;
@@ -41,6 +45,11 @@ export function hasDetailSelection(input: SearchParamsInput): boolean {
 /** 목록에서 강조할 요청 ID(하나의 글자일 때만). */
 export function selectedRequestIdOf(input: SearchParamsInput): string | null {
   return typeof input.selected === "string" && input.selected.length > 0 ? input.selected : null;
+}
+
+/** 주소의 incident — 문제의 ID 꼴(isIncidentId)인 글자 하나일 때만, 아니면 null(링크를 달지 않는다). */
+export function incidentIdOf(input: SearchParamsInput): string | null {
+  return typeof input.incident === "string" && isIncidentId(input.incident) ? input.incident : null;
 }
 
 /** 화면 주소의 인자 → 상세 진입의 입력(service = 고른 줄의 서비스, 없으면 목록의 서비스). */

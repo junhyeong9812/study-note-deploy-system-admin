@@ -17,6 +17,9 @@
  *
  * 서비스 ↔ 컨테이너(계열 이름 — 자리 이름을 뗀 것)의 맞춤:
  * - 그 서비스의 컨테이너: 계열 이름이 서비스와 같거나 `<서비스>-` 로 시작(§10.4 "service 이름으로 시작" — `-` 경계를 둔다: front 는 frontier 를 잡지 않는다).
+ *   예외 — 컨테이너 이름이 고정된 서비스(FIXED_SERVICE_CONTAINER_NAMES): 그 이름과 같거나 `<그 이름>-` 로 시작하는 것만. `claude` 는 단일 컨테이너
+ *   `claude-runner` 뿐이고, 옛 통로의 중계 `claude-bridge-relay` 는 claude 의 컨테이너가 아니다(잡으면 backend 와 같은 서버가 `[backend, claude]` 로 보인다).
+ *   실행 자리를 backend 와 같은 서버에 올리면 그 서버의 서비스가 둘이라 자원 임계값 문제에 조치 링크가 나오지 않는다(정한 규칙의 결과).
  * - 그 서비스 컨테이너(값을 보일 하나): SERVICE_CONTAINER_NAMES[서비스], 표에 없으면 `<서비스>-app`(자리 전환을 하는 앱 컨테이너 — 각 저장소의 docker-compose.yml).
  * 서버 고르기(서비스의 컨테이너가 보인 서버 중):
  *   ① 그 서비스 컨테이너가 보인 서버 ② 서비스의 컨테이너 중 last_seen_at 이 가장 늦은 서버 ③ 서버 이름순 — 첫째를 고르고, 나머지는 alsoSeenOn(이름순).
@@ -53,8 +56,12 @@ export const TRACE_RESOURCE_TOTAL_TIMEOUT_MILLISECONDS = 8_000;
 /** 서비스 → 값을 보일 컨테이너의 계열 이름(자리 전환을 하는 앱 컨테이너 — front · backend · alert · observe · admin 은 `<서비스>-app-blue|green`,
  * llm 은 `llm-wrapper-blue|green` — 각 저장소 docker-compose.yml 의 container_name). */
 export const SERVICE_CONTAINER_NAMES: Readonly<Record<string, string>> = {
-  front: "front-app", backend: "backend-app", llm: "llm-wrapper", alert: "alert-app", observe: "observe-app", admin: "admin-app",
+  front: "front-app", backend: "backend-app", llm: "llm-wrapper", alert: "alert-app", observe: "observe-app", admin: "admin-app", claude: "claude-runner",
 };
+
+/** 컨테이너 이름이 고정된 서비스 → 그 이름(compose 의 container_name). 이 표의 서비스는 서비스 이름이 아니라 이 이름으로 컨테이너를 가른다.
+ * 다른 서비스는 SERVICE_CONTAINER_NAMES 로 가르지 않는다 — 앱 컨테이너 밖의 컨테이너(backend-embedding · observe-postgres 등)도 그 서비스의 것이다. */
+const FIXED_SERVICE_CONTAINER_NAMES: Readonly<Record<string, string>> = { claude: "claude-runner" };
 
 export const TRACE_RESOURCE_TEXT = {
   noRecord: "기록 없음",
@@ -102,6 +109,43 @@ export interface TraceResourcesView {
   container: UpstreamResult<TraceSeriesView> | null;
 }
 
+// ── 화면(TraceResourcesBlock)과 글(문제 화면의 근거 글)이 같이 쓰는 판정 · 문구 ──────────────
+
+const ROLLUP_STEP_MILLISECONDS = 5 * 60 * 1000;
+/** readsRollup 일 때 덧붙이는 글. */
+export const TRACE_ROLLUP_TEXT = "5분 평균 값(고른 로그가 7일보다 오래됨)";
+
+/** 5분 평균(고른 로그가 7일보다 오래됨)에서 읽은 값인가 — 서버 · 컨테이너 계열 가운데 하나라도 source 가 rollup · mixed 이거나 step 이 5분 이상. */
+export function readsRollup(resources: TraceResourcesView): boolean {
+  const isRollup = (series: UpstreamResult<TraceSeriesView> | null) => series !== null && series.ok
+    && (series.value.source === "rollup" || series.value.source === "mixed" || series.value.stepMilliseconds >= ROLLUP_STEP_MILLISECONDS);
+  return isRollup(resources.host) || isRollup(resources.container);
+}
+
+/** 묻지 못한 · 묻지 않은(상한 밖) · 이름을 읽지 못한 서버 — 조용히 자르지 않는다(§18). */
+function uncheckedServerParts(failedServers: string[], skippedServerCount: number, unreadableServerNameCount: number): string[] {
+  return [
+    ...(failedServers.length > 0 ? [`서버 ${failedServers.join(" · ")} 에 묻지 못했습니다`] : []),
+    ...(skippedServerCount > 0 ? [`확인하지 못한 서버 ${skippedServerCount}대(묻는 서버는 앞 ${TRACE_RESOURCE_SERVER_LIMIT}대까지)`] : []),
+    ...(unreadableServerNameCount > 0 ? [`이름을 읽지 못한 서버 ${unreadableServerNameCount}대`] : []),
+  ];
+}
+
+/** 고른 서버의 덧붙임 줄(끝의 마침표 없이 — 없으면 []): 같은 서비스가 보인 다른 서버 · 확인하지 못한 서버 · 묻지 않은 서버 수 · 이름을 읽지 못한 서버 수. */
+export function foundLocationNotes(location: Extract<TraceServerLocation, { kind: "found" }>): string[] {
+  const unchecked = uncheckedServerParts(location.uncheckedServers, location.skippedServerCount, location.unreadableServerNameCount);
+  return [
+    ...(location.alsoSeenOn.length > 0 ? [`같은 서비스가 서버 ${location.alsoSeenOn.join(" · ")} 에도 보였습니다`] : []),
+    // 확인하지 못한 서버는 "는 확인하지 못함" 으로 적으므로 "에 묻지 못했습니다" 부분은 뺀다
+    ...(location.uncheckedServers.length > 0 ? [`서버 ${location.uncheckedServers.join(" · ")} 는 확인하지 못함`, ...unchecked.slice(1)] : unchecked),
+  ];
+}
+
+/** 어느 서버였는지 확인하지 못함 — <묻지 못한 · 묻지 않은 · 이름을 읽지 못한 서버>(끝의 마침표 없이). */
+export function unknownLocationText(location: Extract<TraceServerLocation, { kind: "unknown" }>): string {
+  return `${TRACE_RESOURCE_TEXT.unknownServer} — ${uncheckedServerParts(location.failedServers, location.skippedServerCount, location.unreadableServerNameCount).join(" · ")}`;
+}
+
 export interface TraceResourcesOptions {
   observeUrl: string;
   observeSecret: string;
@@ -114,7 +158,8 @@ export interface TraceResourcesOptions {
 
 /** 그 서비스의 컨테이너인가(계열 이름 기준). */
 export function containerBelongsToService(seriesName: string, service: string): boolean {
-  return seriesName === service || seriesName.startsWith(`${service}-`);
+  const prefix = Object.hasOwn(FIXED_SERVICE_CONTAINER_NAMES, service) ? FIXED_SERVICE_CONTAINER_NAMES[service] : service;
+  return seriesName === prefix || seriesName.startsWith(`${prefix}-`);
 }
 
 /** 값을 보일 그 서비스 컨테이너의 계열 이름. */
