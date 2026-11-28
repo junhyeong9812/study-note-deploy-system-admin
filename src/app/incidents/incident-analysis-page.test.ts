@@ -664,7 +664,7 @@ describe("멈출 때 · 끊김", () => {
 });
 
 describe("멈출 때 — 등록과 처리기의 차례(명세 ⑫ §21 5)", () => {
-  it("instrumentation 이 SIGTERM 처리기를 하나만 물리고(두 번 불려도), 그 처리기는 두 줄(login · incident-analysis)을 한 번씩 남긴 뒤에야 끝낸다", async () => {
+  it("instrumentation 이 SIGTERM 처리기를 둘만 물리고(통신 지도의 멈춤 · 종료 줄 — 두 번 불려도), 종료 줄의 처리기는 두 줄(login · incident-analysis)을 한 번씩 남긴 뒤에야 끝낸다", async () => {
     vi.stubEnv("NEXT_RUNTIME", "nodejs");
     vi.stubEnv("ADMIN_PASSWORD_HASH", FAKE_PASSWORD_HASH);
     const handlers = new Map<string, ((...args: unknown[]) => void)[]>();
@@ -681,17 +681,17 @@ describe("멈출 때 — 등록과 처리기의 차례(명세 ⑫ §21 5)", () =
       vi.spyOn(console, method).mockImplementation((...parts: unknown[]) => { const line = parts.map(String).join(" "); consoleLines.push(line); order.push(line); });
     }
     await register();
-    await register();   // 두 번 불려도(개발 모드의 다시 읽기 등) 처리기는 하나 — 줄이 두 번 나오지 않게
+    await register();   // 두 번 불려도(개발 모드의 다시 읽기 등) 처리기는 일마다 하나 — 줄이 두 번 나오지 않게
     expect(exit, "시작 검사가 끝내려 했다 — 설정을 확인").not.toHaveBeenCalled();
     const sigterm = handlers.get("SIGTERM") ?? [];
-    expect(sigterm).toHaveLength(1);
+    expect(sigterm).toHaveLength(2);   // 통신 지도의 멈춤(먼저 물린다 — 열린 흐름을 닫는다) + 종료 줄(login · incident-analysis)
 
     runnerResponder = () => new Promise(() => undefined);
     expect((await analysisRoute.POST(postRequest(await previewFields()))).status).toBe(303);
     await vi.waitFor(() => expect(runnerCalls).toHaveLength(1));
     order.length = 0;
     vi.stubEnv("NEXT_MANUAL_SIG_HANDLE", "1");
-    sigterm[0]("SIGTERM");
+    for (const handler of sigterm) handler("SIGTERM");   // 물린 차례대로 — 지도의 멈춤이 종료 줄(끝내기)보다 앞
     const loginLines = order.filter((line) => line.includes("login:shutdown"));
     const analysisLines = order.filter((line) => line.includes("incident-analysis:shutdown running=1"));
     expect(loginLines).toHaveLength(1);

@@ -1,0 +1,37 @@
+/* 요청 추적 — 폼 · 표 · 수준 배지는 로그 조회의 것(LogSearchScreen.module.css)을 쓴다. 색은 전부 globals.css 토큰(다크 모드 포함). */
+.requestField { max-width: 32rem; }
+.summary { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: var(--space-1) var(--space-4); font-size: var(--text-sm); }
+.summary dt { color: var(--muted); }
+.summary dd { min-width: 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.note { font-size: var(--text-sm); padding: var(--space-1) var(--space-2); color: var(--warning-fg); background: var(--warning-bg); border-radius: var(--radius-sm); }
+.muted { color: var(--muted); font-size: var(--text-sm); }
+.section { display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; }
+.sectionTitle { font-size: var(--text-md); }
+.gaps { padding-left: var(--space-6); font-size: var(--text-sm); }
+.gapAt { color: var(--muted); font-variant-numeric: tabular-nums; }
+.notes { padding-left: var(--space-6); font-size: var(--text-xs); color: var(--muted); }
+
+/* 서비스별 시간 줄 — 막대 칸이 남는 폭을 다 쓴다 */
+.laneTable td { font-variant-numeric: tabular-nums; }
+.barHeader, .barCell { width: 100%; min-width: 16rem; }
+.track { position: relative; height: 14px; margin-top: 4px; background: var(--code-bg); border: 1px solid var(--line); border-radius: var(--radius-sm); }
+/* 구간 하나 = 조각 하나. 위치 · 길이는 화면이 비율로 준다(최소 2px). */
+.segment { position: absolute; top: 1px; bottom: 1px; background: var(--accent); border-radius: 2px; }
+/* error 가 든 구간 — 줄무늬 + 굵은 테두리(색만으로 구분하지 않는다) */
+.segmentError {
+  top: -2px; bottom: -2px; border: 2px solid var(--danger);
+  background: repeating-linear-gradient(135deg, var(--danger) 0 3px, var(--danger-bg) 3px 6px);
+}
+
+/* 접속 기록의 구간 — 서비스별 구간의 막대(구간)와 눈금(로그 줄)은 시간 줄과 같은 길(.track) 위에 */
+.spanBar { position: absolute; top: 1px; bottom: 1px; background: var(--accent); border-radius: 2px; opacity: 0.85; }
+/* 5xx 구간 — 줄무늬 + 굵은 테두리(색만으로 구분하지 않는다 — 표에는 "서버 오류" 글) */
+.spanBarServerError {
+  top: -2px; bottom: -2px; border: 2px solid var(--danger);
+  background: repeating-linear-gradient(135deg, var(--danger) 0 3px, var(--danger-bg) 3px 6px);
+}
+/* 로그 줄 하나 = 눈금 하나(error 는 길고 굵게) */
+.logMark { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--fg); }
+.logMarkError { top: -5px; bottom: -5px; width: 3px; background: var(--danger); }
+.spanRequest { overflow-wrap: anywhere; }
+.noteReasons { padding-left: var(--space-6); }
